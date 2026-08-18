@@ -7,7 +7,8 @@ npm-debug.log*
 # Python
 __pycache__/
 *.py[cod]
-build/backend/
+build/dist/
+build/work/
 *.spec.bak
 .venv/
 

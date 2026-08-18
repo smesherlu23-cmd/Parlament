@@ -254,11 +254,11 @@ function render() {
   if (!store.state) return;
 
   // Запоминаем поле под курсором: перерисовка не должна сбивать ввод.
+  // Ключ — id партии: названия могут совпадать, идентификаторы нет.
   const active = document.activeElement;
-  const focusKey = active && active.closest('.seat-row')
-    ? active.closest('.seat-row').querySelector('.seat-row-name')?.textContent
-    : null;
-  const selectionStart = focusKey ? active.selectionStart : null;
+  const focusedRow = active && active.closest ? active.closest('.seat-row') : null;
+  const focusedPartyId = focusedRow ? focusedRow.dataset.partyId : null;
+  const selectionStart = focusedPartyId ? active.selectionStart : null;
 
   replaceChildren(root,
     renderAppBar(),
@@ -266,19 +266,17 @@ function render() {
     renderDialog(store, actions),
     renderToast());
 
-  if (focusKey) {
-    for (const row of root.querySelectorAll('.seat-row')) {
-      if (row.querySelector('.seat-row-name')?.textContent === focusKey) {
-        const input = row.querySelector('input');
-        input.focus();
-        if (selectionStart !== null) {
-          try {
-            input.setSelectionRange(selectionStart, selectionStart);
-          } catch {
-            // number-поля не везде поддерживают выделение — не страшно.
-          }
+  if (focusedPartyId) {
+    const row = root.querySelector(`.seat-row[data-party-id="${focusedPartyId}"]`);
+    const input = row && row.querySelector('input');
+    if (input) {
+      input.focus();
+      if (selectionStart !== null) {
+        try {
+          input.setSelectionRange(selectionStart, selectionStart);
+        } catch {
+          // number-поля не везде поддерживают выделение — не страшно.
         }
-        break;
       }
     }
   }

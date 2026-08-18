@@ -40,7 +40,12 @@ PARLAMENT_PYTHON=/usr/bin/python3.11 npm start
 
 ```bash
 npm test          # 42 теста бизнес-логики (unittest, без зависимостей)
+npm run test:ui   # 61 сквозная проверка: поднимает окно и проходит сценарии ТЗ
 ```
+
+Сквозная проверка работает с настоящим приложением — тем же `electron/main.js`
+и тем же Python-бэкендом — и по ходу складывает скриншоты экранов в
+`dist/ui-smoke/`.
 
 ### Сборка установщика для Windows
 
@@ -49,8 +54,9 @@ pip install pyinstaller
 npm run dist
 ```
 
-Сначала PyInstaller собирает бэкенд в `dist/backend/parlament-backend.exe`,
-затем electron-builder кладёт его в ресурсы и делает NSIS-установщик в `dist/`.
+Сначала PyInstaller собирает бэкенд в `build/dist/backend/parlament-backend.exe`,
+затем electron-builder кладёт его в ресурсы приложения и делает
+NSIS-установщик в `dist/`.
 
 ## Архитектура
 

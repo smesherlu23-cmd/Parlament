@@ -109,15 +109,15 @@ export class Store extends EventTarget {
       || null;
   }
 
+  /** Id архивного созыва, который пользователь открыл на правку. */
+  editingArchived = null;
+
   /** Открытый созыв правится всегда; архивный — только после «Править состав». */
   get isEditable() {
     const conv = this.selectedConvocation;
     if (!conv) return false;
     return !conv.fixedAt || this.editingArchived === conv.id;
   }
-
-  /** Id архивного созыва, который пользователь открыл на правку. */
-  editingArchived = null;
 
   /**
    * Распределение мест выбранного созыва с учётом локальных правок.
@@ -228,11 +228,6 @@ export class Store extends EventTarget {
       }
       this.applyState(response.result.state);
     }
-  }
-
-  /** Есть ли неотправленные правки — окно не закрываем, пока они есть. */
-  get hasPendingSeats() {
-    return this.#drafts.size > 0;
   }
 
   // -- диалоги и уведомления -----------------------------------------------

@@ -11,7 +11,7 @@
     "start": "electron .",
     "test": "python -m unittest discover -s backend/tests",
     "test:ui": "electron tests/ui-smoke.js",
-    "build:backend": "pyinstaller --clean --noconfirm build/backend.spec",
+    "build:backend": "pyinstaller --clean --noconfirm --distpath build/dist --workpath build/work build/backend.spec",
     "dist": "npm run build:backend && electron-builder --win",
     "pack": "electron-builder --win --dir"
   },
@@ -33,7 +33,7 @@
     ],
     "extraResources": [
       {
-        "from": "dist/backend",
+        "from": "build/dist/backend",
         "to": "backend"
       }
     ],

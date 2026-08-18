@@ -149,7 +149,7 @@ function renderEditableRail(store, actions, convocation) {
       },
     });
 
-    return h('div.seat-row',
+    return h('div.seat-row', { dataset: { partyId: party.id } },
       swatch(party.color, 12),
       h('span.seat-row-name', { text: party.name, title: party.name }),
       input);

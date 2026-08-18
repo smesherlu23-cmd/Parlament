@@ -1,11 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
 """Сборка Python-бэкенда в один исполняемый файл.
 
-    pyinstaller --clean --noconfirm build/backend.spec
+    npm run build:backend
 
-Результат — `dist/backend/parlament-backend[.exe]`. Electron-builder кладёт
-эту папку в ресурсы приложения (см. `extraResources` в package.json), а
-electron/backend.js запускает её оттуда в собранном приложении.
+Результат — `build/dist/backend/parlament-backend[.exe]`. Отдельная папка
+нужна, чтобы не пересекаться с выводом electron-builder в `dist/`.
+Electron-builder кладёт её в ресурсы приложения (см. `extraResources` в
+package.json), а electron/backend.js запускает бэкенд оттуда.
 
 Бэкенд не тянет сторонних пакетов, поэтому ни hidden imports, ни hooks
 здесь не нужны.
