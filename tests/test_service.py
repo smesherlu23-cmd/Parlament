@@ -220,6 +220,89 @@ class TestConvocations(ServiceTestCase):
         self.assertEqual(self.service.next_convocation_name(), "Третий состав")
 
 
+class TestDeleteConvocation(ServiceTestCase):
+    """Удаление созыва из истории — раздел 9 ТЗ отмечал это как открытый
+    вопрос; решение: удалять можно, кроме единственного оставшегося."""
+
+    def test_removes_and_renumbers(self):
+        first_id = self.active_id
+        self.service.fix_convocation()               # 2-й активен
+        self.service.fix_convocation()                # 3-й активен
+
+        self.service.delete_convocation(first_id)
+
+        numbers = [(c.number, c.name) for c in self.service.project.convocations]
+        self.assertEqual(numbers, [(1, "Первый состав"), (2, "Второй состав")])
+
+    def test_auto_names_resync_to_new_position(self):
+        # «Третий состав» держит автосгенерированное имя — после удаления
+        # второго созыва он должен стать «Вторым составом» и по номеру,
+        # и по названию.
+        second_id = self.active_id
+        self.service.fix_convocation()
+        self.service.fix_convocation()
+
+        self.service.delete_convocation(second_id)
+
+        remaining = self.service.project.convocations[1]
+        self.assertEqual(remaining.number, 2)
+        self.assertEqual(remaining.name, "Второй состав")
+
+    def test_custom_name_survives_renumbering(self):
+        # А вручную переименованный созыв — нет: пользовательский текст
+        # не подменяем, даже если он больше не совпадает с позицией.
+        first_id = self.active_id
+        second = self.service.fix_convocation()
+        self.service.rename_convocation(second.id, "Второй состав (кризис)")
+        self.service.fix_convocation()
+
+        self.service.delete_convocation(first_id)
+
+        remaining = self.service.project.convocations[0]
+        self.assertEqual(remaining.number, 1)
+        self.assertEqual(remaining.name, "Второй состав (кризис)")
+
+    def test_deleting_active_reopens_previous(self):
+        first_id = self.active_id
+        self.service.fix_convocation()
+        active_id = self.service.project.active_convocation.id
+
+        fresh_active = self.service.delete_convocation(active_id)
+
+        self.assertEqual(fresh_active.id, first_id)
+        self.assertFalse(fresh_active.is_fixed)
+        self.assertEqual(len(self.service.project.convocations), 1)
+
+    def test_deleting_archived_keeps_active_untouched(self):
+        first_id = self.active_id
+        self.service.fix_convocation()
+        active_id = self.service.project.active_convocation.id
+
+        fresh_active = self.service.delete_convocation(first_id)
+
+        self.assertEqual(fresh_active.id, active_id)
+        self.assertFalse(fresh_active.is_fixed)
+
+    def test_cannot_delete_the_only_convocation(self):
+        with self.assertRaises(ValidationError):
+            self.service.delete_convocation(self.active_id)
+        self.assertEqual(len(self.service.project.convocations), 1)
+
+    def test_unknown_convocation_rejected(self):
+        self.service.fix_convocation()
+        with self.assertRaises(ValidationError):
+            self.service.delete_convocation("нет-такой")
+
+    def test_deletion_is_persisted(self):
+        first_id = self.active_id
+        self.service.fix_convocation()
+
+        self.service.delete_convocation(first_id)
+
+        reloaded = load(self.path)
+        self.assertEqual(len(reloaded.convocations), 1)
+
+
 class TestPersistence(ServiceTestCase):
     def test_every_change_is_written_to_disk(self):
         party = self.party()

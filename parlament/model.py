@@ -187,6 +187,27 @@ class Project:
                     conv.fixed_at = conv.created_at
             self.convocations[-1].fixed_at = None
 
+    def remove_convocation(self, convocation_id: str) -> None:
+        """Убирает созыв из истории; оставшиеся заново нумеруются по порядку.
+
+        Если удалённое имя было автосгенерированным («Третий состав»), у
+        сдвинувшихся созывов оно пересчитывается под новый номер — иначе
+        порядковое слово в названии перестало бы совпадать с местом в
+        списке. Названия, которые переименовал пользователь, не трогаем.
+        Если удаляют текущий (открытый) созыв, `normalize()` возвращает к
+        редактированию предыдущий — без открытого созыва проект не
+        остаётся.
+        """
+        self.convocations = [c for c in self.convocations if c.id != convocation_id]
+        self.convocations.sort(key=lambda c: c.number)
+        for index, conv in enumerate(self.convocations):
+            old_number = conv.number
+            new_number = index + 1
+            if conv.name == convocation_name(old_number):
+                conv.name = convocation_name(new_number)
+            conv.number = new_number
+        self.normalize()
+
     # -- поиск --------------------------------------------------------------
 
     def party(self, party_id: str) -> Party | None:

@@ -63,12 +63,23 @@ _SWATCH_SIZE = 34
 _SWATCH_GAP = 8
 
 
-def party_dialog(party: Party | None, used_colors: int,
+def party_dialog(page: ft.Page, party: Party | None, used_colors: int,
                  on_save: Callable[[str, str], str | None],
-                 on_cancel: Callable) -> ft.AlertDialog:
+                 on_cancel: Callable,
+                 recent_colors: list[str] | None = None,
+                 on_custom_color_picked: Callable[[str], None] | None = None) -> ft.AlertDialog:
     """Создание или правка партии: название и цвет.
 
+    `page` нужен, чтобы кнопка «Свой цвет» могла открыть подбор поверх этого
+    диалога — через `page.show_dialog`, а не через `control.page` первого
+    попавшегося поля: до показа диалог ещё не привязан к странице, и такое
+    обращение упало бы.
     `on_save` возвращает текст ошибки либо None, если всё сохранилось.
+    `recent_colors` — свои цвета, подобранные в предыдущих диалогах за эту
+    сессию (свежий слева); показываются отдельной строкой под палитрой, чтобы
+    не открывать подбор заново для похожих партий подряд. `on_custom_color_picked`
+    зовётся при подтверждении в подборе цвета — так вызывающая сторона узнаёт,
+    что цвет стоит запомнить.
     """
     editing = party is not None
     start_color = party.color if party else theme.PALETTE[used_colors % len(theme.PALETTE)]
@@ -84,6 +95,8 @@ def party_dialog(party: Party | None, used_colors: int,
     )
     error = ft.Text("", size=theme.fs(12), color=theme.ACCENT_2_700, visible=False)
     palette_row = ft.Row(spacing=_SWATCH_GAP, wrap=True, run_spacing=_SWATCH_GAP)
+    recent_row = ft.Row(spacing=_SWATCH_GAP, wrap=True, run_spacing=_SWATCH_GAP)
+    swatch_rows = [palette_row, recent_row]
 
     state = {"color": start_color}
 
@@ -92,15 +105,21 @@ def party_dialog(party: Party | None, used_colors: int,
         if update_hex:
             hex_field.value = color.upper()
         swatch_preview.bgcolor = color
-        for control in palette_row.controls:
-            if control.data:
-                selected = control.data == color
-                control.border = ft.Border.all(
-                    2 if selected else 1,
-                    theme.ACCENT if selected else "#1f000000",
-                )
-        for control in (palette_row, hex_field, swatch_preview):
+        for row in swatch_rows:
+            for control in row.controls:
+                if control.data:
+                    selected = control.data == color
+                    control.border = ft.Border.all(
+                        2 if selected else 1,
+                        theme.ACCENT if selected else "#1f000000",
+                    )
+        for control in (*swatch_rows, hex_field, swatch_preview):
             push(control)
+
+    def pick_custom_color(color: str) -> None:
+        apply_color(color)
+        if on_custom_color_picked:
+            on_custom_color_picked(color)
 
     def on_hex_change(_event) -> None:
         color = normalize_hex(hex_field.value)
@@ -109,20 +128,25 @@ def party_dialog(party: Party | None, used_colors: int,
 
     hex_field.on_change = on_hex_change
 
-    swatch_size = theme.fs(_SWATCH_SIZE)
-    for color in theme.PALETTE:
+    def make_swatch(color: str) -> ft.Container:
+        swatch_size = theme.fs(_SWATCH_SIZE)
         selected = color == start_color.lower()
-        palette_row.controls.append(
-            ft.Container(
-                width=swatch_size, height=swatch_size, bgcolor=color, data=color,
-                border_radius=theme.RADIUS,
-                border=ft.Border.all(2 if selected else 1,
-                                     theme.ACCENT if selected else "#1f000000"),
-                tooltip=color,
-                ink=True,
-                on_click=lambda e: apply_color(e.control.data),
-            )
+        return ft.Container(
+            width=swatch_size, height=swatch_size, bgcolor=color, data=color,
+            border_radius=theme.RADIUS,
+            border=ft.Border.all(2 if selected else 1,
+                                 theme.ACCENT if selected else "#1f000000"),
+            tooltip=color,
+            ink=True,
+            on_click=lambda e: apply_color(e.control.data),
         )
+
+    for color in theme.PALETTE:
+        palette_row.controls.append(make_swatch(color))
+    for color in recent_colors or []:
+        recent_row.controls.append(make_swatch(color))
+
+    swatch_size = theme.fs(_SWATCH_SIZE)
     palette_row.controls.append(
         ft.Container(
             width=swatch_size, height=swatch_size, data=None,
@@ -132,7 +156,7 @@ def party_dialog(party: Party | None, used_colors: int,
             ink=True,
             alignment=ft.Alignment.CENTER,
             content=ft.Icon(ft.Icons.ADD_ROUNDED, size=theme.fs(16), color=theme.NEUTRAL_700),
-            on_click=lambda _e: _open_custom_color_dialog(name_field.page, state["color"], apply_color),
+            on_click=lambda _e: _open_custom_color_dialog(page, state["color"], pick_custom_color),
         )
     )
 
@@ -148,15 +172,20 @@ def party_dialog(party: Party | None, used_colors: int,
         if message:
             _show_error(error, message)
 
+    body = [
+        name_field,
+        ft.Row([swatch_preview, hex_field],
+              spacing=12, vertical_alignment=ft.CrossAxisAlignment.END),
+        palette_row,
+    ]
+    if recent_row.controls:
+        body.append(ft.Container(height=1, bgcolor=theme.DIVIDER))
+        body.append(recent_row)
+    body.append(error)
+
     return _shell(
         "Изменить партию" if editing else "Новая партия",
-        [
-            name_field,
-            ft.Row([swatch_preview, hex_field],
-                   spacing=12, vertical_alignment=ft.CrossAxisAlignment.END),
-            palette_row,
-            error,
-        ],
+        body,
         [_cancel(on_cancel), theme.primary_button("Сохранить", save)],
     )
 
@@ -340,6 +369,20 @@ def delete_party_dialog(party: Party, usage: list[dict], plural: Callable,
     return _shell(
         f"Удалить «{party.name}»?",
         body,
+        [_cancel(on_cancel),
+         theme.primary_button("Удалить всё равно", on_confirm, danger=True)],
+    )
+
+
+# -- удаление созыва ---------------------------------------------------------
+
+
+def delete_convocation_dialog(convocation: Convocation, on_confirm: Callable,
+                              on_cancel: Callable) -> ft.AlertDialog:
+    return _shell(
+        f"Удалить «{convocation.name}»?",
+        [ft.Text("Состав этого созыва безвозвратно удалится из истории.",
+                 size=theme.fs(14), color=theme.TEXT)],
         [_cancel(on_cancel),
          theme.primary_button("Удалить всё равно", on_confirm, danger=True)],
     )

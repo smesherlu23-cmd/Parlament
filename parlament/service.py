@@ -188,6 +188,20 @@ class ParlamentService:
         """Подсказка для диалога фиксации — имя следующего созыва."""
         return convocation_name(self.project.active_convocation.number + 1)
 
+    def delete_convocation(self, convocation_id: str) -> Convocation:
+        """Удаляет созыв из истории — кроме случая, когда он единственный.
+
+        Если удаляют текущий (открытый) созыв, для правки снова открывается
+        предыдущий по времени: без открытого созыва проект не остаётся.
+        """
+        if len(self.project.convocations) <= 1:
+            raise ValidationError("Нельзя удалить единственный созыв.")
+        self._require_convocation(convocation_id)
+
+        self.project.remove_convocation(convocation_id)
+        self._persist()
+        return self.project.active_convocation
+
     # -- состояние для интерфейса -------------------------------------------
 
     @property

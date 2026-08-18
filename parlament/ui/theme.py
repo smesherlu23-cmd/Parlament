@@ -218,6 +218,26 @@ def ghost_button(text: str, on_click, danger: bool = False,
     )
 
 
+def icon_button(icon, on_click, danger: bool = False, tooltip: str | None = None,
+                size: int = 15) -> ft.IconButton:
+    """Маленькая кнопка-иконка — крестик удаления в компактных списках, где
+    текстовая ghost_button не поместится."""
+    tone = ACCENT_2_700 if danger else NEUTRAL_600
+    return ft.IconButton(
+        icon=icon,
+        icon_size=fs(size),
+        icon_color=tone,
+        tooltip=tooltip,
+        on_click=on_click,
+        padding=4,
+        visual_density=ft.VisualDensity.COMPACT,
+        style=ft.ButtonStyle(
+            shape=ft.RoundedRectangleBorder(radius=RADIUS),
+            overlay_color=f"1a{tone.lstrip('#')}",
+        ),
+    )
+
+
 def text_field(value: str = "", width: int | None = None, hint: str = "",
                on_change=None, on_submit=None, text_align=None,
                monospace: bool = False, autofocus: bool = False,

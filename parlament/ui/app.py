@@ -24,6 +24,9 @@ from .export import LegendEntry, RESOLUTIONS, render_png, suggest_file_name
 from .parties_view import PartiesView
 from .seat_chart import SeatChart, chart_height_for_width
 
+#: Сколько последних вручную подобранных цветов показывать в диалоге партии.
+RECENT_COLORS_LIMIT = 3
+
 
 class ParlamentApp:
     """Окно приложения: шапка, три колонки, диалоги."""
@@ -35,6 +38,11 @@ class ParlamentApp:
         self.view = "parliament"                 # 'parliament' | 'parties'
         self.selected_convocation_id: str | None = None
         self.editing_archived: str | None = None
+
+        # Свои цвета, подобранные вручную за эту сессию (свежий слева) —
+        # чтобы для похожих партий подряд не открывать подбор заново.
+        # В файл проекта не пишется: это удобство интерфейса, а не данные игры.
+        self.recent_colors: list[str] = []
 
         self.file_picker = ft.FilePicker()
         self.body = ft.Container(expand=True)
@@ -215,11 +223,25 @@ class ParlamentApp:
         )
 
     def _refresh_conv_list(self, live: bool = True) -> None:
+        many = len(self.service.project.convocations) > 1
         cards = []
         for conv in self.convocations:
             selected = conv.id == self.selected.id
             used = self.used_seats(conv)
             note = "Редактируется" if not conv.is_fixed else f"{used} из {self.total_seats} мест"
+
+            header = [ft.Container(
+                ft.Text(conv.name, size=theme.fs(14), font_family=theme.FONT_SEMIBOLD,
+                        color=theme.TEXT, no_wrap=True),
+                expand=True,
+            )]
+            # Единственный созыв удалить нельзя — история не может опустеть,
+            # так что кнопке тогда просто нечего делать.
+            if many:
+                header.append(theme.icon_button(
+                    ft.Icons.CLOSE, lambda _e, c=conv: self.delete_convocation(c),
+                    danger=True, tooltip="Удалить созыв", size=13,
+                ))
 
             cards.append(ft.Container(
                 bgcolor=theme.ACCENT_100 if selected else ft.Colors.TRANSPARENT,
@@ -229,8 +251,7 @@ class ParlamentApp:
                 on_click=lambda e: self.select_convocation(e.control.data),
                 ink=True,
                 content=ft.Column([
-                    ft.Text(conv.name, size=theme.fs(14), font_family=theme.FONT_SEMIBOLD,
-                            color=theme.TEXT, no_wrap=True),
+                    ft.Row(header, spacing=2, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                     dialogs.seat_bar(self.bar_segments(conv)),
                     ft.Text(note, size=theme.fs(11),
                             color=theme.ACCENT_700 if not conv.is_fixed else theme.NEUTRAL_600),
@@ -562,7 +583,18 @@ class ParlamentApp:
             return None
 
         self.page.show_dialog(dialogs.party_dialog(
-            party, len(self.parties), save, lambda _e: self.close_dialog()))
+            self.page, party, len(self.parties), save, lambda _e: self.close_dialog(),
+            recent_colors=self.recent_colors,
+            on_custom_color_picked=self._remember_recent_color,
+        ))
+
+    def _remember_recent_color(self, color: str) -> None:
+        color = color.lower()
+        if color in theme.PALETTE:
+            return   # уже есть готовым цветом в палитре — незачем дублировать
+        self.recent_colors = (
+            [color] + [c for c in self.recent_colors if c != color]
+        )[:RECENT_COLORS_LIMIT]
 
     def delete_party(self, party: Party) -> None:
         usage = self.service.party_usage(party.id)
@@ -626,6 +658,23 @@ class ParlamentApp:
             confirm,
             lambda _e: self.close_dialog(),
         ))
+
+    def delete_convocation(self, convocation: Convocation) -> None:
+        def confirm(_event) -> None:
+            try:
+                fresh_active = self.service.delete_convocation(convocation.id)
+            except (ValidationError, StoreError) as error:
+                self.toast(str(error), error=True)
+                return
+            self.close_dialog()
+            if self.selected_convocation_id == convocation.id:
+                self.selected_convocation_id = fresh_active.id
+            self.editing_archived = None
+            self.render()
+            self.toast(f"Созыв «{convocation.name}» удалён.")
+
+        self.page.show_dialog(dialogs.delete_convocation_dialog(
+            convocation, confirm, lambda _e: self.close_dialog()))
 
     def reset_seats(self) -> None:
         if not self.is_editable:

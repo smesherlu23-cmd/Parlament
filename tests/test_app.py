@@ -294,6 +294,74 @@ class TestParties(AppTestCase):
         self.assertEqual(len(view_rows), 7)
 
 
+class _FakePoint:
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+
+
+class _FakeTapEvent:
+    """Заменяет TapEvent Flet — тесты не поднимают настоящий жест мыши,
+    только вызывают обработчик напрямую с координатами клика."""
+
+    def __init__(self, x, y):
+        self.local_position = _FakePoint(x, y)
+
+
+class TestRecentColors(AppTestCase):
+    """Свои цвета, подобранные вручную, предлагаются в следующих диалогах —
+    отдельной строкой под основной палитрой."""
+
+    def test_no_recent_row_until_something_was_picked(self):
+        self.assertEqual(self.app.recent_colors, [])
+        self.app.new_party()
+        divider = find(self.page.dialog, lambda c: isinstance(c, ft.Container)
+                       and c.bgcolor == theme.DIVIDER and c.height == 1)
+        self.assertIsNone(divider)
+
+    def test_picking_custom_color_is_remembered_and_offered_next_time(self):
+        self.app.new_party()
+        plus = find(self.page.dialog, lambda c: isinstance(c, ft.Container)
+                   and getattr(c, "tooltip", None) == "Свой цвет")
+        plus.on_click(None)
+
+        picker = self.page.dialog
+        sv_gesture, hue_gesture = find_all(picker, lambda c: isinstance(c, ft.GestureDetector))
+        hue_gesture.on_tap_down(_FakeTapEvent(20, 0))     # тон ближе к красному
+        sv_gesture.on_tap_down(_FakeTapEvent(120, 60))    # неполная насыщенность/яркость
+        find(picker, lambda c: isinstance(c, ft.Button) and c.content == "Выбрать").on_click(None)
+
+        self.assertEqual(len(self.app.recent_colors), 1)
+        remembered = self.app.recent_colors[0]
+        self.assertRegex(remembered, r"^#[0-9a-f]{6}$")
+
+        # Значение уже перенеслось и в само поле HEX основного диалога.
+        self.assertEqual(find(self.page.dialog, lambda c: isinstance(c, ft.TextField)
+                              and c.label == "HEX").value, remembered.upper())
+
+        # Диалог партии закрыт (отменяем) и открыт заново — цвет предложен готовым.
+        find(self.page.dialog, lambda c: isinstance(c, ft.Button)
+             and c.content == "Отмена").on_click(None)
+        self.app.new_party()
+        swatch = find(self.page.dialog, lambda c: isinstance(c, ft.Container)
+                     and c.data == remembered)
+        self.assertIsNotNone(swatch)
+
+    def test_recent_colors_are_capped_deduplicated_and_most_recent_first(self):
+        self.app._remember_recent_color("#111111")
+        self.app._remember_recent_color("#222222")
+        self.app._remember_recent_color("#333333")
+        self.app._remember_recent_color("#444444")   # выталкивает самый старый
+        self.assertEqual(self.app.recent_colors, ["#444444", "#333333", "#222222"])
+
+        self.app._remember_recent_color("#222222")   # уже есть — переезжает вперёд
+        self.assertEqual(self.app.recent_colors, ["#222222", "#444444", "#333333"])
+
+    def test_palette_colors_are_not_remembered(self):
+        self.app._remember_recent_color(theme.PALETTE[0])
+        self.assertEqual(self.app.recent_colors, [])
+
+
 class TestConvocations(AppTestCase):
     def fix_current(self, name: str | None = None) -> None:
         self.app.new_convocation()
@@ -384,6 +452,70 @@ class TestConvocations(AppTestCase):
         self.fix_current()
         self.app.select_convocation(first_id)
         self.assertFalse(any("зафиксирован" in t for t in texts(self.body)))
+
+    def test_no_delete_button_with_a_single_convocation(self):
+        # Единственный созыв удалить нельзя — история не может опустеть,
+        # и кнопке тогда просто нечего делать.
+        self.assertIsNone(find(self.app.conv_list, lambda c: isinstance(c, ft.IconButton)))
+
+    def test_delete_button_appears_with_more_than_one(self):
+        self.distribute()
+        self.fix_current()
+        buttons = find_all(self.app.conv_list, lambda c: isinstance(c, ft.IconButton))
+        self.assertEqual(len(buttons), 2)
+
+    def test_delete_archived_convocation(self):
+        self.distribute()
+        first_id = self.app.selected.id
+        self.fix_current()
+        second_id = self.app.selected.id
+
+        first = self.service.project.convocation(first_id)
+        self.app.delete_convocation(first)
+        find(self.page.dialog, lambda c: isinstance(c, ft.Button)
+             and c.content == "Удалить всё равно").on_click(None)
+
+        self.assertEqual(len(self.app.convocations), 1)
+        self.assertIsNone(self.service.project.convocation(first_id))
+        # Текущий (не удалявшийся) созыв остаётся выбранным как был.
+        self.assertEqual(self.app.selected.id, second_id)
+        self.assertEqual(self.page.last_toast, "Созыв «Первый состав» удалён.")
+
+    def test_deleting_viewed_convocation_switches_selection(self):
+        self.distribute()
+        first_id = self.app.selected.id
+        self.fix_current()
+        self.app.select_convocation(first_id)   # смотрим именно тот, что удалим
+
+        first = self.service.project.convocation(first_id)
+        self.app.delete_convocation(first)
+        find(self.page.dialog, lambda c: isinstance(c, ft.Button)
+             and c.content == "Удалить всё равно").on_click(None)
+
+        self.assertNotEqual(self.app.selected_convocation_id, first_id)
+        self.assertEqual(self.app.selected.id, self.service.project.active_convocation.id)
+
+    def test_deleting_active_convocation_reopens_previous_for_editing(self):
+        self.distribute()
+        first_id = self.app.selected.id
+        self.fix_current()
+        active = self.service.project.active_convocation
+
+        self.app.delete_convocation(active)
+        find(self.page.dialog, lambda c: isinstance(c, ft.Button)
+             and c.content == "Удалить всё равно").on_click(None)
+
+        self.assertEqual(self.app.selected.id, first_id)
+        self.assertTrue(self.app.is_editable)
+
+    def test_cannot_delete_the_last_convocation(self):
+        conv = self.app.selected
+        self.app.delete_convocation(conv)
+        find(self.page.dialog, lambda c: isinstance(c, ft.Button)
+             and c.content == "Удалить всё равно").on_click(None)
+
+        self.assertEqual(self.page.last_toast, "Нельзя удалить единственный созыв.")
+        self.assertEqual(len(self.app.convocations), 1)
 
     def test_new_convocation_needs_parties(self):
         self.app.new_convocation()
