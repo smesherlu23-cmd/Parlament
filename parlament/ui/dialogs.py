@@ -317,19 +317,10 @@ def _open_custom_color_dialog(page: ft.Page, current: str,
 
 def delete_party_dialog(party: Party, usage: list[dict], plural: Callable,
                         on_confirm: Callable, on_cancel: Callable) -> ft.AlertDialog:
-    count = len(usage)
-    if count:
-        explanation = (
-            f"Партия участвует в {count} "
-            f"{plural(count, ['созыве', 'созывах', 'созывах'])}. "
-            "После удаления её места в этих составах станут нераспределёнными."
-        )
-    else:
-        explanation = ("Партия не участвует ни в одном созыве — "
-                       "удаление ничего не изменит в истории.")
-
-    body: list[ft.Control] = [ft.Text(explanation, size=theme.fs(14), color=theme.TEXT)]
+    body: list[ft.Control] = []
     if usage:
+        body.append(ft.Text("Места партии станут нераспределёнными:",
+                            size=theme.fs(14), color=theme.TEXT))
         body.append(ft.Container(
             bgcolor=theme.BG,
             padding=ft.Padding.symmetric(horizontal=12, vertical=10),
@@ -367,11 +358,6 @@ def new_convocation_dialog(current: Convocation, suggested_name: str, used: int,
     return _shell(
         f"Зафиксировать {current.name}?",
         [
-            ft.Text(
-                f"Текущее распределение сохранится в истории, "
-                f"и откроется пустой {suggested_name}.",
-                size=theme.fs(14), color=theme.TEXT,
-            ),
             ft.Container(
                 bgcolor=theme.BG,
                 padding=ft.Padding.symmetric(horizontal=12, vertical=10),
@@ -400,11 +386,7 @@ def rename_dialog(convocation: Convocation, on_confirm: Callable[[str], None],
     field = theme.text_field(convocation.name, label_text="Название", autofocus=True)
     return _shell(
         "Переименовать созыв",
-        [
-            ft.Text("Например: «Третий состав (кризисные выборы)».",
-                    size=theme.fs(14), color=theme.NEUTRAL_700),
-            field,
-        ],
+        [field],
         [_cancel(on_cancel),
          theme.primary_button("Сохранить", lambda _e: on_confirm(field.value))],
         width=440,

@@ -25,13 +25,8 @@ class PartiesView:
             expand=True,
             padding=ft.Padding.symmetric(horizontal=40, vertical=24),
             content=ft.Column([
-                ft.Row([
-                    ft.Text(fmt.pluralize(len(parties), fmt.PARTIES_COUNT),
-                            size=theme.fs(22), font_family=theme.FONT_SEMIBOLD, color=theme.TEXT),
-                    ft.Text("Цвет и название обновляются во всех созывах, "
-                            "где партия участвует.",
-                            size=theme.fs(13), color=theme.NEUTRAL_600),
-                ], spacing=14, vertical_alignment=ft.CrossAxisAlignment.END),
+                ft.Text(fmt.pluralize(len(parties), fmt.PARTIES_COUNT),
+                        size=theme.fs(22), font_family=theme.FONT_SEMIBOLD, color=theme.TEXT),
                 ft.Container(content, expand=True, padding=ft.Padding.only(top=16)),
             ], spacing=0, expand=True),
         )
@@ -105,10 +100,5 @@ class PartiesView:
         return ft.Container(
             padding=ft.Padding.only(top=40),
             alignment=ft.Alignment.TOP_CENTER,
-            content=ft.Column([
-                ft.Text("Справочник пуст. Начните с 3–6 партий — их можно будет "
-                        "переименовать и перекрасить в любой момент.",
-                        size=theme.fs(14), color=theme.NEUTRAL_700, text_align=ft.TextAlign.CENTER),
-                theme.primary_button("Новая партия", lambda _e: self.app.new_party()),
-            ], spacing=16, horizontal_alignment=ft.CrossAxisAlignment.CENTER, tight=True),
+            content=theme.primary_button("Новая партия", lambda _e: self.app.new_party()),
         )

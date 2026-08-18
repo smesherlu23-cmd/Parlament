@@ -76,22 +76,16 @@ class AppTestCase(unittest.TestCase):
 
 
 class TestAppBar(AppTestCase):
-    """Электроновский ряд «Файл · Правка · Справка» убран; операции с файлом
-    проекта переехали в компактное выпадающее меню «Файл»."""
+    """Ни электроновского ряда «Файл · Правка · Справка», ни заменившего его
+    выпадающего меню «Файл» в шапке нет — проект всегда работает с одним,
+    автоматически сохраняемым файлом."""
 
     def test_no_leftover_menu_bar(self):
         self.assertIsNone(find(self.body, lambda c: isinstance(c, ft.MenuBar)))
 
-    def test_file_menu_offers_project_actions(self):
-        menu = find(self.body, lambda c: isinstance(c, ft.PopupMenuButton))
-        self.assertIsNotNone(menu)
-        self.assertEqual([t for item in menu.items for t in texts(item)],
-                         ["Новый проект", "Открыть…", "Сохранить как…"])
-
-    def test_file_menu_new_project_opens_confirmation(self):
-        menu = find(self.body, lambda c: isinstance(c, ft.PopupMenuButton))
-        menu.items[0].on_click(None)
-        self.assertEqual(self.page.dialog.title.value, "Новый проект")
+    def test_no_file_menu(self):
+        self.assertIsNone(find(self.body, lambda c: isinstance(c, ft.PopupMenuButton)))
+        self.assertNotIn("Файл", texts(self.body))
 
 
 class TestFirstRun(AppTestCase):
@@ -103,9 +97,9 @@ class TestFirstRun(AppTestCase):
     def test_empty_state_copy(self):
         shown = texts(self.body)
         self.assertIn("Партий пока нет", shown)
-        # Поясняющий абзац убран — заголовок и кнопка говорят всё нужное сами.
+        # Поясняющие абзацы убраны — заголовок и кнопка говорят всё нужное сами.
         self.assertFalse(any("Создайте 3–6 партий" in t for t in shown))
-        self.assertTrue(any("Список появится после создания партий" in t for t in shown))
+        self.assertFalse(any("Список появится после создания партий" in t for t in shown))
 
     def test_empty_state_button_opens_parties_screen(self):
         # Кнопка не открывает диалог создания партии, а просто ведёт
@@ -272,7 +266,6 @@ class TestParties(AppTestCase):
         self.app.delete_party(party)
         shown = texts(self.page.dialog)
         self.assertTrue(any("Удалить «Независимые»?" in t for t in shown))
-        self.assertTrue(any("участвует в 1 созыве" in t for t in shown))
         self.assertTrue(any("Первый состав — 6 мест" in t for t in shown))
 
     def test_delete_frees_seats_everywhere(self):
@@ -345,7 +338,6 @@ class TestConvocations(AppTestCase):
         shown = texts(self.body)
         self.assertIn("СОСТАВ — ТОЛЬКО ЧТЕНИЕ", shown)
         self.assertIn("Просмотр истории", shown)
-        self.assertTrue(any("сохранятся в этом же созыве" in t for t in shown))
 
         self.app.edit_archived()
         self.assertTrue(self.app.is_editable)
@@ -482,24 +474,13 @@ class TestProjectFile(AppTestCase):
         self.assertEqual(len(again.project.parties), 7)
         self.assertEqual(sum(again.project.active_convocation.seats.values()), 120)
 
-    def test_new_project_starts_clean(self):
-        self.distribute()
-        self.app.new_project()
-        find(self.page.dialog, lambda c: isinstance(c, ft.Button)
-             and c.content == "Начать новый").on_click(None)
-
-        self.assertEqual(self.app.parties, [])
-        self.assertEqual(len(self.app.convocations), 1)
-        self.assertIn("Партий пока нет", texts(self.body))
-
-    def test_save_as_switches_target(self):
+    def test_keeps_saving_to_whatever_file_the_service_points_at(self):
+        """У интерфейса нет своего меню «Файл» — за выбор файла целиком
+        отвечает `service`, а окно просто отражает то, что в нём открыто."""
         self.distribute()
         other = self.path.parent / "вторая-игра.parlament.json"
         self.service.save_project_as(other)
         self.app.render()
-
-        self.assertFalse(self.service.is_default_project)
-        self.assertIn("вторая-игра.parlament.json", texts(self.body))
 
         self.type_seats(self.app.parties[0].id, "30")
         reopened = ParlamentService(other)

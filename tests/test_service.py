@@ -243,6 +243,18 @@ class TestPersistence(ServiceTestCase):
         again.bootstrap()
         self.assertEqual(again.project.active_convocation.used_seats(), 55)
 
+    def test_new_project_starts_clean_and_persists(self):
+        self.party()
+        self.service.set_seats(self.active_id, self.service.project.parties[0].id, 40)
+
+        self.service.new_project()
+
+        self.assertEqual(self.service.project.parties, [])
+        self.assertEqual(len(self.service.project.convocations), 1)
+        self.assertEqual(self.service.path, self.service.default_path)
+        # Чистый проект тоже сразу лёг на диск, а не только в памяти.
+        self.assertEqual(load(self.path).parties, [])
+
     def test_save_as_switches_target_file(self):
         other = self.path.parent / "другая-игра.parlament.json"
         self.party()

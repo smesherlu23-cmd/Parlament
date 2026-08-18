@@ -145,17 +145,8 @@ class ParlamentApp:
                     border_radius=1,
                     content=ft.Text("Просмотр истории", size=theme.fs(11), color=theme.NEUTRAL_900),
                 ))
-            if not self.service.is_default_project:
-                left.append(ft.Text(self.service.path.name, size=theme.fs(12),
-                                    color=theme.NEUTRAL_600, no_wrap=True,
-                                    tooltip=str(self.service.path)))
 
             right = [
-                theme.file_menu_button([
-                    ("Новый проект", self.new_project),
-                    ("Открыть…", self.open_project),
-                    ("Сохранить как…", self.save_project_as),
-                ]),
                 theme.secondary_button("Партии", lambda _e: self.show_parties()),
                 theme.secondary_button(
                     "Экспорт в PNG", lambda _e: self.export_png(),
@@ -381,10 +372,6 @@ class ParlamentApp:
             )
             for party, seats in self.distribution(conv)
         ]
-        if not rows:
-            rows = [ft.Text("В этом созыве места не распределялись.",
-                            size=theme.fs(12), color=theme.NEUTRAL_600)]
-
         return ft.Container(
             width=theme.RAIL_RIGHT_WIDTH,
             padding=ft.Padding.symmetric(horizontal=20, vertical=18),
@@ -395,11 +382,6 @@ class ParlamentApp:
                     ft.Column(rows, spacing=0, scroll=ft.ScrollMode.AUTO),
                     expand=True,
                     padding=ft.Padding.only(top=12),
-                ),
-                ft.Text(
-                    "Прошлые составы можно править: нажмите «Править состав» — "
-                    "изменения сохранятся в этом же созыве.",
-                    size=theme.fs(12), color=theme.NEUTRAL_600,
                 ),
                 ft.Container(
                     padding=ft.Padding.only(top=18),
@@ -414,14 +396,7 @@ class ParlamentApp:
             width=theme.RAIL_RIGHT_WIDTH,
             padding=ft.Padding.symmetric(horizontal=20, vertical=18),
             border=ft.Border.only(left=ft.BorderSide(1, theme.DIVIDER)),
-            content=ft.Column([
-                theme.label("Распределение мест"),
-                ft.Text(
-                    f"Список появится после создания партий. "
-                    f"Всего мест — {self.total_seats}.",
-                    size=theme.fs(13), color=theme.NEUTRAL_600,
-                ),
-            ], spacing=14, tight=True),
+            content=theme.label("Распределение мест"),
         )
 
     # -- точечное обновление ------------------------------------------------
@@ -453,10 +428,7 @@ class ParlamentApp:
                 for party, seats in distribution
             ]
         else:
-            self.legend_row.controls = [
-                ft.Text("Места пока не распределены — вся схема серая.",
-                        size=theme.fs(13), color=theme.NEUTRAL_600)
-            ]
+            self.legend_row.controls = []
 
         largest = distribution[0] if distribution else None
         if largest and largest[1] >= self.majority_seats:
@@ -478,8 +450,7 @@ class ParlamentApp:
             self.progress.value = used / self.total_seats
             self.remaining_note.value = (
                 "Все места распределены." if remaining == 0 else
-                f"Осталось распределить {fmt.pluralize(remaining, fmt.SEATS)} — "
-                "на схеме они серые."
+                f"Осталось распределить {fmt.pluralize(remaining, fmt.SEATS)}."
             )
             self.remaining_note.color = (theme.NEUTRAL_700 if remaining == 0
                                          else theme.ACCENT_2_700)
@@ -725,72 +696,6 @@ class ParlamentApp:
             lambda settings: self.page.run_task(confirm, settings),
             lambda _e: self.close_dialog(),
         ))
-
-    # -- файл проекта -------------------------------------------------------
-
-    def new_project(self) -> None:
-        def confirm(_event) -> None:
-            try:
-                self.service.new_project()
-            except StoreError as error:
-                self.toast(str(error), error=True)
-                return
-            self.close_dialog()
-            self.selected_convocation_id = self.service.project.active_convocation.id
-            self.editing_archived = None
-            self.render()
-            self.toast("Создан новый проект.")
-
-        self.page.show_dialog(dialogs._shell(
-            "Новый проект",
-            [ft.Text("Начать новый проект?\n\nТекущий уже сохранён в своём файле — "
-                     "открыть его снова можно через «Файл → Открыть».",
-                     size=theme.fs(14), color=theme.TEXT)],
-            [theme.secondary_button("Отмена", lambda _e: self.close_dialog()),
-             theme.primary_button("Начать новый", confirm)],
-        ))
-
-    def open_project(self) -> None:
-        async def pick() -> None:
-            files = await self.file_picker.pick_files(
-                dialog_title="Открыть проект",
-                allowed_extensions=["json"],
-                allow_multiple=False,
-            )
-            if not files:
-                return
-            try:
-                self.service.open_project(files[0].path)
-            except StoreError as error:
-                self.toast(str(error), error=True)
-                return
-            self.selected_convocation_id = self.service.project.active_convocation.id
-            self.editing_archived = None
-            self.render()
-            self.toast(f"Открыт проект «{self.service.path.name}».")
-
-        self.page.run_task(pick)
-
-    def save_project_as(self) -> None:
-        async def pick() -> None:
-            suggested = ("Парламент.parlament.json" if self.service.is_default_project
-                         else self.service.path.name)
-            path = await self.file_picker.save_file(
-                dialog_title="Сохранить проект как",
-                file_name=suggested,
-                allowed_extensions=["json"],
-            )
-            if not path:
-                return
-            try:
-                self.service.save_project_as(path)
-            except StoreError as error:
-                self.toast(str(error), error=True)
-                return
-            self.render()
-            self.toast(f"Проект сохранён как «{self.service.path.name}».")
-
-        self.page.run_task(pick)
 
     # -- прочее -------------------------------------------------------------
 

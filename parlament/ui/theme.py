@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable
 
 import flet as ft
 
@@ -202,32 +201,6 @@ def secondary_button(text: str, on_click, disabled: bool = False,
         expand=expand,
         tooltip=tooltip,
         style=_button_style(ft.Colors.TRANSPARENT, TEXT, "#14201e1d", border=DIVIDER),
-    )
-
-
-def file_menu_button(items: list[tuple[str, Callable]]) -> ft.PopupMenuButton:
-    """Кнопка «Файл» — открывает и сохраняет проект. Выглядит как secondary_button,
-    но по клику показывает список действий, а не выполняет одно.
-
-    :param items: пары «подпись — обработчик» в порядке показа
-    """
-    return ft.PopupMenuButton(
-        content=ft.Container(
-            padding=ft.Padding.symmetric(horizontal=18, vertical=15),
-            content=ft.Text("Файл", size=fs(14), font_family=FONT_SEMIBOLD, color=TEXT),
-        ),
-        bgcolor=SURFACE,
-        shadow_color=ft.Colors.TRANSPARENT,
-        elevation=2,
-        shape=ft.RoundedRectangleBorder(radius=RADIUS),
-        padding=0,
-        items=[
-            ft.PopupMenuItem(
-                content=ft.Text(label, size=fs(13), color=TEXT),
-                on_click=lambda _e, h=handler: h(),
-            )
-            for label, handler in items
-        ],
     )
 
 
