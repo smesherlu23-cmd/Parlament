@@ -42,53 +42,17 @@ jobs:
           PYTHONIOENCODING: "utf-8"
         run: flet build windows --yes --no-rich-output
 
-      - name: Собрать один исполняемый файл
-        # flet build windows (как и любая Flutter-сборка) — это папка: exe
-        # плюс десяток DLL и папка data, ни один инструмент их в один файл
-        # без обёртки не склеит. Оборачиваем всю папку build/windows в
-        # самораспаковывающийся 7-Zip SFX: результат — один Parlament.exe.
-        # Без Progress и BeginPrompt — никакого окна «Установить?» и полосы
-        # распаковки: двойной клик тихо разворачивает файлы во временную
-        # папку и сразу открывает приложение, как обычный portable-exe, а
-        # не инсталлятор. 7-Zip с этим модулем уже стоит на windows-latest,
-        # ставить ничего не нужно.
+      - name: Упаковать сборку в архив
+        # Пробовали оборачивать build/windows в самораспаковывающийся 7-Zip
+        # SFX ради одного .exe — антивирусы (Defender, SmartScreen) массово
+        # палят такие файлы: «exe тихо распаковывает и запускает другой exe
+        # из временной папки» — это ровно поведенческая эвристика троянов-
+        # дропперов, даже без единой вредоносной строчки внутри. Обычный
+        # .zip той же папки не подходит под эту эвристику и не палится —
+        # он всё ещё один файл для скачивания, просто перед запуском exe
+        # внутри нужно распаковать самим.
         shell: pwsh
-        run: |
-          $sevenZip = "$Env:ProgramFiles\7-Zip\7z.exe"
-          $sfxModule = "$Env:ProgramFiles\7-Zip\7z.sfx"
-          if (-not (Test-Path $sevenZip)) { throw "7z.exe не найден: $sevenZip" }
-          if (-not (Test-Path $sfxModule)) { throw "7z.sfx не найден: $sfxModule" }
-
-          $buildRoot = (Resolve-Path "build/windows").Path
-          $mainExe = Get-ChildItem -Path $buildRoot -Filter "*.exe" -Recurse | Select-Object -First 1
-          if (-not $mainExe) { throw "В build/windows не нашлось ни одного .exe" }
-          $relPath = $mainExe.FullName.Substring($buildRoot.Length + 1)
-          Write-Host "Точка входа в архиве: $relPath"
-
-          $archive = Join-Path $PWD "app.7z"
-          Push-Location $buildRoot
-          & $sevenZip a -r $archive "*"
-          Pop-Location
-          if ($LASTEXITCODE -ne 0) { throw "7z не смог собрать архив" }
-
-          # Без here-string: у него закрывающий "@ обязан стоять в самом
-          # начале строки, а это меньше отступа, чем у блока `run: |` в
-          # YAML — такая строка преждевременно оборвала бы весь блок.
-          $configLines = @(
-            ';!@Install@!UTF-8!'
-            'Title="Парламент"'
-            'Progress="no"'
-            "RunProgram=`"$relPath`""
-            ';!@InstallEnd@!'
-          )
-          $configPath = "sfx-config.txt"
-          $config = $configLines -join "`r`n"
-          [System.IO.File]::WriteAllText($configPath, $config, (New-Object System.Text.UTF8Encoding($false)))
-
-          $output = "Parlament.exe"
-          cmd /c copy /b "$sfxModule" + "$configPath" + "$archive" "$output"
-          if ($LASTEXITCODE -ne 0) { throw "Сборка SFX не удалась" }
-          Write-Host "Готово: $output ($((Get-Item $output).Length) байт)"
+        run: Compress-Archive -Path build/windows/* -DestinationPath Parlament-windows.zip
 
       - name: Определить тег релиза
         id: tag
@@ -105,7 +69,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          gh release create "${{ steps.tag.outputs.tag }}" Parlament.exe \
+          gh release create "${{ steps.tag.outputs.tag }}" Parlament-windows.zip \
             --title "Парламент — Windows (${{ steps.tag.outputs.tag }})" \
-            --notes "Автосборка из коммита ${{ github.sha }} через flet build windows. Один файл — Parlament.exe: скачали, запустили — без установки и лишних окон." \
+            --notes "Автосборка из коммита ${{ github.sha }} через flet build windows. Один файл для скачивания — Parlament-windows.zip; внутри распакованное приложение, запускать exe оттуда." \
             --target "${{ github.sha }}"
