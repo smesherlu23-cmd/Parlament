@@ -24,9 +24,6 @@ from .export import LegendEntry, RESOLUTIONS, render_png, suggest_file_name
 from .parties_view import PartiesView
 from .seat_chart import SeatChart, chart_height_for_width
 
-#: Сколько последних вручную подобранных цветов показывать в диалоге партии.
-RECENT_COLORS_LIMIT = 3
-
 
 class ParlamentApp:
     """Окно приложения: шапка, три колонки, диалоги."""
@@ -38,11 +35,6 @@ class ParlamentApp:
         self.view = "parliament"                 # 'parliament' | 'parties'
         self.selected_convocation_id: str | None = None
         self.editing_archived: str | None = None
-
-        # Свои цвета, подобранные вручную за эту сессию (свежий слева) —
-        # чтобы для похожих партий подряд не открывать подбор заново.
-        # В файл проекта не пишется: это удобство интерфейса, а не данные игры.
-        self.recent_colors: list[str] = []
 
         self.file_picker = ft.FilePicker()
         self.body = ft.Container(expand=True)
@@ -84,6 +76,12 @@ class ParlamentApp:
     @property
     def parties(self) -> list[Party]:
         return self.service.project.parties
+
+    @property
+    def recent_colors(self) -> list[str]:
+        """Свои цвета, недавно подобранные вручную (свежий слева) — хранятся
+        в проекте, поэтому переживают перезапуск приложения."""
+        return self.service.project.recent_colors
 
     @property
     def convocations(self) -> list[Convocation]:
@@ -156,18 +154,9 @@ class ParlamentApp:
 
             right = [
                 theme.secondary_button("Партии", lambda _e: self.show_parties()),
-                theme.secondary_button(
-                    "Экспорт в PNG", lambda _e: self.export_png(),
-                    disabled=not has_parties,
-                ),
-                theme.primary_button("Править состав", lambda _e: self.edit_archived())
-                if archive_view else
-                theme.primary_button(
-                    "Новый созыв", lambda _e: self.new_convocation(),
-                    disabled=not has_parties,
-                    tooltip=None if has_parties else "Сначала создайте партии",
-                ),
             ]
+            if archive_view:
+                right.append(theme.primary_button("Править состав", lambda _e: self.edit_archived()))
 
         return ft.Container(
             bgcolor=theme.BG,
@@ -247,6 +236,7 @@ class ParlamentApp:
                 bgcolor=theme.ACCENT_100 if selected else ft.Colors.TRANSPARENT,
                 padding=ft.Padding.symmetric(horizontal=10, vertical=9),
                 border_radius=theme.RADIUS,
+                animate=ft.Animation(150, ft.AnimationCurve.EASE_OUT),
                 data=conv.id,
                 on_click=lambda e: self.select_convocation(e.control.data),
                 ink=True,
@@ -592,9 +582,7 @@ class ParlamentApp:
         color = color.lower()
         if color in theme.PALETTE:
             return   # уже есть готовым цветом в палитре — незачем дублировать
-        self.recent_colors = (
-            [color] + [c for c in self.recent_colors if c != color]
-        )[:RECENT_COLORS_LIMIT]
+        self.service.remember_recent_color(color)
 
     def delete_party(self, party: Party) -> None:
         usage = self.service.party_usage(party.id)

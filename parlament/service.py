@@ -23,6 +23,8 @@ from .model import (
 
 MAX_NAME_LENGTH = 120
 MAX_ABBR_LENGTH = 12
+#: Сколько последних вручную подобранных цветов хранить в проекте.
+RECENT_COLORS_LIMIT = 3
 
 
 class ValidationError(Exception):
@@ -201,6 +203,18 @@ class ParlamentService:
         self.project.remove_convocation(convocation_id)
         self._persist()
         return self.project.active_convocation
+
+    # -- свои цвета -----------------------------------------------------------
+
+    def remember_recent_color(self, color: str) -> None:
+        """Запоминает вручную подобранный цвет — свежий слева, без повторов;
+        хранится в проекте, поэтому переживает перезапуск приложения."""
+        color = self._clean_color(color)
+        colors = self.project.recent_colors
+        self.project.recent_colors = (
+            [color] + [c for c in colors if c != color]
+        )[:RECENT_COLORS_LIMIT]
+        self._persist()
 
     # -- состояние для интерфейса -------------------------------------------
 

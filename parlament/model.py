@@ -126,6 +126,9 @@ class Project:
     rows: int = 5
     parties: list[Party] = field(default_factory=list)
     convocations: list[Convocation] = field(default_factory=list)
+    #: Свои цвета, подобранные вручную в диалоге партии (свежий слева) —
+    #: чтобы для похожих партий подряд не открывать подбор заново.
+    recent_colors: list[str] = field(default_factory=list)
 
     @staticmethod
     def empty(total_seats: int = DEFAULT_TOTAL_SEATS) -> "Project":
@@ -145,6 +148,7 @@ class Project:
             "rows": self.rows,
             "parties": [p.to_dict() for p in self.parties],
             "convocations": [c.to_dict() for c in self.convocations],
+            "recentColors": list(self.recent_colors),
         }
 
     @staticmethod
@@ -168,8 +172,16 @@ class Project:
         if not convocations:
             convocations = [Convocation(id=new_id("c"), number=1, name=convocation_name(1))]
 
+        recent_colors: list[str] = []
+        for value in raw.get("recentColors") or []:
+            try:
+                recent_colors.append(normalize_color(value))
+            except ValueError:
+                continue
+
         project = Project(total_seats=total, rows=int(raw.get("rows") or 5),
-                          parties=parties, convocations=convocations)
+                          parties=parties, convocations=convocations,
+                          recent_colors=recent_colors)
         project.normalize()
         return project
 

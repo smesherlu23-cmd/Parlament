@@ -87,6 +87,16 @@ class TestAppBar(AppTestCase):
         self.assertIsNone(find(self.body, lambda c: isinstance(c, ft.PopupMenuButton)))
         self.assertNotIn("Файл", texts(self.body))
 
+    def test_no_duplicate_export_and_new_convocation_buttons(self):
+        # «Экспорт в PNG» и «Новый созыв» в шапке дублировали кнопки в правой
+        # и левой панелях — оставлены только там.
+        self.add_parties()
+        buttons = find_all(self.body, lambda c: isinstance(c, ft.Button))
+        self.assertEqual([b for b in buttons if b.content == "Экспорт в PNG"], [])
+        self.assertEqual([b for b in buttons if b.content == "Новый созыв"], [])
+        self.assertTrue(any(b.content == "Экспортировать в PNG" for b in buttons))
+        self.assertTrue(any(b.content == "+ Новый созыв" for b in buttons))
+
 
 class TestFirstRun(AppTestCase):
     def test_starts_with_one_empty_convocation(self):
@@ -111,7 +121,7 @@ class TestFirstRun(AppTestCase):
 
     def test_actions_disabled_without_parties(self):
         buttons = find_all(self.body, lambda c: isinstance(c, ft.Button))
-        new_convocation = [b for b in buttons if b.content == "Новый созыв"]
+        new_convocation = [b for b in buttons if b.content == "+ Новый созыв"]
         self.assertTrue(new_convocation and new_convocation[0].disabled)
 
     def test_chart_is_all_grey(self):
@@ -360,6 +370,16 @@ class TestRecentColors(AppTestCase):
     def test_palette_colors_are_not_remembered(self):
         self.app._remember_recent_color(theme.PALETTE[0])
         self.assertEqual(self.app.recent_colors, [])
+
+    def test_recent_colors_survive_app_restart(self):
+        self.app._remember_recent_color("#a1b2c3")
+
+        again_service = ParlamentService(self.path)
+        again_service.bootstrap()
+        again_app = ParlamentApp(FakePage(), again_service)
+        again_app.build()
+
+        self.assertEqual(again_app.recent_colors, ["#a1b2c3"])
 
 
 class TestConvocations(AppTestCase):

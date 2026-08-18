@@ -92,6 +92,7 @@ def party_dialog(page: ft.Page, party: Party | None, used_colors: int,
         width=theme.fs(_SWATCH_SIZE), height=theme.fs(_SWATCH_SIZE),
         bgcolor=start_color, border_radius=theme.RADIUS,
         border=ft.Border.all(1, "#1f000000"),
+        animate=ft.Animation(150, ft.AnimationCurve.EASE_OUT),
     )
     error = ft.Text("", size=theme.fs(12), color=theme.ACCENT_2_700, visible=False)
     palette_row = ft.Row(spacing=_SWATCH_GAP, wrap=True, run_spacing=_SWATCH_GAP)
@@ -136,6 +137,7 @@ def party_dialog(page: ft.Page, party: Party | None, used_colors: int,
             border_radius=theme.RADIUS,
             border=ft.Border.all(2 if selected else 1,
                                  theme.ACCENT if selected else "#1f000000"),
+            animate=ft.Animation(150, ft.AnimationCurve.EASE_OUT),
             tooltip=color,
             ink=True,
             on_click=lambda e: apply_color(e.control.data),

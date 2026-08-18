@@ -378,6 +378,35 @@ class TestPersistence(ServiceTestCase):
         self.assertEqual(leftovers, [])
 
 
+class TestRecentColors(ServiceTestCase):
+    def test_remembered_color_is_written_to_disk(self):
+        self.service.remember_recent_color("#a1b2c3")
+
+        reloaded = load(self.path)
+        self.assertEqual(reloaded.recent_colors, ["#a1b2c3"])
+
+    def test_survives_service_restart(self):
+        self.service.remember_recent_color("#a1b2c3")
+
+        again = ParlamentService(self.path)
+        again.bootstrap()
+        self.assertEqual(again.project.recent_colors, ["#a1b2c3"])
+
+    def test_capped_deduplicated_and_most_recent_first(self):
+        for color in ["#111111", "#222222", "#333333", "#444444"]:
+            self.service.remember_recent_color(color)
+        self.assertEqual(self.service.project.recent_colors,
+                          ["#444444", "#333333", "#222222"])
+
+        self.service.remember_recent_color("#222222")
+        self.assertEqual(self.service.project.recent_colors,
+                          ["#222222", "#444444", "#333333"])
+
+    def test_bad_color_rejected(self):
+        with self.assertRaises(ValidationError):
+            self.service.remember_recent_color("не цвет")
+
+
 class TestGameFlow(ServiceTestCase):
     """Сценарии 1-4 из ТЗ одним прогоном."""
 
