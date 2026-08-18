@@ -27,10 +27,10 @@ class PartiesView:
             content=ft.Column([
                 ft.Row([
                     ft.Text(fmt.pluralize(len(parties), fmt.PARTIES_COUNT),
-                            size=22, font_family=theme.FONT_SEMIBOLD, color=theme.TEXT),
+                            size=theme.fs(22), font_family=theme.FONT_SEMIBOLD, color=theme.TEXT),
                     ft.Text("Цвет и название обновляются во всех созывах, "
                             "где партия участвует.",
-                            size=13, color=theme.NEUTRAL_600),
+                            size=theme.fs(13), color=theme.NEUTRAL_600),
                 ], spacing=14, vertical_alignment=ft.CrossAxisAlignment.END),
                 ft.Container(content, expand=True, padding=ft.Padding.only(top=16)),
             ], spacing=0, expand=True),
@@ -41,7 +41,7 @@ class PartiesView:
 
         def header(text: str) -> ft.DataColumn:
             return ft.DataColumn(ft.Text(
-                text.upper(), size=11, color=theme.NEUTRAL_600,
+                text.upper(), size=theme.fs(11), color=theme.NEUTRAL_600,
                 style=ft.TextStyle(letter_spacing=0.9),
             ))
 
@@ -49,14 +49,13 @@ class PartiesView:
         for party in self.app.parties:
             rows.append(ft.DataRow(cells=[
                 ft.DataCell(theme.swatch(party.color, 20)),
-                ft.DataCell(ft.Text(party.name, size=14,
+                ft.DataCell(ft.Text(party.name, size=theme.fs(14),
                                     font_family=theme.FONT_SEMIBOLD, color=theme.TEXT)),
-                ft.DataCell(ft.Text(party.abbr or "—", size=14, color=theme.NEUTRAL_700)),
-                ft.DataCell(ft.Text(party.color.upper(), size=12.5,
+                ft.DataCell(ft.Text(party.color.upper(), size=theme.fs(12.5),
                                     font_family="monospace", color=theme.NEUTRAL_700)),
                 ft.DataCell(ft.Text(str(self._convocation_count(party.id)),
-                                    size=14, color=theme.NEUTRAL_700)),
-                ft.DataCell(ft.Text(str(seats_now.get(party.id, 0)), size=14, color=theme.TEXT)),
+                                    size=theme.fs(14), color=theme.NEUTRAL_700)),
+                ft.DataCell(ft.Text(str(seats_now.get(party.id, 0)), size=theme.fs(14), color=theme.TEXT)),
                 ft.DataCell(ft.Row([
                     theme.ghost_button("Изменить",
                                        lambda _e, p=party: self.app.edit_party(p)),
@@ -70,7 +69,6 @@ class PartiesView:
             columns=[
                 ft.DataColumn(ft.Text("")),
                 header("Название"),
-                header("Сокращение"),
                 header("Цвет"),
                 header("Созывов"),
                 header("Мест сейчас"),
@@ -78,8 +76,8 @@ class PartiesView:
             ],
             rows=rows,
             expand=True,                     # таблица во всю ширину экрана
-            heading_row_height=40,
-            data_row_min_height=48,
+            heading_row_height=44,
+            data_row_min_height=54,
             divider_thickness=0,             # линии рисуем сами, тоньше
             horizontal_lines=ft.BorderSide(1, "#14201e1d"),
             column_spacing=24,
@@ -90,7 +88,7 @@ class PartiesView:
                 ft.ControlState.DEFAULT: ft.Colors.TRANSPARENT,
                 ft.ControlState.HOVERED: "#0a201e1d",
             },
-            heading_text_style=ft.TextStyle(size=11, color=theme.NEUTRAL_600,
+            heading_text_style=ft.TextStyle(size=theme.fs(11), color=theme.NEUTRAL_600,
                                             letter_spacing=0.9),
         )
         # Row задаёт таблице ширину: сама по себе DataTable сжимается по
@@ -110,7 +108,7 @@ class PartiesView:
             content=ft.Column([
                 ft.Text("Справочник пуст. Начните с 3–6 партий — их можно будет "
                         "переименовать и перекрасить в любой момент.",
-                        size=14, color=theme.NEUTRAL_700, text_align=ft.TextAlign.CENTER),
+                        size=theme.fs(14), color=theme.NEUTRAL_700, text_align=ft.TextAlign.CENTER),
                 theme.primary_button("Новая партия", lambda _e: self.app.new_party()),
             ], spacing=16, horizontal_alignment=ft.CrossAxisAlignment.CENTER, tight=True),
         )

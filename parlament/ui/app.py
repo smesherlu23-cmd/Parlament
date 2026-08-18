@@ -124,7 +124,7 @@ class ParlamentApp:
         if self.view == "parties":
             left: list[ft.Control] = [
                 theme.ghost_button("← К парламенту", lambda _e: self.show_parliament()),
-                ft.Text("ПАРТИИ", size=13, font_family=theme.FONT_SEMIBOLD,
+                ft.Text("ПАРТИИ", size=theme.fs(13), font_family=theme.FONT_SEMIBOLD,
                         color=theme.TEXT, style=ft.TextStyle(letter_spacing=2.1)),
             ]
             right: list[ft.Control] = [
@@ -135,23 +135,27 @@ class ParlamentApp:
             archive_view = self.selected.is_fixed and not self.is_editable
 
             left = [
-                ft.Text("ПАРЛАМЕНТ", size=13, font_family=theme.FONT_SEMIBOLD,
+                ft.Text("ПАРЛАМЕНТ", size=theme.fs(13), font_family=theme.FONT_SEMIBOLD,
                         color=theme.TEXT, style=ft.TextStyle(letter_spacing=2.1)),
-                self._menu_bar(),
             ]
             if archive_view:
                 left.append(ft.Container(
                     bgcolor=theme.NEUTRAL_100,
                     padding=ft.Padding.symmetric(horizontal=10, vertical=3),
                     border_radius=1,
-                    content=ft.Text("Просмотр истории", size=11, color=theme.NEUTRAL_900),
+                    content=ft.Text("Просмотр истории", size=theme.fs(11), color=theme.NEUTRAL_900),
                 ))
             if not self.service.is_default_project:
-                left.append(ft.Text(self.service.path.name, size=12,
+                left.append(ft.Text(self.service.path.name, size=theme.fs(12),
                                     color=theme.NEUTRAL_600, no_wrap=True,
                                     tooltip=str(self.service.path)))
 
             right = [
+                theme.file_menu_button([
+                    ("Новый проект", self.new_project),
+                    ("Открыть…", self.open_project),
+                    ("Сохранить как…", self.save_project_as),
+                ]),
                 theme.secondary_button("Партии", lambda _e: self.show_parties()),
                 theme.secondary_button(
                     "Экспорт в PNG", lambda _e: self.export_png(),
@@ -177,54 +181,6 @@ class ParlamentApp:
             ),
         )
 
-    def _menu_bar(self) -> ft.Control:
-        def item(label: str, handler) -> ft.MenuItemButton:
-            return ft.MenuItemButton(
-                content=ft.Text(label, size=13, color=theme.TEXT),
-                on_click=lambda _e: handler(),
-                style=ft.ButtonStyle(
-                    bgcolor={ft.ControlState.HOVERED: theme.ACCENT_100},
-                    shape=ft.RoundedRectangleBorder(radius=theme.RADIUS),
-                ),
-            )
-
-        def submenu(label: str, items: list[ft.Control]) -> ft.SubmenuButton:
-            return ft.SubmenuButton(
-                content=ft.Text(label, size=13, color=theme.NEUTRAL_700),
-                controls=items,
-                style=ft.ButtonStyle(
-                    bgcolor={ft.ControlState.HOVERED: theme.ACCENT_100},
-                    shape=ft.RoundedRectangleBorder(radius=theme.RADIUS),
-                ),
-            )
-
-        return ft.MenuBar(
-            expand=False,
-            style=ft.MenuStyle(
-                bgcolor=theme.BG,
-                elevation=0,
-                shape=ft.RoundedRectangleBorder(radius=theme.RADIUS),
-                padding=0,
-            ),
-            controls=[
-                submenu("Файл", [
-                    item("Новый проект", self.new_project),
-                    item("Открыть…", self.open_project),
-                    item("Сохранить как…", self.save_project_as),
-                    item("Экспортировать в PNG…", self.export_png),
-                ]),
-                submenu("Правка", [
-                    item("Новая партия", self.new_party),
-                    item("Справочник партий", self.show_parties),
-                    item("Новый созыв", self.new_convocation),
-                    item("Сбросить распределение", self.reset_seats),
-                ]),
-                submenu("Справка", [
-                    item("Как пользоваться", self.show_help),
-                ]),
-            ],
-        )
-
     # -- главный экран ------------------------------------------------------
 
     def _build_parliament(self) -> ft.Control:
@@ -234,9 +190,9 @@ class ParlamentApp:
         self.chart = SeatChart(self.total_seats, self.service.project.rows,
                                [(p.color, s) for p, s in self.distribution(conv)])
         self.legend_row = ft.Row(wrap=True, spacing=26, run_spacing=8)
-        self.majority_text = ft.Text(size=12)
+        self.majority_text = ft.Text(size=theme.fs(12))
         self.conv_list = ft.Column(spacing=6, tight=True)
-        self.stage_meta = ft.Text(size=13, color=theme.NEUTRAL_700)
+        self.stage_meta = ft.Text(size=theme.fs(13), color=theme.NEUTRAL_700)
 
         center = self._build_stage(conv) if has_parties else self._build_empty_stage()
         right = self._build_seat_rail(conv) if has_parties else self._build_empty_rail()
@@ -282,17 +238,10 @@ class ParlamentApp:
                 on_click=lambda e: self.select_convocation(e.control.data),
                 ink=True,
                 content=ft.Column([
-                    ft.Row([
-                        ft.Container(
-                            ft.Text(conv.name, size=14, font_family=theme.FONT_SEMIBOLD,
-                                    color=theme.TEXT, no_wrap=True),
-                            expand=True,
-                        ),
-                        ft.Text(fmt.short_date(conv.fixed_at), size=11,
-                                color=theme.NEUTRAL_600),
-                    ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.END),
+                    ft.Text(conv.name, size=theme.fs(14), font_family=theme.FONT_SEMIBOLD,
+                            color=theme.TEXT, no_wrap=True),
                     dialogs.seat_bar(self.bar_segments(conv)),
-                    ft.Text(note, size=11,
+                    ft.Text(note, size=theme.fs(11),
                             color=theme.ACCENT_700 if not conv.is_fixed else theme.NEUTRAL_600),
                 ], spacing=6, tight=True),
             ))
@@ -304,9 +253,6 @@ class ParlamentApp:
         head: list[ft.Control] = [theme.heading(conv.name)]
         if self.is_editable:
             head.append(theme.ghost_button("Переименовать", lambda _e: self.rename_convocation()))
-        else:
-            head.append(ft.Text(f"зафиксирован {fmt.short_date(conv.fixed_at)}",
-                                size=13, color=theme.NEUTRAL_600))
         head.extend([ft.Container(expand=True), self.stage_meta])
 
         return ft.Container(
@@ -321,7 +267,7 @@ class ParlamentApp:
                     padding=ft.Padding.only(top=14),
                     content=ft.Row([
                         ft.Text(f"Большинство — {fmt.pluralize(self.majority_seats, fmt.SEATS)}.",
-                                size=12, color=theme.NEUTRAL_600),
+                                size=theme.fs(12), color=theme.NEUTRAL_600),
                         self.majority_text,
                     ], spacing=10),
                 ),
@@ -338,19 +284,11 @@ class ParlamentApp:
                               opacity=0.5, height=chart_height_for_width(560)),
                     width=560,
                 ),
-                ft.Text("Партий пока нет", size=22, font_family=theme.FONT_SEMIBOLD,
+                ft.Text("Партий пока нет", size=theme.fs(22), font_family=theme.FONT_SEMIBOLD,
                         color=theme.TEXT),
-                ft.Container(
-                    width=420,
-                    content=ft.Text(
-                        f"Создайте 3–6 партий с названиями и цветами — и распределите "
-                        f"между ними {self.total_seats} мест первого состава.",
-                        size=14, color=theme.NEUTRAL_700, text_align=ft.TextAlign.CENTER,
-                    ),
-                ),
-                theme.primary_button("Создать первую партию", lambda _e: self.new_party()),
+                theme.primary_button("Создать первую партию", lambda _e: self.show_parties()),
             ],
-                spacing=6,
+                spacing=16,
                 alignment=ft.MainAxisAlignment.CENTER,
                 horizontal_alignment=ft.CrossAxisAlignment.CENTER,
             ),
@@ -377,18 +315,18 @@ class ParlamentApp:
             rows.append(ft.Row([
                 theme.swatch(party.color, 12),
                 ft.Container(
-                    ft.Text(party.name, size=14, color=theme.TEXT, no_wrap=True,
+                    ft.Text(party.name, size=theme.fs(14), color=theme.TEXT, no_wrap=True,
                             overflow=ft.TextOverflow.ELLIPSIS, tooltip=party.name),
                     expand=True,
                 ),
                 field,
             ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER))
 
-        self.used_text = ft.Text(size=16, font_family=theme.FONT_SEMIBOLD, color=theme.TEXT)
-        self.remaining_text = ft.Text(size=16, font_family=theme.FONT_SEMIBOLD)
+        self.used_text = ft.Text(size=theme.fs(16), font_family=theme.FONT_SEMIBOLD, color=theme.TEXT)
+        self.remaining_text = ft.Text(size=theme.fs(16), font_family=theme.FONT_SEMIBOLD)
         self.progress = ft.ProgressBar(bgcolor=theme.NEUTRAL_300, color=theme.ACCENT,
                                        height=6, border_radius=0, value=0)
-        self.remaining_note = ft.Text(size=12)
+        self.remaining_note = ft.Text(size=theme.fs(12))
         self.reset_button = theme.secondary_button(
             "Сбросить распределение", lambda _e: self.reset_seats(), expand=True)
 
@@ -407,10 +345,10 @@ class ParlamentApp:
                     padding=ft.Padding.only(top=14),
                     border=ft.Border.only(top=ft.BorderSide(1, theme.DIVIDER)),
                     content=ft.Column([
-                        ft.Row([ft.Text("Распределено", size=13, color=theme.NEUTRAL_700),
+                        ft.Row([ft.Text("Распределено", size=theme.fs(13), color=theme.NEUTRAL_700),
                                 ft.Container(expand=True), self.used_text],
                                vertical_alignment=ft.CrossAxisAlignment.END),
-                        ft.Row([ft.Text("Остаток", size=13, color=theme.NEUTRAL_700),
+                        ft.Row([ft.Text("Остаток", size=theme.fs(13), color=theme.NEUTRAL_700),
                                 ft.Container(expand=True), self.remaining_text],
                                vertical_alignment=ft.CrossAxisAlignment.END),
                         self.progress,
@@ -435,9 +373,9 @@ class ParlamentApp:
                 border=ft.Border.only(bottom=ft.BorderSide(1, "#14201e1d")),
                 content=ft.Row([
                     theme.swatch(party.color, 12),
-                    ft.Container(ft.Text(party.name, size=14, color=theme.TEXT, no_wrap=True),
+                    ft.Container(ft.Text(party.name, size=theme.fs(14), color=theme.TEXT, no_wrap=True),
                                  expand=True),
-                    ft.Text(str(seats), size=15, font_family=theme.FONT_SEMIBOLD,
+                    ft.Text(str(seats), size=theme.fs(15), font_family=theme.FONT_SEMIBOLD,
                             color=theme.TEXT),
                 ], spacing=10),
             )
@@ -445,7 +383,7 @@ class ParlamentApp:
         ]
         if not rows:
             rows = [ft.Text("В этом созыве места не распределялись.",
-                            size=12, color=theme.NEUTRAL_600)]
+                            size=theme.fs(12), color=theme.NEUTRAL_600)]
 
         return ft.Container(
             width=theme.RAIL_RIGHT_WIDTH,
@@ -461,7 +399,7 @@ class ParlamentApp:
                 ft.Text(
                     "Прошлые составы можно править: нажмите «Править состав» — "
                     "изменения сохранятся в этом же созыве.",
-                    size=12, color=theme.NEUTRAL_600,
+                    size=theme.fs(12), color=theme.NEUTRAL_600,
                 ),
                 ft.Container(
                     padding=ft.Padding.only(top=18),
@@ -481,7 +419,7 @@ class ParlamentApp:
                 ft.Text(
                     f"Список появится после создания партий. "
                     f"Всего мест — {self.total_seats}.",
-                    size=13, color=theme.NEUTRAL_600,
+                    size=theme.fs(13), color=theme.NEUTRAL_600,
                 ),
             ], spacing=14, tight=True),
         )
@@ -506,10 +444,10 @@ class ParlamentApp:
             self.legend_row.controls = [
                 ft.Row([
                     theme.swatch(party.color, 11),
-                    ft.Text(party.name, size=13, color=theme.TEXT),
-                    ft.Text(str(seats), size=13, font_family=theme.FONT_SEMIBOLD,
+                    ft.Text(party.name, size=theme.fs(13), color=theme.TEXT),
+                    ft.Text(str(seats), size=theme.fs(13), font_family=theme.FONT_SEMIBOLD,
                             color=theme.TEXT),
-                    ft.Text(fmt.percent(seats, self.total_seats), size=13,
+                    ft.Text(fmt.percent(seats, self.total_seats), size=theme.fs(13),
                             color=theme.NEUTRAL_600),
                 ], spacing=8, tight=True)
                 for party, seats in distribution
@@ -517,7 +455,7 @@ class ParlamentApp:
         else:
             self.legend_row.controls = [
                 ft.Text("Места пока не распределены — вся схема серая.",
-                        size=13, color=theme.NEUTRAL_600)
+                        size=theme.fs(13), color=theme.NEUTRAL_600)
             ]
 
         largest = distribution[0] if distribution else None
@@ -635,12 +573,14 @@ class ParlamentApp:
         self._open_party_dialog(party)
 
     def _open_party_dialog(self, party: Party | None) -> None:
-        def save(name: str, color: str, abbr: str) -> str | None:
+        def save(name: str, color: str) -> str | None:
             try:
                 if party:
-                    self.service.update_party(party.id, name=name, color=color, abbr=abbr)
+                    # Сокращение больше не редактируется в этом диалоге —
+                    # то, что уже было сохранено, остаётся как есть.
+                    self.service.update_party(party.id, name=name, color=color, abbr=party.abbr)
                 else:
-                    self.service.create_party(name=name, color=color, abbr=abbr)
+                    self.service.create_party(name=name, color=color)
             except (ValidationError, StoreError) as error:
                 return str(error)
 
@@ -735,7 +675,7 @@ class ParlamentApp:
             "Сбросить распределение",
             [ft.Text(f"Обнулить места в составе «{conv.name}»?\n\n"
                      "Партии останутся в справочнике, все места станут "
-                     "нераспределёнными.", size=14, color=theme.TEXT)],
+                     "нераспределёнными.", size=theme.fs(14), color=theme.TEXT)],
             [theme.secondary_button("Отмена", lambda _e: self.close_dialog()),
              theme.primary_button("Сбросить", confirm, danger=True)],
         ))
@@ -805,7 +745,7 @@ class ParlamentApp:
             "Новый проект",
             [ft.Text("Начать новый проект?\n\nТекущий уже сохранён в своём файле — "
                      "открыть его снова можно через «Файл → Открыть».",
-                     size=14, color=theme.TEXT)],
+                     size=theme.fs(14), color=theme.TEXT)],
             [theme.secondary_button("Отмена", lambda _e: self.close_dialog()),
              theme.primary_button("Начать новый", confirm)],
         ))
@@ -854,16 +794,12 @@ class ParlamentApp:
 
     # -- прочее -------------------------------------------------------------
 
-    def show_help(self) -> None:
-        self.page.show_dialog(dialogs.help_dialog(self.total_seats,
-                                                  lambda _e: self.close_dialog()))
-
     def close_dialog(self) -> None:
         self.page.pop_dialog()
 
     def toast(self, message: str, error: bool = False) -> None:
         self.page.show_dialog(ft.SnackBar(
-            content=ft.Text(message, size=13, color=theme.BG),
+            content=ft.Text(message, size=theme.fs(13), color=theme.BG),
             bgcolor=theme.ACCENT_2_700 if error else theme.NEUTRAL_900,
             duration=6000 if error else 4000,
             behavior=ft.SnackBarBehavior.FLOATING,

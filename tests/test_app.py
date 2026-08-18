@@ -75,6 +75,25 @@ class AppTestCase(unittest.TestCase):
         return self.page.controls[0]
 
 
+class TestAppBar(AppTestCase):
+    """Электроновский ряд «Файл · Правка · Справка» убран; операции с файлом
+    проекта переехали в компактное выпадающее меню «Файл»."""
+
+    def test_no_leftover_menu_bar(self):
+        self.assertIsNone(find(self.body, lambda c: isinstance(c, ft.MenuBar)))
+
+    def test_file_menu_offers_project_actions(self):
+        menu = find(self.body, lambda c: isinstance(c, ft.PopupMenuButton))
+        self.assertIsNotNone(menu)
+        self.assertEqual([t for item in menu.items for t in texts(item)],
+                         ["Новый проект", "Открыть…", "Сохранить как…"])
+
+    def test_file_menu_new_project_opens_confirmation(self):
+        menu = find(self.body, lambda c: isinstance(c, ft.PopupMenuButton))
+        menu.items[0].on_click(None)
+        self.assertEqual(self.page.dialog.title.value, "Новый проект")
+
+
 class TestFirstRun(AppTestCase):
     def test_starts_with_one_empty_convocation(self):
         self.assertEqual(len(self.app.convocations), 1)
@@ -84,8 +103,17 @@ class TestFirstRun(AppTestCase):
     def test_empty_state_copy(self):
         shown = texts(self.body)
         self.assertIn("Партий пока нет", shown)
-        self.assertTrue(any("Создайте 3–6 партий" in t for t in shown))
+        # Поясняющий абзац убран — заголовок и кнопка говорят всё нужное сами.
+        self.assertFalse(any("Создайте 3–6 партий" in t for t in shown))
         self.assertTrue(any("Список появится после создания партий" in t for t in shown))
+
+    def test_empty_state_button_opens_parties_screen(self):
+        # Кнопка не открывает диалог создания партии, а просто ведёт
+        # в справочник — там уже есть кнопка «Новая партия».
+        find(self.body, lambda c: isinstance(c, ft.Button)
+             and c.content == "Создать первую партию").on_click(None)
+        self.assertEqual(self.app.view, "parties")
+        self.assertIsNone(self.page.dialog)
 
     def test_actions_disabled_without_parties(self):
         buttons = find_all(self.body, lambda c: isinstance(c, ft.Button))
@@ -185,8 +213,7 @@ class TestParties(AppTestCase):
         dialog = self.page.dialog
         fields = find_all(dialog, lambda c: isinstance(c, ft.TextField))
         fields[0].value = "Народный союз"
-        fields[1].value = "НС"
-        fields[2].value = "#0088B0"
+        fields[1].value = "#0088B0"
 
         find(dialog, lambda c: isinstance(c, ft.Button) and c.content == "Сохранить").on_click(None)
 
@@ -211,7 +238,7 @@ class TestParties(AppTestCase):
         dialog = self.page.dialog
         fields = find_all(dialog, lambda c: isinstance(c, ft.TextField))
         fields[0].value = "Партия"
-        fields[2].value = "синий"
+        fields[1].value = "синий"
         find(dialog, lambda c: isinstance(c, ft.Button) and c.content == "Сохранить").on_click(None)
 
         self.assertEqual(len(self.app.parties), 0)
@@ -225,7 +252,7 @@ class TestParties(AppTestCase):
         dialog = self.page.dialog
         fields = find_all(dialog, lambda c: isinstance(c, ft.TextField))
         fields[0].value = "Новый союз"
-        fields[2].value = "#5B4B8A"
+        fields[1].value = "#5B4B8A"
         find(dialog, lambda c: isinstance(c, ft.Button) and c.content == "Сохранить").on_click(None)
 
         updated = self.service.project.party(party.id)
@@ -266,7 +293,6 @@ class TestParties(AppTestCase):
         self.assertIn("7 партий", shown)
         self.assertIn("Народный союз", shown)
         self.assertIn("#0088B0", shown)          # HEX в таблице
-        self.assertIn("НС", shown)
 
     def test_directory_counts_convocations(self):
         self.distribute()
@@ -357,6 +383,15 @@ class TestConvocations(AppTestCase):
         self.assertIn("Первый состав", shown)
         self.assertIn("Редактируется", shown)
         self.assertIn("120 из 120 мест", shown)
+        # Дат и времени фиксации в карточках больше нет.
+        self.assertNotIn("сейчас", shown)
+
+    def test_stage_header_has_no_fixed_date(self):
+        self.distribute()
+        first_id = self.app.selected.id
+        self.fix_current()
+        self.app.select_convocation(first_id)
+        self.assertFalse(any("зафиксирован" in t for t in texts(self.body)))
 
     def test_new_convocation_needs_parties(self):
         self.app.new_convocation()

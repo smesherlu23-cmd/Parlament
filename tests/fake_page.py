@@ -75,7 +75,7 @@ class FakePage:
 
 
 #: Поля, в которых Flet держит вложенные контролы.
-_CHILD_FIELDS = ("content", "controls", "actions", "rows", "columns", "cells", "title")
+_CHILD_FIELDS = ("content", "controls", "actions", "rows", "columns", "cells", "title", "items")
 
 
 def walk(control) -> list:

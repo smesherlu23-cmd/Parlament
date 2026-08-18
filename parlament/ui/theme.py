@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Callable
 
 import flet as ft
 
@@ -36,11 +37,36 @@ NEUTRAL_900 = "#2d2b2b"
 
 EMPTY_SEAT = NEUTRAL_300
 
-#: Готовая палитра для новых партий — восемь различимых рядом цветов.
+#: Готовая палитра для новых партий: восемь фирменных цветов системы
+#: (акценты и цвета партий из макетов) плюс дополненные ими промежуточные
+#: оттенки — так в палитре редко приходится доходить до своего цвета.
 PALETTE = [
     "#0088b0", "#d6006c", "#4c7a34", "#edbb00",
     "#2d2b2b", "#b3541e", "#7d7979", "#5b4b8a",
 ]
+
+
+def _generate_extra_swatches(count: int) -> list[str]:
+    """Довешивает к фирменным цветам равномерно разнесённые по тону оттенки —
+    та же насыщенность/светлота, что и у остальной палитры, так что новые
+    цвета не выбиваются из неё."""
+    import colorsys
+
+    used_hues = sorted(colorsys.rgb_to_hls(
+        int(c[1:3], 16) / 255, int(c[3:5], 16) / 255, int(c[5:7], 16) / 255,
+    )[0] for c in PALETTE)
+
+    extra = []
+    for i in range(count):
+        # Каждый новый оттенок — подальше от уже занятых (золотое сечение
+        # уводит серию от повторов лучше, чем равный шаг).
+        hue = (used_hues[0] + (i + 1) * 0.618_034) % 1.0
+        r, g, b = colorsys.hls_to_rgb(hue, 0.42, 0.55)
+        extra.append("#{:02x}{:02x}{:02x}".format(round(r * 255), round(g * 255), round(b * 255)))
+    return extra
+
+
+PALETTE = PALETTE + _generate_extra_swatches(8)
 
 # -- шрифт ------------------------------------------------------------------
 
@@ -66,6 +92,16 @@ WINDOW_WIDTH = 1300
 WINDOW_HEIGHT = 820
 WINDOW_MIN_WIDTH = 1080
 WINDOW_MIN_HEIGHT = 700
+
+#: Макет верстался как веб-страница; тот же px на десктопном окне читается
+#: мелко — все текстовые размеры проходят через этот множитель.
+FONT_SCALE = 1.2
+
+
+def fs(px: float) -> int:
+    """Масштабированный размер текста (и парных с ним элементов — маркеров,
+    квадратиков-образцов цвета)."""
+    return round(px * FONT_SCALE)
 
 
 def build_theme() -> ft.Theme:
@@ -96,7 +132,7 @@ def label(text: str) -> ft.Text:
     """Заголовок панели: «СОЗЫВЫ», «РАСПРЕДЕЛЕНИЕ МЕСТ»."""
     return ft.Text(
         text.upper(),
-        size=11,
+        size=fs(11),
         color=NEUTRAL_600,
         weight=ft.FontWeight.W_400,
         # letter-spacing .1em из макета
@@ -105,14 +141,15 @@ def label(text: str) -> ft.Text:
 
 
 def heading(text: str, size: int = 26) -> ft.Text:
-    return ft.Text(text, size=size, font_family=FONT_SEMIBOLD, color=TEXT, no_wrap=True)
+    return ft.Text(text, size=fs(size), font_family=FONT_SEMIBOLD, color=TEXT, no_wrap=True)
 
 
 def swatch(color: str, size: int = 12) -> ft.Container:
     """Квадратик цвета партии — легенда, списки, таблица."""
+    scaled = fs(size)
     return ft.Container(
-        width=size,
-        height=size,
+        width=scaled,
+        height=scaled,
         bgcolor=color,
         border=ft.Border.all(1, "#1f000000"),
     )
@@ -133,8 +170,8 @@ def _button_style(bgcolor: str, color: str, hover: str,
         overlay_color=hover,
         side=ft.BorderSide(1, border) if border else None,
         shape=ft.RoundedRectangleBorder(radius=RADIUS),
-        padding=ft.Padding.symmetric(horizontal=padding_h, vertical=14),
-        text_style=ft.TextStyle(size=14, font_family=FONT_SEMIBOLD),
+        padding=ft.Padding.symmetric(horizontal=padding_h, vertical=15),
+        text_style=ft.TextStyle(size=fs(14), font_family=FONT_SEMIBOLD),
         elevation=0,
         shadow_color=ft.Colors.TRANSPARENT,
     )
@@ -168,6 +205,32 @@ def secondary_button(text: str, on_click, disabled: bool = False,
     )
 
 
+def file_menu_button(items: list[tuple[str, Callable]]) -> ft.PopupMenuButton:
+    """Кнопка «Файл» — открывает и сохраняет проект. Выглядит как secondary_button,
+    но по клику показывает список действий, а не выполняет одно.
+
+    :param items: пары «подпись — обработчик» в порядке показа
+    """
+    return ft.PopupMenuButton(
+        content=ft.Container(
+            padding=ft.Padding.symmetric(horizontal=18, vertical=15),
+            content=ft.Text("Файл", size=fs(14), font_family=FONT_SEMIBOLD, color=TEXT),
+        ),
+        bgcolor=SURFACE,
+        shadow_color=ft.Colors.TRANSPARENT,
+        elevation=2,
+        shape=ft.RoundedRectangleBorder(radius=RADIUS),
+        padding=0,
+        items=[
+            ft.PopupMenuItem(
+                content=ft.Text(label, size=fs(13), color=TEXT),
+                on_click=lambda _e, h=handler: h(),
+            )
+            for label, handler in items
+        ],
+    )
+
+
 def ghost_button(text: str, on_click, danger: bool = False,
                  disabled: bool = False, tooltip: str | None = None) -> ft.Button:
     """Текстовое действие без рамки — «Переименовать», «Изменить», «Удалить»."""
@@ -198,16 +261,16 @@ def text_field(value: str = "", width: int | None = None, hint: str = "",
         text_align=text_align or ft.TextAlign.LEFT,
         keyboard_type=ft.KeyboardType.NUMBER if keyboard_numeric else None,
         text_style=ft.TextStyle(
-            size=14,
+            size=fs(14),
             font_family="monospace" if monospace else FONT_FAMILY,
             color=TEXT,
         ),
-        label_style=ft.TextStyle(size=12, color=NEUTRAL_700),
-        hint_style=ft.TextStyle(size=14, color=NEUTRAL_600),
+        label_style=ft.TextStyle(size=fs(12), color=NEUTRAL_700),
+        hint_style=ft.TextStyle(size=fs(14), color=NEUTRAL_600),
         bgcolor=SURFACE,
         filled=True,
         dense=True,
-        content_padding=ft.Padding.symmetric(horizontal=10, vertical=12),
+        content_padding=ft.Padding.symmetric(horizontal=10, vertical=13),
         border_radius=RADIUS,
         border_color=DIVIDER,
         focused_border_color=ACCENT,

@@ -1,13 +1,6 @@
-"""Форматирование строк интерфейса: склонения, проценты, даты."""
+"""Форматирование строк интерфейса: склонения, проценты."""
 
 from __future__ import annotations
-
-from datetime import datetime
-
-MONTHS_GENITIVE = [
-    "января", "февраля", "марта", "апреля", "мая", "июня",
-    "июля", "августа", "сентября", "октября", "ноября", "декабря",
-]
 
 SEATS = ["место", "места", "мест"]
 PARTIES = ["партия", "партии", "партий"]
@@ -38,14 +31,3 @@ def percent(value: int, total: int) -> str:
     if not total:
         return "0,0 %"
     return f"{value / total * 100:.1f}".replace(".", ",") + " %"
-
-
-def short_date(iso: str | None) -> str:
-    """«12 марта» для зафиксированного созыва, «сейчас» для открытого."""
-    if not iso:
-        return "сейчас"
-    try:
-        date = datetime.fromisoformat(iso)
-    except ValueError:
-        return ""
-    return f"{date.day} {MONTHS_GENITIVE[date.month - 1]}"
