@@ -11,6 +11,7 @@
     "start": "electron .",
     "test": "python -m unittest discover -s backend/tests",
     "test:ui": "electron tests/ui-smoke.js",
+    "test:menus": "electron tests/menu-smoke.js",
     "build:backend": "pyinstaller --clean --noconfirm --distpath build/dist --workpath build/work build/backend.spec",
     "dist": "npm run build:backend && electron-builder --win",
     "pack": "electron-builder --win --dir"
