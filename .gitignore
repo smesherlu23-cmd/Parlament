@@ -1,16 +1,13 @@
-# Node / Electron
-node_modules/
-dist/
-out/
-npm-debug.log*
-
 # Python
 __pycache__/
 *.py[cod]
-build/dist/
-build/work/
-*.spec.bak
 .venv/
+venv/
+*.egg-info/
 
-# Локальные данные и артефакты сборки
+# Сборка Flet
+build/
+dist/
+
+# Локальные данные
 *.local.json

@@ -1,0 +1,18 @@
+[project]
+name = "parlament"
+version = "1.0.0"
+description = "Визуализация состава парламента для ролевой игры: партии, созывы, полукруглая схема на 120 мест и экспорт в PNG."
+requires-python = ">=3.10"
+dependencies = [
+    "flet==0.86.5",
+    "pillow>=10.0",
+]
+
+[tool.flet]
+product = "Парламент"
+company = "Parlament"
+copyright = "MIT"
+
+[tool.flet.app]
+path = "."
+module = "main"

@@ -1,0 +1,312 @@
+"""Тесты бизнес-логики: валидация мест, справочник партий, созывы, файл."""
+
+from __future__ import annotations
+
+import json
+import sys
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from parlament import ParlamentService, ValidationError  # noqa: E402
+from parlament.model import Project, convocation_name, normalize_color  # noqa: E402
+from parlament.store import StoreError, load, save  # noqa: E402
+
+
+class ServiceTestCase(unittest.TestCase):
+    """Общая заготовка: сервис на временном файле и пара партий."""
+
+    def setUp(self):
+        import tempfile
+
+        self._dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        self.path = Path(self._dir.name) / "проект.parlament.json"
+        self.service = ParlamentService(self.path)
+        self.service.bootstrap()
+
+    def party(self, name="Народный союз", color="#0088b0", abbr="НС"):
+        return self.service.create_party(name=name, color=color, abbr=abbr)
+
+    @property
+    def active_id(self):
+        return self.service.project.active_convocation.id
+
+
+class TestColorNormalisation(unittest.TestCase):
+    def test_accepts_common_forms(self):
+        for value in ("#3A7CA5", "3A7CA5", "#3a7ca5"):
+            self.assertEqual(normalize_color(value), "#3a7ca5")
+
+    def test_expands_shorthand(self):
+        self.assertEqual(normalize_color("#abc"), "#aabbcc")
+
+    def test_rejects_garbage(self):
+        for value in ("", "не цвет", "#12345", "#gggggg"):
+            with self.assertRaises(ValueError):
+                normalize_color(value)
+
+
+class TestConvocationNaming(unittest.TestCase):
+    def test_ordinal_names(self):
+        self.assertEqual(convocation_name(1), "Первый состав")
+        self.assertEqual(convocation_name(3), "Третий состав")
+        self.assertEqual(convocation_name(20), "Двадцатый состав")
+
+    def test_falls_back_to_number(self):
+        self.assertEqual(convocation_name(21), "21-й состав")
+
+
+class TestParties(ServiceTestCase):
+    def test_create_normalises_input(self):
+        party = self.service.create_party(name="  Партия труда ", color="D6006C", abbr=" ПТ ")
+        self.assertEqual(party.name, "Партия труда")
+        self.assertEqual(party.color, "#d6006c")
+        self.assertEqual(party.abbr, "ПТ")
+
+    def test_empty_name_rejected(self):
+        with self.assertRaises(ValidationError):
+            self.service.create_party(name="   ", color="#0088b0")
+
+    def test_bad_color_rejected(self):
+        with self.assertRaises(ValidationError):
+            self.service.create_party(name="Партия", color="синий")
+
+    def test_update_propagates_everywhere(self):
+        # Сценарий 6 из ТЗ: партия переименовалась по ходу игры.
+        party = self.party()
+        self.service.set_seats(self.active_id, party.id, 40)
+        self.service.update_party(party.id, name="Новый союз", color="#4c7a34", abbr="НС")
+
+        stored = self.service.project.party(party.id)
+        self.assertEqual(stored.name, "Новый союз")
+        self.assertEqual(stored.color, "#4c7a34")
+        # Места остались за той же партией — ничего не потерялось.
+        self.assertEqual(self.service.project.active_convocation.seats[party.id], 40)
+
+    def test_delete_frees_seats_in_every_convocation(self):
+        keep, drop = self.party(), self.party(name="Аграрный блок", color="#4c7a34")
+        self.service.set_seats(self.active_id, keep.id, 30)
+        self.service.set_seats(self.active_id, drop.id, 20)
+        self.service.fix_convocation()
+        self.service.set_seats(self.active_id, drop.id, 15)
+
+        self.service.delete_party(drop.id)
+
+        self.assertIsNone(self.service.project.party(drop.id))
+        for conv in self.service.project.convocations:
+            self.assertNotIn(drop.id, conv.seats)
+        # Соседняя партия не пострадала.
+        self.assertEqual(self.service.project.convocations[0].seats[keep.id], 30)
+
+    def test_usage_lists_affected_convocations(self):
+        party = self.party()
+        self.service.set_seats(self.active_id, party.id, 16)
+        self.service.fix_convocation()
+        self.service.set_seats(self.active_id, party.id, 18)
+
+        usage = self.service.party_usage(party.id)
+        self.assertEqual([u["seats"] for u in usage], [16, 18])
+        self.assertEqual(usage[0]["convocationName"], "Первый состав")
+
+    def test_delete_unknown_party_rejected(self):
+        with self.assertRaises(ValidationError):
+            self.service.delete_party("нет-такой")
+
+
+class TestSeatValidation(ServiceTestCase):
+    def test_seats_are_stored(self):
+        party = self.party()
+        self.service.set_seats(self.active_id, party.id, 61)
+        self.assertEqual(self.service.project.active_convocation.seats[party.id], 61)
+
+    def test_zero_removes_the_entry(self):
+        party = self.party()
+        self.service.set_seats(self.active_id, party.id, 10)
+        self.service.set_seats(self.active_id, party.id, 0)
+        self.assertEqual(self.service.project.active_convocation.seats, {})
+
+    def test_negative_rejected(self):
+        party = self.party()
+        with self.assertRaises(ValidationError):
+            self.service.set_seats(self.active_id, party.id, -1)
+
+    def test_non_integer_rejected(self):
+        party = self.party()
+        for value in ("много", None, 3.5, True):
+            with self.assertRaises(ValidationError):
+                self.service.set_seats(self.active_id, party.id, value)
+
+    def test_sum_cannot_exceed_total(self):
+        first, second = self.party(), self.party(name="Партия труда", color="#d6006c")
+        self.service.set_seats(self.active_id, first.id, 100)
+        with self.assertRaises(ValidationError) as ctx:
+            self.service.set_seats(self.active_id, second.id, 21)
+        self.assertIn("20", str(ctx.exception))  # подсказка про доступный остаток
+
+    def test_exact_total_allowed(self):
+        first, second = self.party(), self.party(name="Партия труда", color="#d6006c")
+        self.service.set_seats(self.active_id, first.id, 100)
+        self.service.set_seats(self.active_id, second.id, 20)
+        self.assertEqual(self.service.project.active_convocation.used_seats(), 120)
+
+    def test_set_all_rejects_overflow_atomically(self):
+        first, second = self.party(), self.party(name="Партия труда", color="#d6006c")
+        self.service.set_seats(self.active_id, first.id, 50)
+        with self.assertRaises(ValidationError):
+            self.service.set_all_seats(self.active_id, {first.id: 70, second.id: 60})
+        # Ничего не применилось — распределение осталось прежним.
+        self.assertEqual(self.service.project.active_convocation.seats, {first.id: 50})
+
+    def test_reset_clears_distribution(self):
+        party = self.party()
+        self.service.set_seats(self.active_id, party.id, 42)
+        self.service.reset_seats(self.active_id)
+        self.assertEqual(self.service.project.active_convocation.seats, {})
+
+    def test_seats_for_unknown_party_rejected(self):
+        with self.assertRaises(ValidationError):
+            self.service.set_seats(self.active_id, "нет-такой", 5)
+
+
+class TestConvocations(ServiceTestCase):
+    def test_first_convocation_exists_on_start(self):
+        self.assertEqual(len(self.service.project.convocations), 1)
+        self.assertEqual(self.service.project.convocations[0].name, "Первый состав")
+
+    def test_fix_archives_current_and_opens_next(self):
+        party = self.party()
+        self.service.set_seats(self.active_id, party.id, 70)
+        first_id = self.active_id
+
+        fresh = self.service.fix_convocation()
+
+        archived = self.service.project.convocation(first_id)
+        self.assertTrue(archived.is_fixed)
+        self.assertEqual(archived.seats[party.id], 70)   # снимок сохранился
+        self.assertEqual(fresh.name, "Второй состав")
+        self.assertEqual(fresh.seats, {})                # новый созыв пустой
+        self.assertEqual(self.service.project.active_convocation.id, fresh.id)
+
+    def test_fix_accepts_custom_name(self):
+        fresh = self.service.fix_convocation("Второй состав (кризисные выборы)")
+        self.assertEqual(fresh.name, "Второй состав (кризисные выборы)")
+
+    def test_archived_convocations_stay_editable(self):
+        # Продуктовое решение: историю можно править, новый созыв при этом
+        # не создаётся.
+        party = self.party()
+        self.service.set_seats(self.active_id, party.id, 10)
+        archived_id = self.active_id
+        self.service.fix_convocation()
+
+        self.service.set_seats(archived_id, party.id, 12)
+
+        self.assertEqual(self.service.project.convocation(archived_id).seats[party.id], 12)
+        self.assertEqual(len(self.service.project.convocations), 2)
+
+    def test_rename(self):
+        self.service.rename_convocation(self.active_id, "  Третий состав (кризис) ")
+        self.assertEqual(self.service.project.active_convocation.name, "Третий состав (кризис)")
+
+    def test_rename_to_blank_rejected(self):
+        with self.assertRaises(ValidationError):
+            self.service.rename_convocation(self.active_id, "  ")
+
+    def test_next_name_hint(self):
+        self.assertEqual(self.service.next_convocation_name(), "Второй состав")
+        self.service.fix_convocation()
+        self.assertEqual(self.service.next_convocation_name(), "Третий состав")
+
+
+class TestPersistence(ServiceTestCase):
+    def test_every_change_is_written_to_disk(self):
+        party = self.party()
+        self.service.set_seats(self.active_id, party.id, 33)
+
+        reloaded = load(self.path)
+        self.assertEqual(reloaded.parties[0].name, "Народный союз")
+        self.assertEqual(reloaded.active_convocation.seats[party.id], 33)
+
+    def test_file_is_readable_utf8_json(self):
+        self.party()
+        raw = json.loads(self.path.read_text(encoding="utf-8"))
+        self.assertEqual(raw["totalSeats"], 120)
+        self.assertEqual(raw["parties"][0]["name"], "Народный союз")
+
+    def test_bootstrap_reopens_previous_project(self):
+        party = self.party()
+        self.service.set_seats(self.active_id, party.id, 55)
+
+        again = ParlamentService(self.path)
+        again.bootstrap()
+        self.assertEqual(again.project.active_convocation.used_seats(), 55)
+
+    def test_save_as_switches_target_file(self):
+        other = self.path.parent / "другая-игра.parlament.json"
+        self.party()
+        self.service.save_project_as(other)
+        self.assertTrue(other.exists())
+
+        self.service.create_party(name="Вторая", color="#d6006c")
+        self.assertEqual(len(load(other).parties), 2)   # пишем уже в новый файл
+
+    def test_open_replaces_current_project(self):
+        other = self.path.parent / "вторая-игра.parlament.json"
+        save(Project.empty(), other)
+        self.party()
+
+        self.service.open_project(other)
+        self.assertEqual(self.service.project.parties, [])
+
+    def test_broken_file_reports_clearly(self):
+        self.path.write_text("{ это не json", encoding="utf-8")
+        with self.assertRaises(StoreError):
+            load(self.path)
+
+    def test_orphan_seats_are_dropped_on_load(self):
+        # Файл поправили вручную и удалили партию — места должны стать
+        # нераспределёнными, а не сломать загрузку.
+        party = self.party()
+        self.service.set_seats(self.active_id, party.id, 20)
+        raw = json.loads(self.path.read_text(encoding="utf-8"))
+        raw["parties"] = []
+        self.path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+
+        project = load(self.path)
+        self.assertEqual(project.convocations[0].seats, {})
+
+    def test_atomic_write_leaves_no_temp_files(self):
+        self.party()
+        leftovers = [p.name for p in self.path.parent.iterdir() if p.suffix == ".tmp"]
+        self.assertEqual(leftovers, [])
+
+
+class TestGameFlow(ServiceTestCase):
+    """Сценарии 1-4 из ТЗ одним прогоном."""
+
+    def test_full_game_flow(self):
+        left = self.party()
+        right = self.party(name="Партия труда", color="#d6006c", abbr="ПТ")
+
+        self.service.set_seats(self.active_id, left.id, 65)
+        self.service.set_seats(self.active_id, right.id, 55)
+        first_id = self.active_id
+        self.service.fix_convocation()
+
+        project = self.service.project
+        self.assertEqual(len(project.convocations), 2)
+        self.assertEqual(project.convocation(first_id).seats[left.id], 65)
+        self.assertEqual(project.active_convocation.seats, {})
+        self.assertNotEqual(project.active_convocation.id, first_id)
+
+    def test_is_default_project_flag(self):
+        self.assertTrue(self.service.is_default_project)
+        other = self.path.parent / "другая.parlament.json"
+        self.service.save_project_as(other)
+        self.assertFalse(self.service.is_default_project)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
