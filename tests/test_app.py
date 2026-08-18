@@ -390,6 +390,49 @@ class TestExport(AppTestCase):
             self.assertEqual(int.from_bytes(data[20:24], "big"), height)
             self.assertGreater(len(data), 10_000)
 
+    def test_save_flow_hands_png_bytes_to_the_picker(self):
+        """Проверяет связку целиком: диалог → отрисовка → системное сохранение."""
+        self.distribute()
+
+        calls = []
+
+        class StubPicker:
+            async def save_file(self, **kwargs):
+                calls.append(kwargs)
+                return "/куда-то/Парламент_Первый_состав.png"
+
+        self.app.file_picker = StubPicker()
+        self.app.export_png()
+        find(self.page.dialog, lambda c: isinstance(c, ft.Button)
+             and c.content == "Сохранить как…").on_click(None)
+
+        self.assertEqual(len(calls), 1)
+        call = calls[0]
+        self.assertEqual(call["file_name"], "Парламент_Первый_состав.png")
+        self.assertEqual(call["allowed_extensions"], ["png"])
+        self.assertTrue(call["src_bytes"].startswith(b"\x89PNG"))
+        self.assertEqual(int.from_bytes(call["src_bytes"][16:20], "big"), 1920)
+        self.assertEqual(self.page.last_toast, "Картинка сохранена.")
+
+    def test_save_flow_adds_missing_extension(self):
+        self.distribute()
+
+        calls = []
+
+        class StubPicker:
+            async def save_file(self, **kwargs):
+                calls.append(kwargs)
+                return None                      # пользователь отменил сохранение
+
+        self.app.file_picker = StubPicker()
+        self.app.export_png()
+        field = find(self.page.dialog, lambda c: isinstance(c, ft.TextField))
+        field.value = "мой-парламент"
+        find(self.page.dialog, lambda c: isinstance(c, ft.Button)
+             and c.content == "Сохранить как…").on_click(None)
+
+        self.assertEqual(calls[0]["file_name"], "мой-парламент.png")
+
     def test_file_name_template(self):
         self.assertEqual(suggest_file_name("Третий состав"), "Парламент_Третий_состав.png")
         # Символы, запрещённые в именах файлов Windows, выкидываем.
