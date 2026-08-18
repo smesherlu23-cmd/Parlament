@@ -46,10 +46,12 @@ jobs:
         # flet build windows (как и любая Flutter-сборка) — это папка: exe
         # плюс десяток DLL и папка data, ни один инструмент их в один файл
         # без обёртки не склеит. Оборачиваем всю папку build/windows в
-        # самораспаковывающийся 7-Zip SFX: результат — один Parlament.exe,
-        # который при запуске тихо распаковывает себя во временную папку и
-        # сразу стартует настоящее приложение — 7-Zip с этим модулем уже
-        # стоит на windows-latest, ставить ничего не нужно.
+        # самораспаковывающийся 7-Zip SFX: результат — один Parlament.exe.
+        # Без Progress и BeginPrompt — никакого окна «Установить?» и полосы
+        # распаковки: двойной клик тихо разворачивает файлы во временную
+        # папку и сразу открывает приложение, как обычный portable-exe, а
+        # не инсталлятор. 7-Zip с этим модулем уже стоит на windows-latest,
+        # ставить ничего не нужно.
         shell: pwsh
         run: |
           $sevenZip = "$Env:ProgramFiles\7-Zip\7z.exe"
@@ -75,7 +77,7 @@ jobs:
           $configLines = @(
             ';!@Install@!UTF-8!'
             'Title="Парламент"'
-            'BeginPrompt="Установить и запустить «Парламент»?"'
+            'Progress="no"'
             "RunProgram=`"$relPath`""
             ';!@InstallEnd@!'
           )
@@ -105,5 +107,5 @@ jobs:
         run: |
           gh release create "${{ steps.tag.outputs.tag }}" Parlament.exe \
             --title "Парламент — Windows (${{ steps.tag.outputs.tag }})" \
-            --notes "Автосборка из коммита ${{ github.sha }} через flet build windows. Один файл — Parlament.exe: при запуске распаковывает себя во временную папку и сразу открывает приложение." \
+            --notes "Автосборка из коммита ${{ github.sha }} через flet build windows. Один файл — Parlament.exe: скачали, запустили — без установки и лишних окон." \
             --target "${{ github.sha }}"
