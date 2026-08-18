@@ -167,57 +167,130 @@ def _show_error(control: ft.Text, message: str) -> None:
     push(control)
 
 
+#: Размеры квадрата насыщенность/яркость и полосы тона.
+_SV_SIZE = (280, 160)
+_HUE_SIZE = (280, 22)
+_SV_HANDLE = 16
+_HUE_HANDLE = 18
+
+
 def _open_custom_color_dialog(page: ft.Page, current: str,
                               on_pick: Callable[[str], None]) -> None:
-    """Подбор произвольного цвета через тон/насыщенность/светлоту.
+    """Подбор произвольного цвета — квадрат «насыщенность × яркость» плюс
+    полоса тона, перетаскиваемые мышью.
 
-    Три канала RGB неудобны для подбора «на глаз» — сдвиг одного канала
-    меняет и яркость, и оттенок сразу. HSL разводит эти вещи по разным
-    ползункам: тон выбирает цвет, насыщенность и светлота — его вид.
+    Ближе всего к тому, что раньше открывал системный `<input type="color">`
+    браузера: одна цветовая плоскость, по которой водишь курсором, а не набор
+    линейных ползунков. Настоящий системный диалог выбора цвета Flet не
+    поддерживает (такого API у него нет), поэтому здесь та же идея — но
+    нарисованная своими средствами: SV-квадрат собран из двух наложенных
+    градиентов (белый→тон по горизонтали, прозрачный→чёрный по вертикали —
+    стандартный приём, не требующий рисования по пикселям), а полоса тона —
+    один семиточечный радужный градиент.
     """
     import colorsys
 
+    sq_w, sq_h = _SV_SIZE
+    hue_w, hue_h = _HUE_SIZE
+
     r, g, b = (int(current[i:i + 2], 16) / 255 for i in (1, 3, 5))
-    hue, light, sat = colorsys.rgb_to_hls(r, g, b)
+    hue, sat, val = colorsys.rgb_to_hsv(r, g, b)
+    state = {"h": hue, "s": sat, "v": val}
+
+    def hue_hex(h: float) -> str:
+        red, green, blue = colorsys.hsv_to_rgb(h, 1, 1)
+        return "#{:02x}{:02x}{:02x}".format(round(red * 255), round(green * 255), round(blue * 255))
+
+    def current_hex() -> str:
+        red, green, blue = colorsys.hsv_to_rgb(state["h"], state["s"], state["v"])
+        return "#{:02x}{:02x}{:02x}".format(round(red * 255), round(green * 255), round(blue * 255))
 
     preview = ft.Container(width=56, height=40, bgcolor=current, border_radius=theme.RADIUS,
                            border=ft.Border.all(1, "#1f000000"))
     value_text = ft.Text(current.upper(), size=theme.fs(14), font_family="monospace",
                          color=theme.TEXT)
 
-    def current_hex() -> str:
-        red, green, blue = colorsys.hls_to_rgb(
-            hue_slider.value / 360, light_slider.value / 100, sat_slider.value / 100)
-        return "#{:02x}{:02x}{:02x}".format(round(red * 255), round(green * 255), round(blue * 255))
+    # -- SV-квадрат: тон по горизонтали (белый → чистый тон), яркость по
+    #    вертикали (прозрачный → чёрный), сверху — кружок-курсор.
+    sv_tint = ft.Container(width=sq_w, height=sq_h, gradient=ft.LinearGradient(
+        begin=ft.Alignment(-1, 0), end=ft.Alignment(1, 0),
+        colors=["#ffffff", hue_hex(state["h"])],
+    ))
+    sv_shade = ft.Container(width=sq_w, height=sq_h, gradient=ft.LinearGradient(
+        begin=ft.Alignment(0, -1), end=ft.Alignment(0, 1),
+        colors=["#00000000", "#ff000000"],
+    ))
+    sv_cursor = ft.Container(
+        width=_SV_HANDLE, height=_SV_HANDLE, border_radius=_SV_HANDLE / 2,
+        left=state["s"] * sq_w - _SV_HANDLE / 2, top=(1 - state["v"]) * sq_h - _SV_HANDLE / 2,
+        border=ft.Border.all(2, "#ffffff"),
+        shadow=ft.BoxShadow(blur_radius=3, color="#80000000"),
+    )
+    sv_area = ft.Container(
+        content=ft.Stack([sv_tint, sv_shade, sv_cursor], width=sq_w, height=sq_h),
+        width=sq_w, height=sq_h, border_radius=theme.RADIUS, clip_behavior=ft.ClipBehavior.HARD_EDGE,
+    )
 
-    def on_slide(_event) -> None:
+    # -- полоса тона: радужный градиент через шесть базовых цветов по кругу.
+    hue_bar = ft.Container(width=hue_w, height=hue_h, border_radius=theme.RADIUS, gradient=ft.LinearGradient(
+        begin=ft.Alignment(-1, 0), end=ft.Alignment(1, 0),
+        colors=["#ff0000", "#ffff00", "#00ff00", "#00ffff", "#0000ff", "#ff00ff", "#ff0000"],
+    ))
+    hue_cursor = ft.Container(
+        width=_HUE_HANDLE, height=_HUE_HANDLE, border_radius=_HUE_HANDLE / 2,
+        left=state["h"] * hue_w - _HUE_HANDLE / 2, top=hue_h / 2 - _HUE_HANDLE / 2,
+        bgcolor=hue_hex(state["h"]),
+        border=ft.Border.all(2, "#ffffff"),
+        shadow=ft.BoxShadow(blur_radius=3, color="#80000000"),
+    )
+    hue_area = ft.Container(
+        content=ft.Stack([hue_bar, hue_cursor], width=hue_w, height=hue_h + _HUE_HANDLE),
+        width=hue_w, height=hue_h + _HUE_HANDLE,
+    )
+
+    def refresh_preview() -> None:
         color = current_hex()
         preview.bgcolor = color
         value_text.value = color.upper()
-        for label, slider, suffix in (
-            (hue_label, hue_slider, "°"), (sat_label, sat_slider, " %"), (light_label, light_slider, " %"),
-        ):
-            label.value = f"{label.data} {round(slider.value)}{suffix}"
-            push(label)
         push(preview)
         push(value_text)
 
-    hue_slider = ft.Slider(min=0, max=360, value=hue * 360,
-                           active_color=theme.ACCENT, on_change=on_slide)
-    sat_slider = ft.Slider(min=0, max=100, value=sat * 100,
-                           active_color=theme.ACCENT, on_change=on_slide)
-    light_slider = ft.Slider(min=0, max=100, value=light * 100,
-                             active_color=theme.ACCENT, on_change=on_slide)
+    def move_sv(x: float, y: float) -> None:
+        x = min(max(x, 0), sq_w)
+        y = min(max(y, 0), sq_h)
+        state["s"] = x / sq_w
+        state["v"] = 1 - y / sq_h
+        sv_cursor.left = x - _SV_HANDLE / 2
+        sv_cursor.top = y - _SV_HANDLE / 2
+        push(sv_cursor)
+        refresh_preview()
 
-    def value_label(text: str, slider: ft.Slider, suffix: str) -> ft.Text:
-        label = ft.Text(f"{text} {round(slider.value)}{suffix}", size=theme.fs(12),
-                        color=theme.NEUTRAL_700)
-        label.data = text
-        return label
+    def move_hue(x: float) -> None:
+        x = min(max(x, 0), hue_w)
+        state["h"] = x / hue_w
+        color = hue_hex(state["h"])
+        hue_cursor.left = x - _HUE_HANDLE / 2
+        hue_cursor.bgcolor = color
+        sv_tint.gradient = ft.LinearGradient(
+            begin=ft.Alignment(-1, 0), end=ft.Alignment(1, 0), colors=["#ffffff", color])
+        push(hue_cursor)
+        push(sv_tint)
+        refresh_preview()
 
-    hue_label = value_label("Тон", hue_slider, "°")
-    sat_label = value_label("Насыщенность", sat_slider, " %")
-    light_label = value_label("Светлота", light_slider, " %")
+    def on_sv_point(e) -> None:
+        move_sv(e.local_position.x, e.local_position.y)
+
+    def on_hue_point(e) -> None:
+        move_hue(e.local_position.x)
+
+    sv_gesture = ft.GestureDetector(
+        content=sv_area, drag_interval=16,
+        on_tap_down=on_sv_point, on_pan_start=on_sv_point, on_pan_update=on_sv_point,
+    )
+    hue_gesture = ft.GestureDetector(
+        content=hue_area, drag_interval=16,
+        on_tap_down=on_hue_point, on_pan_start=on_hue_point, on_pan_update=on_hue_point,
+    )
 
     def close(_event) -> None:
         page.pop_dialog()
@@ -226,20 +299,16 @@ def _open_custom_color_dialog(page: ft.Page, current: str,
         on_pick(current_hex())
         page.pop_dialog()
 
-    def slider_row(label: ft.Text, slider: ft.Slider) -> ft.Control:
-        return ft.Column([label, slider], spacing=0, tight=True)
-
     page.show_dialog(_shell(
         "Свой цвет",
         [
+            sv_gesture,
+            hue_gesture,
             ft.Row([preview, value_text], spacing=12,
                   vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            slider_row(hue_label, hue_slider),
-            slider_row(sat_label, sat_slider),
-            slider_row(light_label, light_slider),
         ],
         [_cancel(close), theme.primary_button("Выбрать", confirm)],
-        width=380,
+        width=sq_w + 40,
     ))
 
 
