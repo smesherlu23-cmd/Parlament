@@ -55,9 +55,17 @@ python -m unittest discover -s tests
 flet build windows
 ```
 
-Готовое приложение появится в `build/windows`. Для сборки нужен Flutter SDK и
-Visual Studio с рабочей нагрузкой «Разработка классических приложений на C++»
-— требования самого Flet, см. [его документацию](https://flet.dev/docs/publish/windows).
+Готовое приложение появится в `build/windows` — папкой (exe и рядом DLL и
+`data/`), так собирает любое Flutter-приложение. Для сборки нужен Flutter SDK
+и Visual Studio с рабочей нагрузкой «Разработка классических приложений на
+C++» — требования самого Flet, см. [его документацию](https://flet.dev/docs/publish/windows).
+
+Не хотите ставить Flutter и Visual Studio локально — в репозитории есть
+workflow `.github/workflows/build-windows.yml`: ручной запуск (вкладка
+Actions → Build Windows EXE → Run workflow) собирает то же самое на
+`windows-latest` и публикует уже единым файлом `Parlament.exe`
+(самораспаковывающийся 7-Zip SFX — при запуске тихо распаковывает себя во
+временную папку и сразу открывает приложение) как GitHub Release.
 
 ## Архитектура
 
