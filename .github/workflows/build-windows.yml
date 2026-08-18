@@ -30,7 +30,17 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Собрать приложение
-        run: flet build windows
+        # --yes — не спрашивать подтверждения на установку Flutter SDK (иначе
+        # интерактивный запрос в неинтерактивном раннере обрывает сборку);
+        # --no-rich-output — плашки-эмодзи и Rich-спиннер валят вывод в
+        # UnicodeEncodeError на консоли Windows-раннера (кодовая страница
+        # cp1252, не UTF-8) — обычный текстовый вывод этого не боится.
+        # PYTHONUTF8/PYTHONIOENCODING — подстраховка на случай, если что-то
+        # непредвиденное всё равно попробует напечатать юникод.
+        env:
+          PYTHONUTF8: "1"
+          PYTHONIOENCODING: "utf-8"
+        run: flet build windows --yes --no-rich-output
 
       - name: Упаковать сборку в архив
         shell: pwsh
