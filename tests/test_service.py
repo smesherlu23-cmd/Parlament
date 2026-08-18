@@ -393,14 +393,16 @@ class TestRecentColors(ServiceTestCase):
         self.assertEqual(again.project.recent_colors, ["#a1b2c3"])
 
     def test_capped_deduplicated_and_most_recent_first(self):
-        for color in ["#111111", "#222222", "#333333", "#444444"]:
+        colors = [f"#{n:02x}{n:02x}{n:02x}" for n in range(1, 12)]   # 11 цветов
+        for color in colors:
             self.service.remember_recent_color(color)
+        # Хранится 10 последних — самый первый (#010101) вытеснен.
         self.assertEqual(self.service.project.recent_colors,
-                          ["#444444", "#333333", "#222222"])
+                          list(reversed(colors[1:])))
 
-        self.service.remember_recent_color("#222222")
-        self.assertEqual(self.service.project.recent_colors,
-                          ["#222222", "#444444", "#333333"])
+        self.service.remember_recent_color(colors[5])
+        self.assertEqual(self.service.project.recent_colors[0], colors[5])
+        self.assertEqual(len(self.service.project.recent_colors), 10)
 
     def test_bad_color_rejected(self):
         with self.assertRaises(ValidationError):

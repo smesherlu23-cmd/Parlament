@@ -358,14 +358,15 @@ class TestRecentColors(AppTestCase):
         self.assertIsNotNone(swatch)
 
     def test_recent_colors_are_capped_deduplicated_and_most_recent_first(self):
-        self.app._remember_recent_color("#111111")
-        self.app._remember_recent_color("#222222")
-        self.app._remember_recent_color("#333333")
-        self.app._remember_recent_color("#444444")   # выталкивает самый старый
-        self.assertEqual(self.app.recent_colors, ["#444444", "#333333", "#222222"])
+        colors = [f"#{n:02x}{n:02x}{n:02x}" for n in range(1, 12)]   # 11 цветов
+        for color in colors:
+            self.app._remember_recent_color(color)
+        # Хранится 10 последних — самый первый (#010101) вытеснен.
+        self.assertEqual(self.app.recent_colors, list(reversed(colors[1:])))
 
-        self.app._remember_recent_color("#222222")   # уже есть — переезжает вперёд
-        self.assertEqual(self.app.recent_colors, ["#222222", "#444444", "#333333"])
+        self.app._remember_recent_color(colors[5])   # уже есть — переезжает вперёд
+        self.assertEqual(self.app.recent_colors[0], colors[5])
+        self.assertEqual(len(self.app.recent_colors), 10)
 
     def test_palette_colors_are_not_remembered(self):
         self.app._remember_recent_color(theme.PALETTE[0])

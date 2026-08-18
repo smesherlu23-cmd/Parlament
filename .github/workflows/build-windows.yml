@@ -1,0 +1,57 @@
+name: Build Windows EXE
+
+# Ручная сборка десктопного приложения под Windows и публикация готового
+# .exe как GitHub Release. Windows-сборка Flutter (а значит и flet build
+# windows) требует именно Windows-хоста с MSVC — поэтому раннер windows-latest,
+# а не привычный ubuntu-latest.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Тег релиза (по умолчанию — windows-build-<номер запуска>)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Установить зависимости
+        run: pip install -r requirements.txt
+
+      - name: Собрать приложение
+        run: flet build windows
+
+      - name: Упаковать сборку в архив
+        shell: pwsh
+        run: Compress-Archive -Path build/windows/* -DestinationPath Parlament-windows.zip
+
+      - name: Определить тег релиза
+        id: tag
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=windows-build-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Опубликовать релиз
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release create "${{ steps.tag.outputs.tag }}" Parlament-windows.zip \
+            --title "Парламент — Windows (${{ steps.tag.outputs.tag }})" \
+            --notes "Автосборка из коммита ${{ github.sha }} через flet build windows." \
+            --target "${{ github.sha }}"

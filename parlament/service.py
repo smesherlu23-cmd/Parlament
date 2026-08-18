@@ -24,7 +24,7 @@ from .model import (
 MAX_NAME_LENGTH = 120
 MAX_ABBR_LENGTH = 12
 #: Сколько последних вручную подобранных цветов хранить в проекте.
-RECENT_COLORS_LIMIT = 3
+RECENT_COLORS_LIMIT = 10
 
 
 class ValidationError(Exception):
