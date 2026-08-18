@@ -1,0 +1,15 @@
+# Node / Electron
+node_modules/
+dist/
+out/
+npm-debug.log*
+
+# Python
+__pycache__/
+*.py[cod]
+build/backend/
+*.spec.bak
+.venv/
+
+# Локальные данные и артефакты сборки
+*.local.json
