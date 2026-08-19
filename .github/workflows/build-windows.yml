@@ -42,17 +42,42 @@ jobs:
           PYTHONIOENCODING: "utf-8"
         run: flet build windows --yes --no-rich-output
 
-      - name: Упаковать сборку в архив
-        # Пробовали оборачивать build/windows в самораспаковывающийся 7-Zip
-        # SFX ради одного .exe — антивирусы (Defender, SmartScreen) массово
-        # палят такие файлы: «exe тихо распаковывает и запускает другой exe
-        # из временной папки» — это ровно поведенческая эвристика троянов-
-        # дропперов, даже без единой вредоносной строчки внутри. Обычный
-        # .zip той же папки не подходит под эту эвристику и не палится —
-        # он всё ещё один файл для скачивания, просто перед запуском exe
-        # внутри нужно распаковать самим.
+      - name: Собрать инсталлятор
+        # build/windows — папка с exe и десятком DLL/данных, так собирает
+        # любое Flutter+Python (flet) приложение под Windows — это нормально,
+        # так выглядит вообще любая Flutter-сборка под Windows, а не брак
+        # именно этой сборки. Чтобы пользователь не разглядывал эту папку
+        # руками, упаковываем её в один инсталлятор через Inno Setup (уже
+        # стоит на windows-latest, есть и chocolatey-фолбэк на случай, если
+        # это изменится): ставит приложение в Program Files, добавляет
+        # ярлык в «Пуск» и на рабочий стол, сам создаёт деинсталлятор —
+        # пользователь видит только один ParlamentSetup.exe и обычный,
+        # знакомый мастер установки Windows-программы, а не голый SFX,
+        # который тихо распаковывает и запускает exe из временной папки
+        # (см. предыдущую попытку в истории коммитов — под эту эвристику
+        # антивирусы массово принимают такие файлы за троян-дроппер).
         shell: pwsh
-        run: Compress-Archive -Path build/windows/* -DestinationPath Parlament-windows.zip
+        run: |
+          $buildRoot = (Resolve-Path "build/windows").Path
+          $mainExe = Get-ChildItem -Path $buildRoot -Filter "*.exe" -Recurse | Select-Object -First 1
+          if (-not $mainExe) { throw "В build/windows не нашлось ни одного .exe" }
+          Write-Host "Приложение внутри инсталлятора: $($mainExe.Name)"
+
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            Write-Host "ISCC.exe не найден по умолчанию, ставлю Inno Setup через choco"
+            choco install innosetup -y --no-progress | Out-Null
+            $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          }
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe так и не нашёлся" }
+
+          & $iscc "/DMyAppExeName=$($mainExe.Name)" "packaging\windows\installer.iss"
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup не смог собрать инсталлятор" }
+
+          $setup = Get-ChildItem -Path "packaging\windows\dist" -Filter "*.exe" | Select-Object -First 1
+          if (-not $setup) { throw "Инсталлятор не найден после сборки" }
+          Copy-Item $setup.FullName "ParlamentSetup.exe"
+          Write-Host "Готово: ParlamentSetup.exe ($((Get-Item 'ParlamentSetup.exe').Length) байт)"
 
       - name: Определить тег релиза
         id: tag
@@ -69,7 +94,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          gh release create "${{ steps.tag.outputs.tag }}" Parlament-windows.zip \
+          gh release create "${{ steps.tag.outputs.tag }}" ParlamentSetup.exe \
             --title "Парламент — Windows (${{ steps.tag.outputs.tag }})" \
-            --notes "Автосборка из коммита ${{ github.sha }} через flet build windows. Один файл для скачивания — Parlament-windows.zip; внутри распакованное приложение, запускать exe оттуда." \
+            --notes "Автосборка из коммита ${{ github.sha }} через flet build windows + Inno Setup. Один файл — ParlamentSetup.exe: обычный мастер установки, ставит в Program Files и добавляет ярлык." \
             --target "${{ github.sha }}"
