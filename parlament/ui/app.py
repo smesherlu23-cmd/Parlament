@@ -21,8 +21,12 @@ from ..store import StoreError
 from . import dialogs, format as fmt, theme
 from .mount import push
 from .export import LegendEntry, RESOLUTIONS, render_png, suggest_file_name
+from .elections_view import ElectionsView
+from .map_export import render_map_png
+from .map_view import MapView
 from .parties_view import PartiesView
 from .seat_chart import SeatChart, chart_height_for_width
+from .votes_file import export_template, read_votes_file
 
 
 class ParlamentApp:
@@ -32,7 +36,10 @@ class ParlamentApp:
         self.page = page
         self.service = service
 
-        self.view = "parliament"                 # 'parliament' | 'parties'
+        self.view = "parliament"   # 'parliament' | 'parties' | 'map' | 'elections'
+        #: Заполняются при сборке соответствующего экрана.
+        self.map_chart = None
+        self.elections = None
         self.selected_convocation_id: str | None = None
         self.editing_archived: str | None = None
 
@@ -122,6 +129,13 @@ class ParlamentApp:
         self.appbar_slot.content = self._build_appbar()
         if self.view == "parties":
             self.body.content = PartiesView(self).build()
+        elif self.view == "map":
+            self.body.content = MapView(self).build()
+        elif self.view == "elections":
+            # Экран выборов держит поля ввода, поэтому живёт в поле: с него
+            # потом собираются введённые голоса.
+            self.elections = ElectionsView(self)
+            self.body.content = self.elections.build()
         else:
             self.body.content = self._build_parliament()
         self.page.update()
@@ -135,6 +149,39 @@ class ParlamentApp:
             ]
             right: list[ft.Control] = [
                 theme.primary_button("Новая партия", lambda _e: self.new_party()),
+            ]
+        elif self.view == "map":
+            left = [
+                theme.ghost_button("← К парламенту", lambda _e: self.show_parliament()),
+                ft.Text("КАРТА", size=theme.fs(13), font_family=theme.FONT_SEMIBOLD,
+                        color=theme.TEXT, style=ft.TextStyle(letter_spacing=2.1)),
+            ]
+            has_districts = bool(self.service.project.districts)
+            right = [
+                theme.secondary_button(
+                    "Экспорт карты в PNG", lambda _e: self.export_map_png(),
+                    disabled=not (has_districts and self.selected.votes),
+                ),
+                theme.primary_button(
+                    "Выборы", lambda _e: self.show_elections(),
+                    disabled=not (has_districts and self.parties),
+                    tooltip=None if self.parties else "Сначала создайте партии",
+                ),
+            ]
+        elif self.view == "elections":
+            left = [
+                theme.ghost_button("← К карте", lambda _e: self.show_map()),
+                ft.Text("ВЫБОРЫ", size=theme.fs(13), font_family=theme.FONT_SEMIBOLD,
+                        color=theme.TEXT, style=ft.TextStyle(letter_spacing=2.1)),
+            ]
+            usable = bool(self.parties and self.service.project.districts)
+            right = [
+                theme.ghost_button("Шаблон таблицы", lambda _e: self.save_votes_template(),
+                                   disabled=not usable),
+                theme.secondary_button("Загрузить таблицу", lambda _e: self.load_votes_file(),
+                                       disabled=not usable),
+                theme.primary_button("Посчитать", lambda _e: self.apply_election(),
+                                     disabled=not usable),
             ]
         else:
             has_parties = bool(self.parties)
@@ -155,6 +202,8 @@ class ParlamentApp:
             right = [
                 theme.secondary_button("Партии", lambda _e: self.show_parties()),
             ]
+            if self.service.project.districts:
+                right.append(theme.secondary_button("Карта", lambda _e: self.show_map()))
             if archive_view:
                 right.append(theme.primary_button("Править состав", lambda _e: self.edit_archived()))
 
@@ -534,6 +583,133 @@ class ParlamentApp:
     def show_parties(self) -> None:
         self.view = "parties"
         self.render()
+
+    def show_map(self) -> None:
+        self.view = "map"
+        self.render()
+
+    def show_elections(self) -> None:
+        self.view = "elections"
+        self.render()
+
+    # -- выборы -------------------------------------------------------------
+
+    def apply_election(self) -> None:
+        """Считает выборы по введённым голосам и уводит на раскрашенную карту."""
+        votes = self.elections.collect()
+        if not votes:
+            self.toast("Не введено ни одного голоса.", error=True)
+            return
+        try:
+            self.service.run_election(self.selected.id, votes)
+        except (ValidationError, StoreError) as error:
+            self.toast(str(error), error=True)
+            return
+
+        filled = len(votes)
+        total = len(self.service.project.districts)
+        self.show_map()
+        self.toast(f"Выборы посчитаны: {fmt.pluralize(filled, fmt.DISTRICTS)} из {total}.")
+
+    def show_district(self, district_id: str) -> None:
+        """Расклад одного округа — по клику на маркер карты."""
+        district = self.service.project.district(district_id)
+        if district is None:
+            return
+        conv = self.selected
+        allocation = self.service.district_allocation(conv.id).get(district_id, {})
+        votes = conv.votes.get(district_id, {})
+        by_id = {p.id: p for p in self.parties}
+
+        rows = [
+            (by_id[pid], votes.get(pid, 0), allocation.get(pid, 0))
+            for pid in sorted(
+                set(votes) | set(allocation),
+                key=lambda pid: (-allocation.get(pid, 0), -votes.get(pid, 0)),
+            )
+            if pid in by_id
+        ]
+        self.page.show_dialog(dialogs.district_dialog(
+            district, rows, sum(votes.values()), lambda _e: self.close_dialog()))
+
+    def export_map_png(self) -> None:
+        """Сохраняет карту с раскрашенными округами картинкой."""
+        conv = self.selected
+        winners = self.service.district_winners(conv.id)
+        colors = {p.id: p.color for p in self.parties}
+
+        markers = [
+            (d.name, d.seats, d.x, d.y, colors.get(winners.get(d.id)))
+            for d in self.service.project.districts
+        ]
+
+        won: dict[str, int] = {}
+        for party_id in winners.values():
+            won[party_id] = won.get(party_id, 0) + 1
+        legend = sorted(
+            ((p.name, p.color, won.get(p.id, 0), conv.seats.get(p.id, 0))
+             for p in self.parties if conv.seats.get(p.id, 0) or won.get(p.id, 0)),
+            key=lambda row: (row[3], row[2]), reverse=True,
+        )
+
+        async def save() -> None:
+            data = render_map_png(markers, title=conv.name, legend=legend)
+            saved = await self.file_picker.save_file(
+                dialog_title="Экспорт карты в PNG",
+                file_name=f"Карта_{conv.name.replace(' ', '_')}.png",
+                allowed_extensions=["png"],
+                src_bytes=data,
+            )
+            if saved:
+                self.toast("Карта сохранена.")
+
+        self.page.run_task(save)
+
+    def load_votes_file(self) -> None:
+        """Загружает таблицу с результатами в поля экрана выборов."""
+
+        async def pick() -> None:
+            files = await self.file_picker.pick_files(
+                dialog_title="Таблица с результатами выборов",
+                allowed_extensions=["csv", "txt"],
+                allow_multiple=False,
+                with_data=True,
+            )
+            if not files:
+                return
+            try:
+                result = read_votes_file(files[0], self.service.project)
+            except (OSError, ValueError) as error:
+                self.toast(f"Не удалось прочитать файл: {error}", error=True)
+                return
+
+            if result.votes:
+                self.elections.fill(result.votes)
+            if result.warnings:
+                self.page.show_dialog(dialogs.import_report_dialog(
+                    result.districts_filled, result.warnings,
+                    lambda _e: self.close_dialog()))
+            elif result.votes:
+                self.toast(f"Загружено: {fmt.pluralize(result.districts_filled, fmt.DISTRICTS)}.")
+
+        self.page.run_task(pick)
+
+    def save_votes_template(self) -> None:
+        """Отдаёт пустую таблицу под текущие округа и партии — её удобно
+        заполнить в Excel и загрузить обратно."""
+
+        async def save() -> None:
+            data = export_template(self.service.project)
+            saved = await self.file_picker.save_file(
+                dialog_title="Шаблон таблицы результатов",
+                file_name="Выборы_шаблон.csv",
+                allowed_extensions=["csv"],
+                src_bytes=data,
+            )
+            if saved:
+                self.toast("Шаблон сохранён.")
+
+        self.page.run_task(save)
 
     def select_convocation(self, convocation_id: str) -> None:
         self.selected_convocation_id = convocation_id

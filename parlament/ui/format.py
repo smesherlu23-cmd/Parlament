@@ -6,6 +6,7 @@ SEATS = ["место", "места", "мест"]
 PARTIES = ["партия", "партии", "партий"]
 CONVOCATIONS = ["созыве", "созывах", "созывах"]
 PARTIES_COUNT = ["партия", "партии", "партий"]
+DISTRICTS = ["округ", "округа", "округов"]
 
 
 def plural(count: int, forms: list[str]) -> str:

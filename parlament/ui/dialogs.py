@@ -390,6 +390,100 @@ def delete_convocation_dialog(convocation: Convocation, on_confirm: Callable,
     )
 
 
+# -- округ и выборы ---------------------------------------------------------
+
+
+def district_dialog(district, rows: list[tuple], total_votes: int,
+                    on_close: Callable) -> ft.AlertDialog:
+    """Расклад одного округа — по клику на маркер карты.
+
+    `rows` — уже отсортированные `(партия, голоса, места)`.
+    """
+    body: list[ft.Control] = [
+        ft.Row([
+            ft.Text(f"{district.seats} мест", size=theme.fs(14),
+                    font_family=theme.FONT_SEMIBOLD, color=theme.TEXT),
+            ft.Container(expand=True),
+            ft.Text(district.region, size=theme.fs(13), color=theme.NEUTRAL_600),
+        ]),
+    ]
+
+    if not rows:
+        body.append(ft.Text("По этому округу результатов ещё нет.",
+                            size=theme.fs(14), color=theme.NEUTRAL_700))
+        return _shell(district.name, body, [_cancel_as_close(on_close)])
+
+    lines: list[ft.Control] = [
+        ft.Row([
+            ft.Container(theme.label("Партия"), expand=True),
+            ft.Container(theme.label("Голоса"), width=90),
+            ft.Container(theme.label("Мест"), width=54),
+        ], spacing=8),
+    ]
+    for party, votes, seats in rows:
+        share = f"{votes / total_votes * 100:.1f} %".replace(".", ",") if total_votes else "—"
+        lines.append(ft.Container(
+            padding=ft.Padding.symmetric(vertical=6),
+            border=ft.Border.only(bottom=ft.BorderSide(1, "#14201e1d")),
+            content=ft.Row([
+                theme.swatch(party.color, 11),
+                ft.Container(
+                    ft.Text(party.name, size=theme.fs(14), color=theme.TEXT, no_wrap=True,
+                            overflow=ft.TextOverflow.ELLIPSIS, tooltip=party.name),
+                    expand=True,
+                ),
+                ft.Container(
+                    ft.Column([
+                        ft.Text(f"{votes}", size=theme.fs(13), color=theme.TEXT),
+                        ft.Text(share, size=theme.fs(11), color=theme.NEUTRAL_600),
+                    ], spacing=0, tight=True),
+                    width=90,
+                ),
+                ft.Container(
+                    ft.Text(str(seats), size=theme.fs(15),
+                            font_family=theme.FONT_SEMIBOLD, color=theme.TEXT),
+                    width=54,
+                ),
+            ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        ))
+    body.extend(lines)
+    return _shell(district.name, body, [_cancel_as_close(on_close)], width=520)
+
+
+def import_report_dialog(filled: int, warnings: list[str],
+                         on_close: Callable) -> ft.AlertDialog:
+    """Что удалось разобрать в загруженной таблице, а что вызвало вопросы.
+
+    Замечания показываются списком, а не одной строкой: по ним пользователь
+    правит свой документ, и обрезать их было бы вредно.
+    """
+    body: list[ft.Control] = [
+        ft.Text(
+            f"Загружено округов: {filled}." if filled
+            else "Ни одной строки с результатами разобрать не удалось.",
+            size=theme.fs(14), color=theme.TEXT,
+        ),
+        ft.Container(
+            padding=ft.Padding.all(10),
+            bgcolor=theme.NEUTRAL_100,
+            border=ft.Border.all(1, theme.DIVIDER),
+            border_radius=theme.RADIUS,
+            content=ft.Column(
+                [ft.Text(f"• {text}", size=theme.fs(12), color=theme.NEUTRAL_700)
+                 for text in warnings],
+                spacing=5, tight=True, scroll=ft.ScrollMode.AUTO,
+            ),
+            height=min(240, 30 + 22 * len(warnings)),
+        ),
+    ]
+    return _shell("Таблица загружена с замечаниями", body,
+                  [_cancel_as_close(on_close)], width=520)
+
+
+def _cancel_as_close(on_close: Callable) -> ft.Control:
+    return theme.primary_button("Закрыть", on_close)
+
+
 # -- фиксация созыва --------------------------------------------------------
 
 

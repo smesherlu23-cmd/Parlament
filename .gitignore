@@ -11,3 +11,6 @@ dist/
 
 # Локальные данные
 *.local.json
+
+# Подложка карты — игровой материал, а не код (см. assets/map/README.md)
+assets/map/base.*

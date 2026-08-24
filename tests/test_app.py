@@ -23,7 +23,9 @@ from parlament.ui import theme  # noqa: E402
 from parlament.ui.app import ParlamentApp  # noqa: E402
 from parlament.ui.dialogs import normalize_hex  # noqa: E402
 from parlament.ui.export import LegendEntry, render_png, suggest_file_name  # noqa: E402
+from parlament.ui.map_export import render_map_png  # noqa: E402
 from parlament.ui.seat_chart import compute_seats  # noqa: E402
+from parlament.ui.votes_file import export_template, parse_votes_text  # noqa: E402
 
 #: Пример раскладки: суммой ровно на полный парламент (147 мест по карте).
 SAMPLE = [
@@ -662,6 +664,149 @@ class TestHelpers(unittest.TestCase):
         for total in (60, 120, 300):
             for rows in (3, 5, 8):
                 self.assertEqual(len(compute_seats(total, rows, [])), total)
+
+
+class TestMapAndElections(AppTestCase):
+    """Экран карты и экран выборов: навигация, ввод, раскраска."""
+
+    def setUp(self):
+        super().setUp()
+        self.add_parties(3)
+        self.by_name = {d.name: d for d in self.service.project.districts}
+
+    def vote(self, district_name: str, **by_party) -> None:
+        """Заполняет строку округа на экране выборов, как это делает человек."""
+        district = self.by_name[district_name]
+        for index, votes in by_party.items():
+            party = self.app.parties[int(index[1:])]
+            field = self.app.elections.fields[district.id][party.id]
+            field.value = str(votes)
+            field.on_change(ft.ControlEvent(control=field, name="change", data=field.value))
+
+    def test_map_is_reachable_from_parliament(self):
+        button = find(self.body, lambda c: isinstance(c, ft.Button) and c.content == "Карта")
+        self.assertIsNotNone(button)
+        button.on_click(None)
+        self.assertEqual(self.app.view, "map")
+
+    def test_map_says_when_there_were_no_elections(self):
+        self.app.show_map()
+        self.assertTrue(any("выборы не проводились" in t for t in texts(self.body)))
+
+    def test_export_is_locked_until_there_are_results(self):
+        self.app.show_map()
+        export = find(self.body, lambda c: isinstance(c, ft.Button)
+                      and c.content == "Экспорт карты в PNG")
+        self.assertTrue(export.disabled)
+
+    def test_election_fills_the_parliament_and_colours_the_map(self):
+        self.app.show_elections()
+        self.vote("Гаффинсвик центр", p0=5000, p1=3000, p2=2000)   # 10 мест
+        self.vote("Саттмалвик центр", p1=9000)                      # 9 мест, без борьбы
+        self.app.apply_election()
+
+        conv = self.app.selected
+        self.assertEqual(self.app.view, "map")           # сразу показали карту
+        self.assertEqual(conv.seats[self.app.parties[1].id], 3 + 9)
+        winners = self.service.district_winners(conv.id)
+        self.assertEqual(winners[self.by_name["Саттмалвик центр"].id],
+                         self.app.parties[1].id)
+
+    def test_markers_are_coloured_by_winner(self):
+        self.app.show_elections()
+        self.vote("Судбригг", p2=600, p0=400)
+        self.app.apply_election()
+
+        markers = {name: color for _id, name, _s, _x, _y, color in self.app.map_chart._markers}
+        self.assertEqual(markers["Судбригг"], self.app.parties[2].color)
+        self.assertIsNone(markers["Гаффинсвик центр"])   # без данных — серый
+
+    def test_row_preview_shows_the_split_while_typing(self):
+        self.app.show_elections()
+        self.vote("Гаффинсвик центр", p0=5000, p1=3000, p2=2000)
+        preview = self.app.elections.previews[self.by_name["Гаффинсвик центр"].id]
+        self.assertIn("5", preview.value)      # 50 % от десяти мест
+        self.assertNotEqual(preview.value, "—")
+
+    def test_letters_never_reach_the_vote_fields(self):
+        self.app.show_elections()
+        district = self.by_name["Судбригг"].id
+        field = self.app.elections.fields[district][self.app.parties[0].id]
+        field.value = "12абв3"
+        field.on_change(ft.ControlEvent(control=field, name="change", data=field.value))
+        self.assertEqual(field.value, "123")
+
+    def test_empty_election_is_refused(self):
+        self.app.show_elections()
+        self.app.apply_election()
+        self.assertEqual(self.page.last_toast, "Не введено ни одного голоса.")
+        self.assertEqual(self.app.view, "elections")     # с экрана не увели
+
+    def test_reopening_shows_what_was_already_entered(self):
+        # Экран выборов — не только ввод с нуля, но и правка результата,
+        # поэтому прошлые голоса подставляются в поля.
+        self.app.show_elections()
+        self.vote("Судбригг", p0=100)
+        self.app.apply_election()
+
+        self.app.show_elections()
+        district = self.by_name["Судбригг"].id
+        self.assertEqual(self.app.elections.fields[district][self.app.parties[0].id].value,
+                         "100")
+
+    def test_clearing_a_field_takes_its_seats_back(self):
+        self.app.show_elections()
+        self.vote("Судбригг", p0=100)
+        self.app.apply_election()
+        self.assertEqual(self.app.selected.seats, {self.app.parties[0].id: 2})
+
+        self.app.show_elections()
+        self.vote("Судбригг", p0="")
+        self.app.apply_election()
+        # Округ опустел — вместе с ним и весь состав, других данных не было.
+        self.assertEqual(self.page.last_toast, "Не введено ни одного голоса.")
+
+    def test_result_can_be_handed_to_another_party(self):
+        self.app.show_elections()
+        self.vote("Судбригг", p0=100)
+        self.app.apply_election()
+
+        self.app.show_elections()
+        self.vote("Судбригг", p0="", p1=100)
+        self.app.apply_election()
+        self.assertEqual(self.app.selected.seats, {self.app.parties[1].id: 2})
+
+    def test_template_lists_every_district_and_party(self):
+        data = export_template(self.service.project).decode("utf-8-sig")
+        lines = [line for line in data.splitlines() if line.strip()]
+        self.assertEqual(len(lines), 1 + len(self.service.project.districts))
+        self.assertIn("Народный союз", lines[0])
+        self.assertTrue(any(line.startswith("Судбригг") for line in lines))
+
+    def test_loaded_table_lands_in_the_fields(self):
+        self.app.show_elections()
+        table = ("Округ,Народный союз,Партия труда\n"
+                 "Гаффинсвик центр,5000,3000\n")
+        result = parse_votes_text(table.encode("utf-8"), self.service.project)
+        self.app.elections.fill(result.votes)
+
+        district = self.by_name["Гаффинсвик центр"].id
+        self.assertEqual(self.app.elections.fields[district][self.app.parties[0].id].value,
+                         "5000")
+        # Кнопка «Посчитать» видит загруженное так же, как набранное руками.
+        self.assertEqual(self.app.elections.collect()[district][self.app.parties[0].id], 5000)
+
+    def test_map_png_renders_with_placeholder_background(self):
+        # Подложки в репозитории нет; выгрузка всё равно должна давать картинку.
+        self.app.show_elections()
+        self.vote("Судбригг", p0=100)
+        self.app.apply_election()
+        data = render_map_png(
+            [(d.name, d.seats, d.x, d.y, None) for d in self.service.project.districts],
+            width=640, title="Первый состав",
+            legend=[("Народный союз", "#0088b0", 1, 2)],
+        )
+        self.assertTrue(data.startswith(b"\x89PNG"))
 
 
 if __name__ == "__main__":
