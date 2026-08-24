@@ -25,14 +25,15 @@ from parlament.ui.dialogs import normalize_hex  # noqa: E402
 from parlament.ui.export import LegendEntry, render_png, suggest_file_name  # noqa: E402
 from parlament.ui.seat_chart import compute_seats  # noqa: E402
 
+#: Пример раскладки: суммой ровно на полный парламент (147 мест по карте).
 SAMPLE = [
-    ("Народный союз", "НС", "#0088b0", 34),
-    ("Партия труда", "ПТ", "#d6006c", 27),
-    ("Аграрный блок", "АБ", "#4c7a34", 18),
-    ("Либеральный форум", "ЛФ", "#edbb00", 14),
-    ("Консервативная лига", "КЛ", "#2d2b2b", 12),
-    ("Движение «Заря»", "ДЗ", "#b3541e", 9),
-    ("Независимые", "НЗ", "#7d7979", 6),
+    ("Народный союз", "НС", "#0088b0", 42),
+    ("Партия труда", "ПТ", "#d6006c", 33),
+    ("Аграрный блок", "АБ", "#4c7a34", 22),
+    ("Либеральный форум", "ЛФ", "#edbb00", 17),
+    ("Консервативная лига", "КЛ", "#2d2b2b", 15),
+    ("Движение «Заря»", "ДЗ", "#b3541e", 11),
+    ("Независимые", "НЗ", "#7d7979", 7),
 ]
 
 
@@ -126,7 +127,7 @@ class TestFirstRun(AppTestCase):
 
     def test_chart_is_all_grey(self):
         seats = compute_seats(self.app.total_seats, self.service.project.rows, [])
-        self.assertEqual(len(seats), 120)
+        self.assertEqual(len(seats), self.app.total_seats)
         self.assertTrue(all(s.color == theme.EMPTY_SEAT for s in seats))
 
 
@@ -134,9 +135,9 @@ class TestSeatDistribution(AppTestCase):
     def test_typing_updates_service_and_derived(self):
         self.distribute()
         conv = self.app.selected
-        self.assertEqual(self.app.used_seats(conv), 120)
-        self.assertEqual(conv.seats[self.app.parties[0].id], 34)
-        self.assertEqual(self.app.used_text.value, "120 / 120")
+        self.assertEqual(self.app.used_seats(conv), 147)
+        self.assertEqual(conv.seats[self.app.parties[0].id], 42)
+        self.assertEqual(self.app.used_text.value, "147 / 147")
         self.assertEqual(self.app.remaining_text.value, "0")
         self.assertEqual(self.app.remaining_note.value, "Все места распределены.")
         self.assertEqual(self.app.progress.value, 1.0)
@@ -144,16 +145,16 @@ class TestSeatDistribution(AppTestCase):
     def test_remainder_is_reported(self):
         self.add_parties(2)
         self.type_seats(self.app.parties[0].id, "50")
-        self.assertEqual(self.app.remaining_text.value, "70")
+        self.assertEqual(self.app.remaining_text.value, "97")
         self.assertEqual(self.app.remaining_text.color, theme.ACCENT_2_700)
-        self.assertIn("Осталось распределить 70 мест", self.app.remaining_note.value)
+        self.assertIn("Осталось распределить 97 мест", self.app.remaining_note.value)
 
     def test_input_is_clamped_to_total(self):
         self.distribute()
-        # Все 120 мест розданы: соседям принадлежит 86, значит потолок — 34.
+        # Все 147 мест розданы: соседям принадлежит 105, значит потолок — 42.
         field = self.type_seats(self.app.parties[0].id, "999")
-        self.assertEqual(field.value, "34")
-        self.assertEqual(self.app.used_seats(self.app.selected), 120)
+        self.assertEqual(field.value, "42")
+        self.assertEqual(self.app.used_seats(self.app.selected), 147)
 
     def test_negative_becomes_zero(self):
         self.add_parties(2)
@@ -182,21 +183,22 @@ class TestSeatDistribution(AppTestCase):
         self.distribute()
         shown = texts(self.app.legend_row)
         self.assertIn("Народный союз", shown)
-        self.assertIn("28,3 %", shown)
-        self.assertIn("5,0 %", shown)
+        self.assertIn("28,6 %", shown)
+        self.assertIn("4,8 %", shown)
 
     def test_largest_party_leads_the_chart(self):
         self.distribute()
         distribution = self.app.distribution(self.app.selected)
-        self.assertEqual([seats for _p, seats in distribution], [34, 27, 18, 14, 12, 9, 6])
+        self.assertEqual([seats for _p, seats in distribution], [42, 33, 22, 17, 15, 11, 7])
 
     def test_majority_notes(self):
         self.add_parties(2)
-        self.type_seats(self.app.parties[0].id, "60")
+        majority = self.app.majority_seats          # 74 из 147
+        self.type_seats(self.app.parties[0].id, str(majority - 1))
         self.assertIn("большинства нет", self.app.majority_text.value)
         self.assertEqual(self.app.majority_text.color, theme.NEUTRAL_700)
 
-        self.type_seats(self.app.parties[0].id, "61")
+        self.type_seats(self.app.parties[0].id, str(majority))
         self.assertEqual(self.app.majority_text.value,
                          "Народный союз — абсолютное большинство")
         self.assertEqual(self.app.majority_text.color, theme.ACCENT_2_700)
@@ -263,7 +265,7 @@ class TestParties(AppTestCase):
         self.assertEqual(updated.name, "Новый союз")
         self.assertEqual(updated.color, "#5b4b8a")
         # Места остались за той же партией.
-        self.assertEqual(self.app.selected.seats[party.id], 34)
+        self.assertEqual(self.app.selected.seats[party.id], 42)
         self.assertIn("Новый союз", texts(self.app.legend_row))
 
     def test_delete_dialog_lists_affected_convocations(self):
@@ -276,7 +278,7 @@ class TestParties(AppTestCase):
         self.app.delete_party(party)
         shown = texts(self.page.dialog)
         self.assertTrue(any("Удалить «Независимые»?" in t for t in shown))
-        self.assertTrue(any("Первый состав — 6 мест" in t for t in shown))
+        self.assertTrue(any("Первый состав — 7 мест" in t for t in shown))
 
     def test_delete_frees_seats_everywhere(self):
         self.distribute()
@@ -287,7 +289,7 @@ class TestParties(AppTestCase):
 
         self.assertIsNone(self.service.project.party(party.id))
         self.assertNotIn(party.id, self.app.selected.seats)
-        self.assertEqual(self.app.used_seats(self.app.selected), 114)
+        self.assertEqual(self.app.used_seats(self.app.selected), 140)
 
     def test_directory_screen_shows_table(self):
         self.distribute()
@@ -397,7 +399,7 @@ class TestConvocations(AppTestCase):
         self.app.new_convocation()
         shown = texts(self.page.dialog)
         self.assertTrue(any("Зафиксировать Первый состав?" in t for t in shown))
-        self.assertTrue(any("120 из 120 мест распределены · 7 партий" in t for t in shown))
+        self.assertTrue(any("147 из 147 мест распределены · 7 партий" in t for t in shown))
         field = find(self.page.dialog, lambda c: isinstance(c, ft.TextField))
         self.assertEqual(field.value, "Второй состав")
 
@@ -463,7 +465,7 @@ class TestConvocations(AppTestCase):
         self.assertIn("Второй состав", shown)
         self.assertIn("Первый состав", shown)
         self.assertIn("Редактируется", shown)
-        self.assertIn("120 из 120 мест", shown)
+        self.assertIn("147 из 147 мест", shown)
         # Дат и времени фиксации в карточках больше нет.
         self.assertNotIn("сейчас", shown)
 
@@ -625,7 +627,7 @@ class TestProjectFile(AppTestCase):
         again = ParlamentService(self.path)
         again.bootstrap()
         self.assertEqual(len(again.project.parties), 7)
-        self.assertEqual(sum(again.project.active_convocation.seats.values()), 120)
+        self.assertEqual(sum(again.project.active_convocation.seats.values()), 147)
 
     def test_keeps_saving_to_whatever_file_the_service_points_at(self):
         """У интерфейса нет своего меню «Файл» — за выбор файла целиком

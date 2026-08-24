@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from parlament import ParlamentService, ValidationError  # noqa: E402
+from parlament.district_seed import SEED_TOTAL_SEATS  # noqa: E402
 from parlament.model import Project, convocation_name, normalize_color  # noqa: E402
 from parlament.store import StoreError, load, save  # noqa: E402
 
@@ -139,23 +140,28 @@ class TestSeatValidation(ServiceTestCase):
                 self.service.set_seats(self.active_id, party.id, value)
 
     def test_sum_cannot_exceed_total(self):
+        # Числа считаются от размера парламента, а не зашиты: он задаётся
+        # картой округов и уже однажды менялся со 120 на 147.
+        total = self.service.project.total_seats
         first, second = self.party(), self.party(name="Партия труда", color="#d6006c")
-        self.service.set_seats(self.active_id, first.id, 100)
+        self.service.set_seats(self.active_id, first.id, total - 20)
         with self.assertRaises(ValidationError) as ctx:
             self.service.set_seats(self.active_id, second.id, 21)
         self.assertIn("20", str(ctx.exception))  # подсказка про доступный остаток
 
     def test_exact_total_allowed(self):
+        total = self.service.project.total_seats
         first, second = self.party(), self.party(name="Партия труда", color="#d6006c")
-        self.service.set_seats(self.active_id, first.id, 100)
+        self.service.set_seats(self.active_id, first.id, total - 20)
         self.service.set_seats(self.active_id, second.id, 20)
-        self.assertEqual(self.service.project.active_convocation.used_seats(), 120)
+        self.assertEqual(self.service.project.active_convocation.used_seats(), total)
 
     def test_set_all_rejects_overflow_atomically(self):
+        total = self.service.project.total_seats
         first, second = self.party(), self.party(name="Партия труда", color="#d6006c")
         self.service.set_seats(self.active_id, first.id, 50)
         with self.assertRaises(ValidationError):
-            self.service.set_all_seats(self.active_id, {first.id: 70, second.id: 60})
+            self.service.set_all_seats(self.active_id, {first.id: total, second.id: 1})
         # Ничего не применилось — распределение осталось прежним.
         self.assertEqual(self.service.project.active_convocation.seats, {first.id: 50})
 
@@ -315,7 +321,7 @@ class TestPersistence(ServiceTestCase):
     def test_file_is_readable_utf8_json(self):
         self.party()
         raw = json.loads(self.path.read_text(encoding="utf-8"))
-        self.assertEqual(raw["totalSeats"], 120)
+        self.assertEqual(raw["totalSeats"], SEED_TOTAL_SEATS)
         self.assertEqual(raw["parties"][0]["name"], "Народный союз")
 
     def test_bootstrap_reopens_previous_project(self):
