@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
@@ -18,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import flet as ft  # noqa: E402
 
 from fake_page import FakePage, find, find_all, texts  # noqa: E402
-from parlament.service import ParlamentService  # noqa: E402
+from parlament.service import ParlamentService, ValidationError  # noqa: E402
 from parlament.ui import theme  # noqa: E402
 from parlament.ui.app import ParlamentApp  # noqa: E402
 from parlament.ui.dialogs import normalize_hex  # noqa: E402
@@ -807,6 +808,84 @@ class TestMapAndElections(AppTestCase):
             legend=[("Народный союз", "#0088b0", 1, 2)],
         )
         self.assertTrue(data.startswith(b"\x89PNG"))
+
+
+class TestProjectWithoutDistricts(unittest.TestCase):
+    """Проект, начатый до появления карты: до выборов всё равно можно дойти.
+
+    Округа таким проектам не выдаются молча — это меняет размер палаты, —
+    но и тупика быть не должно, иначе новая механика им недоступна вовсе.
+    """
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        self.path = Path(self._dir.name) / "старый.parlament.json"
+        self.path.write_text(json.dumps({
+            "schemaVersion": 1, "totalSeats": 120, "rows": 5,
+            "parties": [{"id": "p1", "name": "Народный союз", "color": "#0088b0"}],
+            "convocations": [{"id": "c1", "number": 1, "name": "Первый состав",
+                              "seats": {"p1": 40}}],
+        }, ensure_ascii=False), encoding="utf-8")
+
+        self.service = ParlamentService(self.path)
+        self.service.bootstrap()
+        self.page = FakePage()
+        self.app = ParlamentApp(self.page, self.service)
+        self.app.build()
+
+    @property
+    def body(self):
+        return self.page.controls[0]
+
+    def button(self, caption: str):
+        return find(self.body, lambda c: isinstance(c, ft.Button) and c.content == caption)
+
+    def test_old_project_keeps_its_own_size(self):
+        self.assertEqual(self.service.project.districts, [])
+        self.assertEqual(self.service.project.total_seats, 120)
+
+    def test_map_button_is_shown_even_without_districts(self):
+        # Иначе до выборов из такого проекта не добраться вообще никак.
+        self.assertIsNotNone(self.button("Карта"))
+
+    def test_map_screen_offers_to_add_districts(self):
+        self.button("Карта").on_click(None)
+        self.assertIsNotNone(self.button("Взять округа с карты"))
+
+    def test_adopting_districts_opens_the_way_to_elections(self):
+        self.button("Карта").on_click(None)
+        self.button("Взять округа с карты").on_click(None)
+        find(self.page.dialog, lambda c: isinstance(c, ft.Button)
+             and c.content == "Добавить округа").on_click(None)
+
+        self.assertEqual(len(self.service.project.districts), 27)
+        self.assertEqual(self.service.project.total_seats, 147)
+        self.assertFalse(self.button("Выборы").disabled)
+
+    def test_adopting_keeps_already_distributed_seats(self):
+        self.button("Карта").on_click(None)
+        self.button("Взять округа с карты").on_click(None)
+        find(self.page.dialog, lambda c: isinstance(c, ft.Button)
+             and c.content == "Добавить округа").on_click(None)
+        self.assertEqual(self.service.project.convocations[0].seats["p1"], 40)
+
+    def test_dialog_spells_out_the_change_in_size(self):
+        self.button("Карта").on_click(None)
+        self.button("Взять округа с карты").on_click(None)
+        self.assertTrue(any("120 → 147" in t for t in texts(self.page.dialog)))
+
+    def test_districts_are_not_adopted_twice(self):
+        self.service.adopt_map_districts()
+        with self.assertRaises(ValidationError):
+            self.service.adopt_map_districts()
+
+    def test_adoption_survives_restart(self):
+        self.service.adopt_map_districts()
+        again = ParlamentService(self.path)
+        again.bootstrap()
+        self.assertEqual(len(again.project.districts), 27)
+        self.assertEqual(again.project.total_seats, 147)
 
 
 if __name__ == "__main__":

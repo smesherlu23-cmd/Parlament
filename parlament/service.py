@@ -14,6 +14,7 @@ from . import elections, store
 from .model import (
     Convocation,
     District,
+    default_districts,
     Party,
     Project,
     convocation_name,
@@ -206,6 +207,24 @@ class ParlamentService:
         return self.project.active_convocation
 
     # -- выборы по округам ----------------------------------------------------
+
+    def adopt_map_districts(self) -> None:
+        """Заводит в проекте округа игровой карты.
+
+        Нужно проектам, начатым до появления карты: сами они округов не
+        получают (см. `Project.from_dict`), иначе набранные вручную места
+        разъехались бы с новым размером палаты у всех разом. Здесь это
+        осознанный шаг пользователя, поэтому и размер палаты подтягивается
+        под сумму округов.
+
+        Уже распределённые места не трогаем: они остаются как есть, просто
+        часть палаты становится нераспределённой.
+        """
+        if self.project.districts:
+            raise ValidationError("Округа в проекте уже есть.")
+        self.project.districts = default_districts()
+        self.project.total_seats = sum(d.seats for d in self.project.districts)
+        self._persist()
 
     def set_district_votes(self, convocation_id: str, district_id: str,
                            votes: dict[str, int]) -> Convocation:

@@ -450,6 +450,41 @@ def district_dialog(district, rows: list[tuple], total_votes: int,
     return _shell(district.name, body, [_cancel_as_close(on_close)], width=520)
 
 
+def adopt_districts_dialog(old_total: int, districts: list, on_confirm: Callable,
+                           on_cancel: Callable) -> ft.AlertDialog:
+    """Предложение завести округа карты в проекте, начатом до её появления.
+
+    Размер палаты при этом меняется, поэтому спрашиваем явно, а не делаем
+    молча при открытии файла.
+    """
+    new_total = sum(d.seats for d in districts)
+    body: list[ft.Control] = [
+        ft.Text(f"В проект добавятся {len(districts)} округов игровой карты.",
+                size=theme.fs(14), color=theme.TEXT),
+        ft.Container(
+            padding=ft.Padding.all(10),
+            bgcolor=theme.NEUTRAL_100,
+            border=ft.Border.all(1, theme.DIVIDER),
+            border_radius=theme.RADIUS,
+            content=ft.Column([
+                ft.Row([
+                    ft.Text("Мест в парламенте", size=theme.fs(13), color=theme.NEUTRAL_700),
+                    ft.Container(expand=True),
+                    ft.Text(f"{old_total} → {new_total}", size=theme.fs(14),
+                            font_family=theme.FONT_SEMIBOLD, color=theme.TEXT),
+                ]),
+                ft.Text(
+                    "Уже распределённые места сохранятся — просто часть палаты "
+                    "станет нераспределённой, пока не пройдут выборы.",
+                    size=theme.fs(12), color=theme.NEUTRAL_700,
+                ),
+            ], spacing=7, tight=True),
+        ),
+    ]
+    return _shell("Взять округа с карты?", body,
+                  [_cancel(on_cancel), theme.primary_button("Добавить округа", on_confirm)])
+
+
 def import_report_dialog(filled: int, warnings: list[str],
                          on_close: Callable) -> ft.AlertDialog:
     """Что удалось разобрать в загруженной таблице, а что вызвало вопросы.

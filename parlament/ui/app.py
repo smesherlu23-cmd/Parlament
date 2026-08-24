@@ -15,6 +15,7 @@ from pathlib import Path
 
 import flet as ft
 
+from .. import model
 from ..model import Convocation, Party
 from ..service import ParlamentService, ValidationError
 from ..store import StoreError
@@ -201,9 +202,12 @@ class ParlamentApp:
 
             right = [
                 theme.secondary_button("Партии", lambda _e: self.show_parties()),
+                # Показывается всегда, даже когда округов в проекте ещё нет:
+                # именно с этого экрана они и заводятся. Спрятанная кнопка
+                # означала бы, что в проекте, начатом до карты, до выборов не
+                # добраться вовсе.
+                theme.secondary_button("Карта", lambda _e: self.show_map()),
             ]
-            if self.service.project.districts:
-                right.append(theme.secondary_button("Карта", lambda _e: self.show_map()))
             if archive_view:
                 right.append(theme.primary_button("Править состав", lambda _e: self.edit_archived()))
 
@@ -591,6 +595,24 @@ class ParlamentApp:
     def show_elections(self) -> None:
         self.view = "elections"
         self.render()
+
+    def adopt_map_districts(self) -> None:
+        """Заводит округа карты в проекте, начатом до её появления."""
+        old_total = self.total_seats
+
+        def confirm(_event) -> None:
+            try:
+                self.service.adopt_map_districts()
+            except (ValidationError, StoreError) as error:
+                self.toast(str(error), error=True)
+                return
+            self.close_dialog()
+            self.render()
+            self.toast(f"Округа добавлены: {len(self.service.project.districts)} шт., "
+                       f"{self.total_seats} мест.")
+
+        self.page.show_dialog(dialogs.adopt_districts_dialog(
+            old_total, model.default_districts(), confirm, lambda _e: self.close_dialog()))
 
     # -- выборы -------------------------------------------------------------
 

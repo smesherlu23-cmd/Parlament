@@ -133,6 +133,12 @@ class MapView:
         )
 
     def _no_districts(self) -> ft.Control:
+        """Проект начат до появления карты — предлагаем завести округа.
+
+        Молча при загрузке файла их не добавляем: это меняет размер палаты,
+        поэтому решение остаётся за пользователем. Но и тупика тут быть не
+        должно — отсюда кнопка, а не одно объяснение.
+        """
         return ft.Container(
             expand=True,
             alignment=ft.Alignment.CENTER,
@@ -140,14 +146,16 @@ class MapView:
                 ft.Text("В проекте нет округов", size=theme.fs(18),
                         font_family=theme.FONT_SEMIBOLD, color=theme.TEXT),
                 ft.Container(
-                    width=430,
+                    width=440,
                     content=ft.Text(
-                        "Округа появляются в новых проектах. Этот создан до карты — "
-                        "места в нём распределяются вручную.",
+                        "Этот проект начат до появления карты, поэтому места в нём "
+                        "распределяются вручную. Округа можно добавить — тогда "
+                        "станут доступны выборы и раскраска карты.",
                         size=theme.fs(13), color=theme.NEUTRAL_700,
                         text_align=ft.TextAlign.CENTER),
                 ),
-                theme.primary_button("К парламенту", lambda _e: self.app.show_parliament()),
+                theme.primary_button("Взять округа с карты",
+                                     lambda _e: self.app.adopt_map_districts()),
             ], spacing=16,
                 alignment=ft.MainAxisAlignment.CENTER,
                 horizontal_alignment=ft.CrossAxisAlignment.CENTER),
