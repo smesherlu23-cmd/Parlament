@@ -79,7 +79,7 @@ def _register_rank(votes: dict[str, float]) -> dict[str, float]:
 def district_winner(votes: dict[str, float], seats: int) -> str | None:
     """Партия, которой достаётся округ, — по местам, а при равенстве по голосам.
 
-    Именно её цветом красится маркер округа на карте. `None`, если по округу
+    Именно её цветом красится округ на карте. `None`, если по округу
     ещё нет данных.
     """
     allocation = allocate_seats(votes, seats)

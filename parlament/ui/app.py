@@ -742,7 +742,7 @@ class ParlamentApp:
         self.toast(f"Выборы разыграны: {fmt.pluralize(filled, fmt.DISTRICTS)} из {total}.")
 
     def show_district(self, district_id: str) -> None:
-        """Расклад одного округа — по клику на маркер карты."""
+        """Расклад одного округа — по клику на него на карте."""
         district = self.service.project.district(district_id)
         if district is None:
             return

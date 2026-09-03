@@ -430,7 +430,7 @@ class ParlamentService:
         return elections.allocate_all(conv.votes, self.project.district_seats)
 
     def district_winners(self, convocation_id: str) -> dict[str, str]:
-        """Победитель каждого округа — по нему карта красит маркеры."""
+        """Победитель каждого округа — в его цвет карта красит округ."""
         conv = self._require_convocation(convocation_id)
         seats = self.project.district_seats
         winners = {}
