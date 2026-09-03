@@ -344,6 +344,14 @@ class ParlamentService:
         modifiers = modifiers or {}
         generator = rng or random.Random()
 
+        # Ключи проверяем заранее: дальше идёт обход округов проекта, и
+        # опечатка в имени округа или партии иначе просто потерялась бы —
+        # выборы прошли бы «успешно», молча выбросив чужие модификаторы.
+        for district_id, per_district in modifiers.items():
+            self._require_district(district_id)
+            for party_id in (per_district or {}):
+                self._require_party(party_id)
+
         rolls: dict[str, dict[str, elections.PartyRoll]] = {}
         for district in self.project.districts:
             per_district = modifiers.get(district.id, {})
@@ -407,57 +415,6 @@ class ParlamentService:
         except (TypeError, ValueError):
             raise ValidationError("Бонус за дебаты должен быть числом.") from None
 
-    def set_district_votes(self, convocation_id: str, district_id: str,
-                           votes: dict[str, int]) -> Convocation:
-        """Записывает голоса по одному округу и пересчитывает состав.
-
-        Голоса — источник истины: `seats` созыва после этого целиком
-        пересобирается из выборов, поэтому руками правленные числа мест
-        затираются. Это осознанно: смешивать два способа набора состава в
-        одном созыве — верный путь к расхождению схемы и карты.
-        """
-        conv = self._require_convocation(convocation_id)
-        self._require_district(district_id)
-
-        cleaned: dict[str, int] = {}
-        for party_id, count in (votes or {}).items():
-            self._require_party(party_id)
-            cleaned[party_id] = self._clean_vote_count(count)
-
-        cleaned = {pid: n for pid, n in cleaned.items() if n > 0}
-        if cleaned:
-            conv.votes[district_id] = cleaned
-        else:
-            conv.votes.pop(district_id, None)
-
-        self._recount(conv)
-        self._persist()
-        return conv
-
-    def run_election(self, convocation_id: str,
-                     votes_by_district: dict[str, dict[str, int]]) -> Convocation:
-        """Заносит результаты сразу по всем округам — ручной ввод целиком
-        или импорт документа. Округа, которых нет во входных данных,
-        обнуляются: это результат выборов, а не точечная правка."""
-        conv = self._require_convocation(convocation_id)
-
-        fresh: dict[str, dict[str, int]] = {}
-        for district_id, votes in (votes_by_district or {}).items():
-            self._require_district(district_id)
-            cleaned = {}
-            for party_id, count in (votes or {}).items():
-                self._require_party(party_id)
-                value = self._clean_vote_count(count)
-                if value > 0:
-                    cleaned[party_id] = value
-            if cleaned:
-                fresh[district_id] = cleaned
-
-        conv.votes = fresh
-        self._recount(conv)
-        self._persist()
-        return conv
-
     def clear_election(self, convocation_id: str) -> Convocation:
         """Убирает результаты выборов созыва — состав снова набирается руками."""
         conv = self._require_convocation(convocation_id)
@@ -493,17 +450,6 @@ class ParlamentService:
         if district is None:
             raise ValidationError("Округ не найден.")
         return district
-
-    def _clean_vote_count(self, value: object) -> int:
-        if isinstance(value, bool) or isinstance(value, float) and not value.is_integer():
-            raise ValidationError("Число голосов должно быть целым числом.")
-        try:
-            count = int(value)
-        except (TypeError, ValueError):
-            raise ValidationError("Число голосов должно быть целым числом.") from None
-        if count < 0:
-            raise ValidationError("Число голосов не может быть отрицательным.")
-        return count
 
     # -- свои цвета -----------------------------------------------------------
 

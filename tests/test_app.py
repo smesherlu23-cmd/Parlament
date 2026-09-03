@@ -31,7 +31,6 @@ from parlament.district_geometry import (  # noqa: E402
 )
 from parlament.ui.map_export import render_map_png  # noqa: E402
 from parlament.ui.seat_chart import compute_seats  # noqa: E402
-from parlament.ui.votes_file import export_template, parse_votes_text  # noqa: E402
 
 #: Пример раскладки: суммой ровно на полный парламент (147 мест по карте).
 SAMPLE = [

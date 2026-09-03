@@ -1,4 +1,4 @@
-"""Тесты выборов по округам: деление мест, победители, импорт таблицы."""
+"""Тесты выборов по округам: бросок, деление мест, победители, таблица поддержки."""
 
 from __future__ import annotations
 
@@ -25,11 +25,10 @@ from parlament.elections import (  # noqa: E402
     weights,
 )
 from parlament.model import Project  # noqa: E402
-from parlament.ui.votes_file import (  # noqa: E402
+from parlament.ui.support_file import (  # noqa: E402
     export_support_template,
     parse_support_text,
 )
-from parlament.votes_import import parse_votes_csv  # noqa: E402
 
 
 class TestAllocation(unittest.TestCase):
@@ -198,78 +197,68 @@ class TestDistrictsFromMap(ElectionTestCase):
         self.assertEqual(old.districts, [])
 
 
-class TestRunElection(ElectionTestCase):
-    def test_results_fill_the_parliament(self):
-        self.service.run_election(self.conv.id, {
-            self.by_name["Гаффинсвик центр"].id: {self.a.id: 5000, self.b.id: 3000,
-                                                  self.c.id: 2000},
-            self.by_name["Саттмалвик центр"].id: {self.b.id: 9000},
-        })
-        # 10 мест: 5/3/2, плюс 9 мест целиком «Партии труда».
-        self.assertEqual(self.conv.seats, {self.a.id: 5, self.b.id: 12, self.c.id: 2})
+class TestElectionResults(ElectionTestCase):
+    """Что розыгрыш делает с составом созыва и с картой."""
+
+    def only_party_here(self, district_name: str, party):
+        """Даёт партии единственную поддержку в округе — округ уходит ей.
+
+        Бросок случаен, поэтому «кто победит» задаётся не силой модификаторов,
+        а тем, что соперников в округе нет: борьбы не было — победитель
+        забирает всё.
+        """
+        district = self.by_name[district_name]
+        settlement = self.service.add_settlement(district.id, f"НП {district.code}")
+        self.service.set_support(district.id, settlement.id, party.id, 3)
+        return district
+
+    def test_results_fill_the_districts_that_were_contested(self):
+        first = self.only_party_here("Гаффинсвик центр", self.a)
+        second = self.only_party_here("Саттмалвик центр", self.b)
+        self.service.roll_election(self.conv.id, {}, rng=random.Random(3))
+        self.assertEqual(self.conv.seats,
+                         {self.a.id: first.seats, self.b.id: second.seats})
         self.assertTrue(self.conv.has_election)
 
     def test_winners_drive_the_map(self):
-        self.service.run_election(self.conv.id, {
-            self.by_name["Гаффинсвик центр"].id: {self.a.id: 5000, self.b.id: 3000},
-            self.by_name["Судбригг"].id: {self.c.id: 600, self.a.id: 400},
-        })
+        big = self.only_party_here("Гаффинсвик центр", self.a)
+        small = self.only_party_here("Судбригг", self.c)
+        self.service.roll_election(self.conv.id, {}, rng=random.Random(4))
         winners = self.service.district_winners(self.conv.id)
-        self.assertEqual(winners[self.by_name["Гаффинсвик центр"].id], self.a.id)
-        self.assertEqual(winners[self.by_name["Судбригг"].id], self.c.id)
+        self.assertEqual(winners[big.id], self.a.id)
+        self.assertEqual(winners[small.id], self.c.id)
 
     def test_districts_without_results_stay_uncoloured(self):
-        self.service.run_election(self.conv.id, {
-            self.by_name["Судбригг"].id: {self.a.id: 100},
-        })
+        district = self.only_party_here("Судбригг", self.a)
+        self.service.roll_election(self.conv.id, {}, rng=random.Random(5))
         winners = self.service.district_winners(self.conv.id)
-        self.assertEqual(len(winners), 1)
-        self.assertNotIn(self.by_name["Гаффинсвик центр"].id, winners)
-
-    def test_single_district_can_be_edited_without_touching_the_rest(self):
-        first = self.by_name["Судбригг"].id
-        second = self.by_name["Гаффинсвик центр"].id
-        self.service.set_district_votes(self.conv.id, first, {self.a.id: 100})
-        self.service.set_district_votes(self.conv.id, second, {self.b.id: 100})
-        self.assertEqual(self.conv.seats, {self.a.id: 2, self.b.id: 10})
-
-    def test_emptying_a_district_takes_its_seats_back(self):
-        district = self.by_name["Гаффинсвик центр"].id
-        self.service.set_district_votes(self.conv.id, district, {self.a.id: 100})
-        self.assertEqual(self.conv.seats, {self.a.id: 10})
-        self.service.set_district_votes(self.conv.id, district, {})
-        self.assertEqual(self.conv.seats, {})
+        self.assertEqual(list(winners), [district.id])
 
     def test_rerunning_replaces_previous_results(self):
-        # Выборы — это результат целиком, а не точечная правка: округа, о
-        # которых новые данные молчат, обнуляются.
-        self.service.run_election(self.conv.id, {
-            self.by_name["Судбригг"].id: {self.a.id: 100},
-            self.by_name["Гаффинсвик центр"].id: {self.a.id: 100},
-        })
-        self.service.run_election(self.conv.id, {
-            self.by_name["Судбригг"].id: {self.b.id: 100},
-        })
-        self.assertEqual(self.conv.seats, {self.b.id: 2})
+        # Выборы — это результат целиком, а не точечная правка: округа, где
+        # в новый розыгрыш никто не пошёл, обнуляются.
+        district = self.only_party_here("Судбригг", self.a)
+        self.service.roll_election(
+            self.conv.id, {district.id: {self.a.id: {"agitation": True}},
+                           self.by_name["Гаффинсвик центр"].id:
+                               {self.b.id: {"agitation": True}}},
+            rng=random.Random(6))
+        self.assertEqual(set(self.conv.seats), {self.a.id, self.b.id})
 
-    def test_clearing_returns_to_manual_mode(self):
-        self.service.run_election(self.conv.id, {
-            self.by_name["Судбригг"].id: {self.a.id: 100}})
-        self.service.clear_election(self.conv.id)
-        self.assertEqual(self.conv.seats, {})
-        self.assertFalse(self.conv.has_election)
+        self.service.roll_election(self.conv.id, {}, rng=random.Random(6))
+        self.assertEqual(self.conv.seats, {self.a.id: district.seats})
 
     def test_never_exceeds_the_parliament(self):
-        # Даже если заполнить все округа, сумма ровно равна размеру палаты.
-        self.service.run_election(self.conv.id, {
-            d.id: {self.a.id: 600, self.b.id: 400}
-            for d in self.service.project.districts
-        })
+        # Даже если разыграть все округа, сумма ровно равна размеру палаты.
+        setup = {d.id: {self.a.id: {"agitation": True},
+                        self.b.id: {"debate": 2}}
+                 for d in self.service.project.districts}
+        self.service.roll_election(self.conv.id, setup, rng=random.Random(8))
         self.assertEqual(sum(self.conv.seats.values()), SEED_TOTAL_SEATS)
 
     def test_results_survive_restart(self):
-        self.service.run_election(self.conv.id, {
-            self.by_name["Гаффинсвик центр"].id: {self.a.id: 5000, self.b.id: 3000}})
+        self.only_party_here("Гаффинсвик центр", self.a)
+        self.service.roll_election(self.conv.id, {}, rng=random.Random(10))
         again = ParlamentService(self.path)
         again.bootstrap()
         self.assertEqual(again.project.active_convocation.seats, self.conv.seats)
@@ -277,17 +266,9 @@ class TestRunElection(ElectionTestCase):
 
     def test_unknown_district_is_rejected(self):
         with self.assertRaises(ValidationError):
-            self.service.set_district_votes(self.conv.id, "нет-такого", {self.a.id: 1})
+            self.service.roll_election(self.conv.id,
+                                       {"нет-такого": {self.a.id: {"debate": 1}}})
 
-    def test_negative_votes_are_rejected(self):
-        with self.assertRaises(ValidationError):
-            self.service.set_district_votes(
-                self.conv.id, self.by_name["Судбригг"].id, {self.a.id: -5})
-
-    def test_fractional_votes_are_rejected(self):
-        with self.assertRaises(ValidationError):
-            self.service.set_district_votes(
-                self.conv.id, self.by_name["Судбригг"].id, {self.a.id: 1.5})
 
 
 class TestSettlementsAndSupport(ElectionTestCase):
@@ -534,61 +515,6 @@ class TestSupportImport(ElectionTestCase):
         self.assertEqual(result.warnings, [])
         self.service.import_support(result.rows)
         self.assertEqual(district.settlements[0].support, {self.a.id: 4})
-
-
-class TestVotesImport(ElectionTestCase):
-    def table(self, body: str) -> str:
-        return "Округ,Народный союз,Партия труда,Аграрный блок\n" + body
-
-    def parse(self, text: str):
-        return parse_votes_csv(
-            text,
-            {d.name: d.id for d in self.service.project.districts},
-            {p.name: p.id for p in self.service.project.parties},
-        )
-
-    def test_reads_a_plain_table(self):
-        result = self.parse(self.table(
-            "Гаффинсвик центр,5000,3000,2000\nСаттмалвик центр,,9000,\n"))
-        self.assertEqual(result.warnings, [])
-        self.assertEqual(result.districts_filled, 2)
-        self.assertEqual(result.votes[self.by_name["Саттмалвик центр"].id],
-                         {self.b.id: 9000})
-
-    def test_imported_table_can_be_applied(self):
-        result = self.parse(self.table("Гаффинсвик центр,5000,3000,2000\n"))
-        self.service.run_election(self.conv.id, result.votes)
-        self.assertEqual(self.conv.seats, {self.a.id: 5, self.b.id: 3, self.c.id: 2})
-
-    def test_semicolons_and_spaced_numbers(self):
-        # Русский Excel сохраняет через «;» и разбивает тысячи пробелами.
-        result = self.parse("Округ;Народный союз;Партия труда\n"
-                            "Гаффинсвик центр;12 500;3 000\n")
-        self.assertEqual(result.votes[self.by_name["Гаффинсвик центр"].id],
-                         {self.a.id: 12500, self.b.id: 3000})
-
-    def test_names_match_loosely(self):
-        result = self.parse("Округ,  народный СОЮЗ \n  гаффинсвик  центр ,100\n")
-        self.assertEqual(result.votes[self.by_name["Гаффинсвик центр"].id],
-                         {self.a.id: 100})
-
-    def test_unknown_names_are_reported_not_swallowed(self):
-        result = self.parse(self.table("Атлантида,1,2,3\n"))
-        self.assertEqual(result.votes, {})
-        self.assertTrue(any("Атлантида" in w for w in result.warnings))
-
-    def test_unknown_party_column_is_reported(self):
-        result = self.parse("Округ,Партия чужая\nСудбригг,100\n")
-        self.assertTrue(any("Партия чужая" in w for w in result.warnings))
-
-    def test_garbage_cell_is_reported(self):
-        result = self.parse(self.table("Судбригг,абв,10,\n"))
-        self.assertTrue(any("не число" in w for w in result.warnings))
-        # Остальные клетки строки при этом разобрались.
-        self.assertEqual(result.votes[self.by_name["Судбригг"].id], {self.b.id: 10})
-
-    def test_empty_file_explains_the_format(self):
-        self.assertTrue(self.parse("").warnings)
 
 
 if __name__ == "__main__":

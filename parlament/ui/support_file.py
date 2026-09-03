@@ -1,8 +1,8 @@
-"""Мост между файлом на диске и разбором таблицы результатов.
+"""Мост между файлом на диске и разбором таблицы поддержки.
 
-Сам разбор живёт в `parlament.votes_import` и про Flet ничего не знает.
+Сам разбор живёт в `parlament.support_import` и про Flet ничего не знает.
 Здесь — только то, что связано с файлами: раскодировать байты, отдать
-шаблон под текущие округа и партии.
+шаблон под текущие округа, пункты и партии.
 """
 
 from __future__ import annotations
@@ -12,35 +12,11 @@ import io
 from pathlib import Path
 
 from ..model import Project
-from ..votes_import import (
-    ImportResult,
-    SupportImportResult,
-    parse_support_csv,
-    parse_votes_csv,
-)
+from ..support_import import SupportImportResult, parse_support_csv
 
 #: Кодировки, которыми обычно оказывается сохранён CSV с русским текстом.
 #: UTF-8 первым, следом то, во что сохраняет русский Excel.
 ENCODINGS = ("utf-8-sig", "utf-8", "cp1251")
-
-
-def read_votes_file(picked, project: Project) -> ImportResult:
-    """Разбирает выбранный в диалоге файл.
-
-    :param picked: элемент результата `FilePicker.pick_files` — берём из него
-                   байты, а если их нет (десктоп отдаёт только путь) — читаем
-                   файл сами.
-    """
-    return parse_votes_text(_read_bytes(picked), project)
-
-
-def parse_votes_text(data: bytes, project: Project) -> ImportResult:
-    """Раскодирует байты и разбирает таблицу."""
-    return parse_votes_csv(
-        _decode(data),
-        {d.name: d.id for d in project.districts},
-        {p.name: p.id for p in project.parties},
-    )
 
 
 def read_support_file(picked, project: Project) -> SupportImportResult:
@@ -75,21 +51,6 @@ def export_support_template(project: Project) -> bytes:
                 ])
         else:
             writer.writerow([district.name, "", *[""] * len(project.parties)])
-    return buffer.getvalue().encode("utf-8-sig")
-
-
-def export_template(project: Project) -> bytes:
-    """Пустая таблица под текущие округа и партии.
-
-    Заголовок — названия партий ровно как в справочнике, строки — все округа
-    карты: заполнить в Excel и загрузить обратно, ничего не сверяя руками.
-    Сохраняем с BOM, иначе Excel открывает кириллицу кракозябрами.
-    """
-    buffer = io.StringIO()
-    writer = csv.writer(buffer)
-    writer.writerow(["Округ", *[p.name for p in project.parties]])
-    for district in project.districts:
-        writer.writerow([district.name, *[""] * len(project.parties)])
     return buffer.getvalue().encode("utf-8-sig")
 
 

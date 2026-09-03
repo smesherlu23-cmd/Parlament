@@ -29,12 +29,7 @@ from .map_view import MapView
 from .parties_view import PartiesView
 from .seat_chart import SeatChart, chart_height_for_width
 from .support_view import SupportView
-from .votes_file import (
-    export_support_template,
-    export_template,
-    read_support_file,
-    read_votes_file,
-)
+from .support_file import export_support_template, read_support_file
 
 
 class ParlamentApp:
@@ -767,52 +762,6 @@ class ParlamentApp:
             saved = await self.file_picker.save_file(
                 dialog_title="Шаблон таблицы поддержки",
                 file_name="Поддержка_шаблон.csv",
-                allowed_extensions=["csv"],
-                src_bytes=data,
-            )
-            if saved:
-                self.toast("Шаблон сохранён.")
-
-        self.page.run_task(save)
-
-    def load_votes_file(self) -> None:
-        """Загружает таблицу с результатами в поля экрана выборов."""
-
-        async def pick() -> None:
-            files = await self.file_picker.pick_files(
-                dialog_title="Таблица с результатами выборов",
-                allowed_extensions=["csv", "txt"],
-                allow_multiple=False,
-                with_data=True,
-            )
-            if not files:
-                return
-            try:
-                result = read_votes_file(files[0], self.service.project)
-            except (OSError, ValueError) as error:
-                self.toast(f"Не удалось прочитать файл: {error}", error=True)
-                return
-
-            if result.votes:
-                self.elections.fill(result.votes)
-            if result.warnings:
-                self.page.show_dialog(dialogs.import_report_dialog(
-                    result.districts_filled, result.warnings,
-                    lambda _e: self.close_dialog()))
-            elif result.votes:
-                self.toast(f"Загружено: {fmt.pluralize(result.districts_filled, fmt.DISTRICTS)}.")
-
-        self.page.run_task(pick)
-
-    def save_votes_template(self) -> None:
-        """Отдаёт пустую таблицу под текущие округа и партии — её удобно
-        заполнить в Excel и загрузить обратно."""
-
-        async def save() -> None:
-            data = export_template(self.service.project)
-            saved = await self.file_picker.save_file(
-                dialog_title="Шаблон таблицы результатов",
-                file_name="Выборы_шаблон.csv",
                 allowed_extensions=["csv"],
                 src_bytes=data,
             )
