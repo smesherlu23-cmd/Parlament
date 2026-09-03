@@ -419,7 +419,7 @@ def district_dialog(district, rows: list[tuple], shares: dict[str, float],
         ft.Row([
             ft.Container(theme.label("Партия"), expand=True),
             ft.Container(theme.label("Расчёт"), width=210),
-            ft.Container(theme.label("Голоса"), width=70),
+            ft.Container(theme.label("% голосов"), width=70),
             ft.Container(theme.label("Мест"), width=48),
         ], spacing=8),
     ]
@@ -469,7 +469,13 @@ def _roll_breakdown(roll) -> str:
     if roll.agitation:
         parts.append("+ 1")
     total = f"{roll.total:.1f}".replace(".", ",")
-    return f"{' '.join(parts)} = {total}"
+    line = f"{' '.join(parts)} = {total}"
+    # Штрафы могли увести сумму в минус, а вес ниже нуля не бывает: иначе
+    # партия вычитала бы голоса у остальных. Без оговорки строка выглядела
+    # бы арифметической ошибкой.
+    if roll.roll + roll.support + roll.debate + (1 if roll.agitation else 0) < 0:
+        line += " (не ниже нуля)"
+    return line
 
 
 def adopt_districts_dialog(old_total: int, districts: list, on_confirm: Callable,

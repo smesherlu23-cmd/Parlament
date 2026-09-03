@@ -848,6 +848,32 @@ class TestMapAndElections(AppTestCase):
         self.assertTrue(data.startswith(b"\x89PNG"))
 
 
+class TestRollBreakdown(unittest.TestCase):
+    """Строка разбора броска в диалоге округа."""
+
+    def line(self, **kwargs) -> str:
+        from parlament.elections import PartyRoll
+        from parlament.ui.dialogs import _roll_breakdown
+
+        return _roll_breakdown(PartyRoll(**kwargs))
+
+    def test_lists_every_modifier(self):
+        self.assertEqual(
+            self.line(roll=4, support=2.5, debate=-1, agitation=True),
+            "4 + 2,5 − 1 + 1 = 6,5")
+
+    def test_bare_roll_has_nothing_to_add(self):
+        self.assertEqual(self.line(roll=7), "7 = 7,0")
+
+    def test_clamped_sum_says_so(self):
+        # Иначе «3 − 9 = 0» выглядело бы арифметической ошибкой.
+        self.assertEqual(self.line(roll=3, debate=-9), "3 − 9 = 0,0 (не ниже нуля)")
+
+    def test_nothing_rolled_is_a_dash(self):
+        from parlament.ui.dialogs import _roll_breakdown
+        self.assertEqual(_roll_breakdown(None), "—")
+
+
 class TestSeatsAfterElection(AppTestCase):
     """Зал после выборов: места производные и руками не правятся."""
 
