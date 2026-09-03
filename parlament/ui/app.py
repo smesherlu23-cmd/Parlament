@@ -112,6 +112,16 @@ class ParlamentApp:
         conv = self.selected
         return not conv.is_fixed or self.editing_archived == conv.id
 
+    @property
+    def manual_seats(self) -> bool:
+        """Набираются ли места руками.
+
+        После выборов — нет: места посчитаны по округам, и правка их полем
+        ввода развела бы зал с картой, где округа уже покрашены. Чтобы вернуть
+        ручной набор, выборы сбрасываются целиком.
+        """
+        return self.is_editable and not self.selected.has_election
+
     def distribution(self, conv: Convocation) -> list[tuple[Party, int]]:
         """Партии с местами по убыванию — крупнейшая фракция уходит влево."""
         pairs = [(p, conv.seats.get(p.id, 0)) for p in self.parties]
@@ -374,6 +384,8 @@ class ParlamentApp:
     def _build_seat_rail(self, conv: Convocation) -> ft.Control:
         if not self.is_editable:
             return self._build_readonly_rail(conv)
+        if conv.has_election:
+            return self._build_election_rail(conv)
 
         self.seat_fields: dict[str, ft.TextField] = {}
         rows: list[ft.Control] = []
@@ -438,6 +450,68 @@ class ParlamentApp:
                         ft.Row([self.reset_button]),
                         ft.Row([theme.primary_button("Экспортировать в PNG",
                                                      lambda _e: self.export_png(), expand=True)]),
+                    ], spacing=8, tight=True),
+                ),
+            ], spacing=0, expand=True),
+        )
+
+    def _build_election_rail(self, conv: Convocation) -> ft.Control:
+        """Состав, посчитанный выборами: список без полей ввода.
+
+        Места здесь производные — их источник округа, а не человек. Дать
+        поправить их полем ввода значило бы развести зал с картой и с разбором
+        округа, где те же места уже расписаны по партиям. Вернуть ручной набор
+        можно, сбросив выборы.
+        """
+        rows = [
+            ft.Container(
+                padding=ft.Padding.symmetric(vertical=7),
+                border=ft.Border.only(bottom=ft.BorderSide(1, "#14201e1d")),
+                content=ft.Row([
+                    theme.swatch(party.color, 12),
+                    ft.Container(
+                        ft.Text(party.name, size=theme.fs(14), color=theme.TEXT,
+                                no_wrap=True, overflow=ft.TextOverflow.ELLIPSIS,
+                                tooltip=party.name),
+                        expand=True),
+                    ft.Text(str(seats), size=theme.fs(15),
+                            font_family=theme.FONT_SEMIBOLD, color=theme.TEXT),
+                ], spacing=10),
+            )
+            for party, seats in self.distribution(conv)
+        ]
+        districts = len(conv.rolls)
+
+        return ft.Container(
+            width=theme.RAIL_RIGHT_WIDTH,
+            padding=ft.Padding.symmetric(horizontal=20, vertical=18),
+            border=ft.Border.only(left=ft.BorderSide(1, theme.DIVIDER)),
+            content=ft.Column([
+                theme.label("Состав по итогам выборов"),
+                ft.Container(
+                    padding=ft.Padding.only(top=6),
+                    content=ft.Text(
+                        f"Места посчитаны по {fmt.pluralize(districts, fmt.DISTRICTS)}. "
+                        "Чтобы набрать состав руками, сбросьте выборы.",
+                        size=theme.fs(12), color=theme.NEUTRAL_700),
+                ),
+                ft.Container(
+                    ft.Column(rows, spacing=0, scroll=ft.ScrollMode.AUTO),
+                    expand=True,
+                    padding=ft.Padding.only(top=10),
+                ),
+                ft.Container(
+                    padding=ft.Padding.only(top=18),
+                    content=ft.Column([
+                        ft.Row([theme.secondary_button("К карте",
+                                                       lambda _e: self.show_map(),
+                                                       expand=True)]),
+                        ft.Row([theme.secondary_button("Сбросить выборы",
+                                                       lambda _e: self.reset_election(),
+                                                       expand=True)]),
+                        ft.Row([theme.primary_button("Экспортировать в PNG",
+                                                     lambda _e: self.export_png(),
+                                                     expand=True)]),
                     ], spacing=8, tight=True),
                 ),
             ], spacing=0, expand=True),
@@ -528,7 +602,11 @@ class ParlamentApp:
             self.majority_text.value = "Мест никому не отдано."
             self.majority_text.color = theme.NEUTRAL_700
 
-        if self.is_editable:
+        if not self.manual_seats and self.selected.has_election:
+            self.stage_meta.value = (
+                f"Выборы: {fmt.pluralize(len(self.selected.rolls), fmt.DISTRICTS)} "
+                f"· {used} из {self.total_seats} мест")
+        if self.manual_seats:
             self.stage_meta.value = f"Распределено {used} из {self.total_seats}"
             self.used_text.value = f"{used} / {self.total_seats}"
             self.remaining_text.value = str(remaining)
@@ -547,7 +625,7 @@ class ParlamentApp:
             for control in (self.chart, self.legend_row, self.majority_text,
                             self.stage_meta):
                 push(control)
-            if self.is_editable:
+            if self.manual_seats:
                 for control in (self.used_text, self.remaining_text, self.progress,
                                 self.remaining_note, self.reset_button):
                     push(control)
@@ -898,6 +976,33 @@ class ParlamentApp:
 
         self.page.show_dialog(dialogs.delete_convocation_dialog(
             convocation, confirm, lambda _e: self.close_dialog()))
+
+    def reset_election(self) -> None:
+        """Убирает итоги выборов — состав снова набирается руками."""
+        if not self.is_editable:
+            return
+        conv = self.selected
+
+        def confirm(_event) -> None:
+            try:
+                self.service.clear_election(conv.id)
+            except (ValidationError, StoreError) as error:
+                self.toast(str(error), error=True)
+                return
+            self.close_dialog()
+            self.render()
+            self.toast("Итоги выборов убраны — места снова набираются руками.")
+
+        self.page.show_dialog(dialogs._shell(
+            "Сбросить выборы",
+            [ft.Text(f"Убрать итоги выборов из состава «{conv.name}»?\n\n"
+                     "Разбор округов и раскраска карты пропадут, места станут "
+                     "нераспределёнными. Населённые пункты и очки поддержки "
+                     "останутся — сбрасывается только розыгрыш.",
+                     size=theme.fs(14), color=theme.TEXT)],
+            [theme.secondary_button("Отмена", lambda _e: self.close_dialog()),
+             theme.primary_button("Сбросить", confirm, danger=True)],
+        ))
 
     def reset_seats(self) -> None:
         if not self.is_editable:

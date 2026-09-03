@@ -848,6 +848,63 @@ class TestMapAndElections(AppTestCase):
         self.assertTrue(data.startswith(b"\x89PNG"))
 
 
+class TestSeatsAfterElection(AppTestCase):
+    """Зал после выборов: места производные и руками не правятся."""
+
+    def setUp(self):
+        super().setUp()
+        self.add_parties(3)
+        self.by_name = {d.name: d for d in self.service.project.districts}
+        self.district = self.by_name["Гаффинсвик центр"]
+        settlement = self.service.add_settlement(self.district.id, "НП 1")
+        self.service.set_support(self.district.id, settlement.id,
+                                 self.app.parties[0].id, 4)
+        self.app.show_elections()
+        self.app.apply_election()
+        self.app.show_parliament()
+
+    def test_seat_fields_are_gone(self):
+        # Поле ввода развело бы зал с картой: там те же места уже расписаны
+        # по округам.
+        self.assertFalse(self.app.manual_seats)
+        self.assertTrue(any("СОСТАВ ПО ИТОГАМ ВЫБОРОВ" in t
+                            for t in texts(self.body)))
+        self.assertEqual(find_all(self.body, lambda c: isinstance(c, ft.TextField)), [])
+
+    def test_rail_says_where_the_seats_came_from(self):
+        self.assertTrue(any("Места посчитаны по" in t for t in texts(self.body)))
+
+    def test_resetting_the_election_returns_manual_input(self):
+        self.app.reset_election()
+        confirm = find(self.page.dialog, lambda c: isinstance(c, ft.Button)
+                       and c.content == "Сбросить")
+        confirm.on_click(None)
+
+        conv = self.app.selected
+        self.assertEqual(conv.seats, {})
+        self.assertEqual(conv.rolls, {})
+        self.assertTrue(self.app.manual_seats)
+        self.assertTrue(self.app.seat_fields)
+
+    def test_support_survives_the_reset(self):
+        # Сбрасывается розыгрыш, а не игра: очки популярности копились долго.
+        self.app.reset_election()
+        find(self.page.dialog, lambda c: isinstance(c, ft.Button)
+             and c.content == "Сбросить").on_click(None)
+        self.assertEqual(
+            self.service.support_modifier(self.district.id,
+                                          self.app.parties[0].id), 4.0)
+
+    def test_archived_convocation_keeps_its_results(self):
+        seats = dict(self.app.selected.seats)
+        self.service.fix_convocation()
+        self.app.render()
+        # Выбранным остаётся зафиксированный созыв — он и открыт на просмотр.
+        self.assertTrue(any("Просмотр истории" in t for t in texts(self.body)))
+        self.assertEqual(self.app.selected.seats, seats)
+        self.assertFalse(self.app.manual_seats)
+
+
 class TestSupportScreen(AppTestCase):
     """Экран поддержки: населённые пункты и очки популярности."""
 
