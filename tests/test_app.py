@@ -24,6 +24,11 @@ from parlament.ui import theme  # noqa: E402
 from parlament.ui.app import ParlamentApp  # noqa: E402
 from parlament.ui.dialogs import normalize_hex  # noqa: E402
 from parlament.ui.export import LegendEntry, render_png, suggest_file_name  # noqa: E402
+from parlament.district_geometry import (  # noqa: E402
+    DISTRICT_CENTRES,
+    DISTRICT_SHAPES,
+    MAP_ASPECT,
+)
 from parlament.ui.map_export import render_map_png  # noqa: E402
 from parlament.ui.seat_chart import compute_seats  # noqa: E402
 from parlament.ui.votes_file import export_template, parse_votes_text  # noqa: E402
@@ -713,14 +718,33 @@ class TestMapAndElections(AppTestCase):
         self.assertEqual(winners[self.by_name["Саттмалвик центр"].id],
                          self.app.parties[1].id)
 
-    def test_markers_are_coloured_by_winner(self):
+    def test_districts_are_coloured_by_winner(self):
         self.app.show_elections()
         self.vote("Судбригг", p2=600, p0=400)
         self.app.apply_election()
 
-        markers = {name: color for _id, name, _s, _x, _y, color in self.app.map_chart._markers}
-        self.assertEqual(markers["Судбригг"], self.app.parties[2].color)
-        self.assertIsNone(markers["Гаффинсвик центр"])   # без данных — серый
+        painted = {name: color for _code, name, _s, color in self.app.map_chart._districts}
+        self.assertEqual(painted["Судбригг"], self.app.parties[2].color)
+        self.assertIsNone(painted["Гаффинсвик центр"])   # без данных — серый
+
+    def test_every_district_has_a_shape_to_draw(self):
+        # Карта рисуется полигонами: округ без геометрии остался бы дырой.
+        self.app.show_map()
+        for code, _name, _seats, _color in self.app.map_chart._districts:
+            self.assertIn(code, DISTRICT_SHAPES)
+
+    def test_click_inside_a_district_opens_it(self):
+        self.app.show_map()
+        chart = self.app.map_chart
+        chart._rect = (0.0, 0.0, 1000.0, 1000.0 / MAP_ASPECT)
+        chart._width_px, chart._height_px = 1000.0, 1000.0 / MAP_ASPECT
+
+        target = self.by_name["Судбригг"]
+        cx, cy = DISTRICT_CENTRES[target.code]
+        chart._on_tap(_FakeTapEvent(cx * 1000.0, cy * (1000.0 / MAP_ASPECT)))
+
+        shown = texts(self.page.dialog)
+        self.assertIn("Судбригг", shown)
 
     def test_row_preview_shows_the_split_while_typing(self):
         self.app.show_elections()
@@ -797,13 +821,13 @@ class TestMapAndElections(AppTestCase):
         # Кнопка «Посчитать» видит загруженное так же, как набранное руками.
         self.assertEqual(self.app.elections.collect()[district][self.app.parties[0].id], 5000)
 
-    def test_map_png_renders_with_placeholder_background(self):
-        # Подложки в репозитории нет; выгрузка всё равно должна давать картинку.
+    def test_map_png_renders_without_any_background(self):
+        # Подложка необязательна: карта рисуется границами округов.
         self.app.show_elections()
         self.vote("Судбригг", p0=100)
         self.app.apply_election()
         data = render_map_png(
-            [(d.name, d.seats, d.x, d.y, None) for d in self.service.project.districts],
+            [(d.code, d.name, d.seats, None) for d in self.service.project.districts],
             width=640, title="Первый состав",
             legend=[("Народный союз", "#0088b0", 1, 2)],
         )

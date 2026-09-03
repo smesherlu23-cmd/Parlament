@@ -165,15 +165,23 @@ class District:
     region: str = ""
     x: float = 0.5
     y: float = 0.5
+    #: Номер округа на игровой карте. По нему в `district_geometry` находится
+    #: полигон; 0 — округ без нарисованных границ (такое бывает у проектов,
+    #: заведённых до появления карты).
+    code: int = 0
 
     def to_dict(self) -> dict:
         return {
             "id": self.id, "name": self.name, "seats": self.seats,
-            "region": self.region, "x": self.x, "y": self.y,
+            "region": self.region, "x": self.x, "y": self.y, "code": self.code,
         }
 
     @staticmethod
     def from_dict(raw: dict) -> "District":
+        try:
+            code = int(raw.get("code") or 0)
+        except (TypeError, ValueError):
+            code = 0
         return District(
             id=str(raw["id"]),
             name=str(raw.get("name", "")),
@@ -181,6 +189,7 @@ class District:
             region=str(raw.get("region", "")),
             x=_clamp_unit(raw.get("x", 0.5)),
             y=_clamp_unit(raw.get("y", 0.5)),
+            code=code,
         )
 
 
@@ -365,9 +374,14 @@ def default_districts() -> list[District]:
     конкретной игры, а `model` описывает формат вообще, и обратной зависимости
     у него быть не должно.
     """
+    from .district_geometry import DISTRICT_CENTRES
     from .district_seed import SEED_DISTRICTS
 
-    return [
-        District(id=new_id("d"), name=name, seats=seats, region=region, x=x, y=y)
-        for name, seats, region, x, y in SEED_DISTRICTS
-    ]
+    districts = []
+    for code, name, seats, region in SEED_DISTRICTS:
+        # Точка подписи — центр тяжести полигона, а не отдельное число:
+        # так она не может разъехаться с нарисованными границами.
+        x, y = DISTRICT_CENTRES.get(code, (0.5, 0.5))
+        districts.append(District(id=new_id("d"), name=name, seats=seats,
+                                  region=region, x=x, y=y, code=code))
+    return districts

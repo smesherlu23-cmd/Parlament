@@ -23,6 +23,7 @@ from . import dialogs, format as fmt, theme
 from .mount import push
 from .export import LegendEntry, RESOLUTIONS, render_png, suggest_file_name
 from .elections_view import ElectionsView
+from .map_chart import map_image_path
 from .map_export import render_map_png
 from .map_view import MapView
 from .parties_view import PartiesView
@@ -660,9 +661,9 @@ class ParlamentApp:
         winners = self.service.district_winners(conv.id)
         colors = {p.id: p.color for p in self.parties}
 
-        markers = [
-            (d.name, d.seats, d.x, d.y, colors.get(winners.get(d.id)))
-            for d in self.service.project.districts
+        shapes = [
+            (d.code, d.name, d.seats, colors.get(winners.get(d.id)))
+            for d in self.service.project.districts if d.code
         ]
 
         won: dict[str, int] = {}
@@ -675,7 +676,8 @@ class ParlamentApp:
         )
 
         async def save() -> None:
-            data = render_map_png(markers, title=conv.name, legend=legend)
+            data = render_map_png(shapes, title=conv.name, legend=legend,
+                                  background=map_image_path(self.service.path.parent))
             saved = await self.file_picker.save_file(
                 dialog_title="Экспорт карты в PNG",
                 file_name=f"Карта_{conv.name.replace(' ', '_')}.png",

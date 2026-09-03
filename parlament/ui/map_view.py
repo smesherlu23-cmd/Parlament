@@ -27,11 +27,18 @@ class MapView:
         winners = self.service.district_winners(conv.id) if conv.votes else {}
         colors = {p.id: p.color for p in self.app.parties}
 
-        markers = [
-            (d.id, d.name, d.seats, d.x, d.y, colors.get(winners.get(d.id)))
-            for d in self.service.project.districts
+        # Карта рисуется полигонами округов; связь «код -> округ» нужна,
+        # чтобы по клику вернуться от нарисованной фигуры к данным.
+        self.by_code = {d.code: d for d in self.service.project.districts if d.code}
+        shapes = [
+            (d.code, d.name, d.seats, colors.get(winners.get(d.id)))
+            for d in self.service.project.districts if d.code
         ]
-        self.app.map_chart = MapChart(markers=markers, on_pick=self.app.show_district)
+        self.app.map_chart = MapChart(
+            districts=shapes,
+            on_pick=self._pick,
+            background=map_image_path(self.service.path.parent),
+        )
 
         return ft.Row(
             [
@@ -49,6 +56,11 @@ class MapView:
             spacing=0, expand=True,
             vertical_alignment=ft.CrossAxisAlignment.STRETCH,
         )
+
+    def _pick(self, code: int) -> None:
+        district = self.by_code.get(code)
+        if district is not None:
+            self.app.show_district(district.id)
 
     def _heading(self, conv, winners: dict[str, str]) -> ft.Control:
         districts = self.service.project.districts
@@ -101,20 +113,6 @@ class MapView:
                     "Нажмите «Выборы», чтобы внести результаты по округам — "
                     "карта раскрасится в цвета победителей.",
                     size=theme.fs(13), color=theme.NEUTRAL_700,
-                ),
-            ))
-
-        if map_image_path() is None:
-            rows.append(ft.Container(
-                margin=ft.Margin.only(top=14),
-                padding=ft.Padding.all(10),
-                bgcolor=theme.NEUTRAL_100,
-                border=ft.Border.all(1, theme.DIVIDER),
-                border_radius=theme.RADIUS,
-                content=ft.Text(
-                    "Подложка карты не найдена. Положите картинку в "
-                    "assets/map/base.png — маркеры уже расставлены по округам.",
-                    size=theme.fs(12), color=theme.NEUTRAL_700,
                 ),
             ))
 
