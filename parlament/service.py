@@ -8,12 +8,14 @@
 
 from __future__ import annotations
 
+import random
 from pathlib import Path
 
 from . import elections, store
 from .model import (
     Convocation,
     District,
+    Settlement,
     default_districts,
     Party,
     Project,
@@ -226,6 +228,146 @@ class ParlamentService:
         self.project.total_seats = sum(d.seats for d in self.project.districts)
         self._persist()
 
+    # -- населённые пункты и поддержка ---------------------------------------
+
+    def add_settlement(self, district_id: str, name: str) -> Settlement:
+        """Заводит НП в округе. В присланной карте их нет, поэтому список
+        наполняет пользователь."""
+        district = self._require_district(district_id)
+        settlement = Settlement(id=new_id("s"), name=self._clean_name(name))
+        district.settlements.append(settlement)
+        self._persist()
+        return settlement
+
+    def rename_settlement(self, district_id: str, settlement_id: str,
+                          name: str) -> Settlement:
+        settlement = self._require_settlement(district_id, settlement_id)
+        settlement.name = self._clean_name(name)
+        self._persist()
+        return settlement
+
+    def delete_settlement(self, district_id: str, settlement_id: str) -> None:
+        district = self._require_district(district_id)
+        self._require_settlement(district_id, settlement_id)
+        district.settlements = [s for s in district.settlements if s.id != settlement_id]
+        self._persist()
+
+    def set_support(self, district_id: str, settlement_id: str,
+                    party_id: str, points: int) -> Settlement:
+        """Ставит партии очки популярности в населённом пункте.
+
+        Сумма по пункту ограничена: очков ровно столько, сколько несёт один
+        НП, и раздать больше нельзя — иначе поддержка перестала бы быть
+        дележом общего запаса.
+        """
+        settlement = self._require_settlement(district_id, settlement_id)
+        self._require_party(party_id)
+
+        value = self._clean_support(points)
+        others = sum(n for pid, n in settlement.support.items() if pid != party_id)
+        if others + value > elections.SETTLEMENT_SUPPORT:
+            raise ValidationError(
+                f"В населённом пункте всего {elections.SETTLEMENT_SUPPORT} очков "
+                f"популярности. Другим партиям уже отдано {others}, "
+                f"этой можно дать не больше {elections.SETTLEMENT_SUPPORT - others}."
+            )
+
+        if value == 0:
+            settlement.support.pop(party_id, None)
+        else:
+            settlement.support[party_id] = value
+        self._persist()
+        return settlement
+
+    def support_modifier(self, district_id: str, party_id: str) -> float:
+        """Модификатор поддержки партии в округе — очки, делённые на число НП."""
+        district = self._require_district(district_id)
+        return elections.support_modifier(district.support_points(party_id),
+                                          len(district.settlements))
+
+    # -- розыгрыш выборов ------------------------------------------------------
+
+    def roll_election(self, convocation_id: str,
+                      modifiers: dict[str, dict[str, dict]] | None = None,
+                      rng=None) -> Convocation:
+        """Разыгрывает выборы по всем округам и пересобирает состав.
+
+        :param modifiers: `{district_id: {party_id: {"debate": число,
+                          "agitation": bool}}}` — то, что ведущий выставил
+                          руками. Поддержка сюда не передаётся: она считается
+                          из очков в населённых пунктах.
+
+        Участвуют только партии, у которых в округе есть хоть что-то — очки
+        поддержки, бонус за дебаты или агитация. Иначе каждая партия
+        автоматически лезла бы в каждый округ, включая те, где её нет.
+        """
+        conv = self._require_convocation(convocation_id)
+        modifiers = modifiers or {}
+        generator = rng or random.Random()
+
+        rolls: dict[str, dict[str, elections.PartyRoll]] = {}
+        for district in self.project.districts:
+            per_district = modifiers.get(district.id, {})
+            settlements = len(district.settlements)
+            district_rolls: dict[str, elections.PartyRoll] = {}
+
+            for party in self.project.parties:
+                setup = per_district.get(party.id) or {}
+                debate = self._clean_bonus(setup.get("debate", 0))
+                agitation = bool(setup.get("agitation"))
+                support = elections.support_modifier(
+                    district.support_points(party.id), settlements)
+
+                if not (support or debate or agitation):
+                    continue
+                district_rolls[party.id] = elections.PartyRoll(
+                    roll=elections.roll_dice(generator),
+                    support=support, debate=debate, agitation=agitation,
+                )
+
+            if district_rolls:
+                rolls[district.id] = district_rolls
+
+        conv.rolls = rolls
+        conv.votes = {district_id: elections.weights(per_party)
+                      for district_id, per_party in rolls.items()}
+        conv.votes = {d: v for d, v in conv.votes.items() if v}
+        self._recount(conv)
+        self._persist()
+        return conv
+
+    def district_shares(self, convocation_id: str, district_id: str) -> dict[str, float]:
+        """Проценты голосов по округу — как их показывает разбор."""
+        conv = self._require_convocation(convocation_id)
+        return elections.shares(conv.rolls.get(district_id, {}))
+
+    def _require_settlement(self, district_id: str, settlement_id: str) -> Settlement:
+        district = self._require_district(district_id)
+        settlement = district.settlement(settlement_id)
+        if settlement is None:
+            raise ValidationError("Населённый пункт не найден.")
+        return settlement
+
+    def _clean_support(self, value: object) -> int:
+        if isinstance(value, bool) or isinstance(value, float) and not value.is_integer():
+            raise ValidationError("Очки популярности должны быть целым числом.")
+        try:
+            points = int(value)
+        except (TypeError, ValueError):
+            raise ValidationError("Очки популярности должны быть целым числом.") from None
+        if points < 0:
+            raise ValidationError("Очки популярности не могут быть отрицательными.")
+        return points
+
+    def _clean_bonus(self, value: object) -> float:
+        """Бонус за дебаты — любое число, в том числе отрицательное."""
+        if isinstance(value, bool):
+            raise ValidationError("Бонус за дебаты должен быть числом.")
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            raise ValidationError("Бонус за дебаты должен быть числом.") from None
+
     def set_district_votes(self, convocation_id: str, district_id: str,
                            votes: dict[str, int]) -> Convocation:
         """Записывает голоса по одному округу и пересчитывает состав.
@@ -281,6 +423,7 @@ class ParlamentService:
         """Убирает результаты выборов созыва — состав снова набирается руками."""
         conv = self._require_convocation(convocation_id)
         conv.votes = {}
+        conv.rolls = {}
         conv.seats = {}
         self._persist()
         return conv

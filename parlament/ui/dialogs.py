@@ -393,11 +393,13 @@ def delete_convocation_dialog(convocation: Convocation, on_confirm: Callable,
 # -- округ и выборы ---------------------------------------------------------
 
 
-def district_dialog(district, rows: list[tuple], total_votes: int,
+def district_dialog(district, rows: list[tuple], shares: dict[str, float],
                     on_close: Callable) -> ft.AlertDialog:
-    """Расклад одного округа — по клику на маркер карты.
+    """Расклад одного округа — по клику на карте.
 
-    `rows` — уже отсортированные `(партия, голоса, места)`.
+    `rows` — отсортированные `(партия, PartyRoll|None, места)`. Показываем
+    слагаемые броска, а не только итог: бросок случаен и не повторится, и без
+    разбивки потом не понять, почему округ достался этой партии.
     """
     body: list[ft.Control] = [
         ft.Row([
@@ -416,12 +418,13 @@ def district_dialog(district, rows: list[tuple], total_votes: int,
     lines: list[ft.Control] = [
         ft.Row([
             ft.Container(theme.label("Партия"), expand=True),
-            ft.Container(theme.label("Голоса"), width=90),
-            ft.Container(theme.label("Мест"), width=54),
+            ft.Container(theme.label("Расчёт"), width=210),
+            ft.Container(theme.label("Голоса"), width=70),
+            ft.Container(theme.label("Мест"), width=48),
         ], spacing=8),
     ]
-    for party, votes, seats in rows:
-        share = f"{votes / total_votes * 100:.1f} %".replace(".", ",") if total_votes else "—"
+    for party, roll, seats in rows:
+        share = shares.get(party.id, 0.0)
         lines.append(ft.Container(
             padding=ft.Padding.symmetric(vertical=6),
             border=ft.Border.only(bottom=ft.BorderSide(1, "#14201e1d")),
@@ -433,21 +436,40 @@ def district_dialog(district, rows: list[tuple], total_votes: int,
                     expand=True,
                 ),
                 ft.Container(
-                    ft.Column([
-                        ft.Text(f"{votes}", size=theme.fs(13), color=theme.TEXT),
-                        ft.Text(share, size=theme.fs(11), color=theme.NEUTRAL_600),
-                    ], spacing=0, tight=True),
-                    width=90,
+                    ft.Text(_roll_breakdown(roll), size=theme.fs(12),
+                            color=theme.NEUTRAL_700),
+                    width=210,
+                ),
+                ft.Container(
+                    ft.Text(f"{share:.1f} %".replace(".", ","), size=theme.fs(13),
+                            color=theme.TEXT),
+                    width=70,
                 ),
                 ft.Container(
                     ft.Text(str(seats), size=theme.fs(15),
                             font_family=theme.FONT_SEMIBOLD, color=theme.TEXT),
-                    width=54,
+                    width=48,
                 ),
             ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
         ))
     body.extend(lines)
-    return _shell(district.name, body, [_cancel_as_close(on_close)], width=520)
+    return _shell(district.name, body, [_cancel_as_close(on_close)], width=640)
+
+
+def _roll_breakdown(roll) -> str:
+    """«4 + 2,5 − 1 + 1 = 6,5» — из чего сложился вес партии."""
+    if roll is None:
+        return "—"
+    parts = [str(roll.roll)]
+    if roll.support:
+        parts.append(f"+ {roll.support:.1f}".replace(".", ","))
+    if roll.debate:
+        sign = "+" if roll.debate > 0 else "−"
+        parts.append(f"{sign} {abs(roll.debate):g}".replace(".", ","))
+    if roll.agitation:
+        parts.append("+ 1")
+    total = f"{roll.total:.1f}".replace(".", ",")
+    return f"{' '.join(parts)} = {total}"
 
 
 def adopt_districts_dialog(old_total: int, districts: list, on_confirm: Callable,
@@ -483,6 +505,25 @@ def adopt_districts_dialog(old_total: int, districts: list, on_confirm: Callable
     ]
     return _shell("Взять округа с карты?", body,
                   [_cancel(on_cancel), theme.primary_button("Добавить округа", on_confirm)])
+
+
+def settlement_dialog(district, on_confirm: Callable[[str], str | None],
+                      on_cancel: Callable) -> ft.AlertDialog:
+    """Новый населённый пункт в округе."""
+    name = theme.text_field("", label_text="Название", autofocus=True)
+    error = ft.Text("", size=theme.fs(12), color=theme.ACCENT_2_700, visible=False)
+
+    def confirm(_event) -> None:
+        message = on_confirm(name.value or "")
+        if message:
+            _show_error(error, message)
+
+    name.on_submit = confirm
+    return _shell(
+        f"Населённый пункт — {district.name}",
+        [name, error],
+        [_cancel(on_cancel), theme.primary_button("Добавить", confirm)],
+    )
 
 
 def import_report_dialog(filled: int, warnings: list[str],

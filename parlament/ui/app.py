@@ -28,6 +28,7 @@ from .map_export import render_map_png
 from .map_view import MapView
 from .parties_view import PartiesView
 from .seat_chart import SeatChart, chart_height_for_width
+from .support_view import SupportView
 from .votes_file import export_template, read_votes_file
 
 
@@ -38,10 +39,13 @@ class ParlamentApp:
         self.page = page
         self.service = service
 
-        self.view = "parliament"   # 'parliament' | 'parties' | 'map' | 'elections'
+        self.view = "parliament"   # parliament | parties | map | elections | support
         #: Заполняются при сборке соответствующего экрана.
         self.map_chart = None
         self.elections = None
+        #: Какие округа раскрыты на экране поддержки — чтобы список не
+        #: схлопывался после каждой правки очков.
+        self.support_opened: set[str] = set()
         self.selected_convocation_id: str | None = None
         self.editing_archived: str | None = None
 
@@ -133,6 +137,8 @@ class ParlamentApp:
             self.body.content = PartiesView(self).build()
         elif self.view == "map":
             self.body.content = MapView(self).build()
+        elif self.view == "support":
+            self.body.content = SupportView(self).build()
         elif self.view == "elections":
             # Экран выборов держит поля ввода, поэтому живёт в поле: с него
             # потом собираются введённые голоса.
@@ -164,12 +170,23 @@ class ParlamentApp:
                     "Экспорт карты в PNG", lambda _e: self.export_map_png(),
                     disabled=not (has_districts and self.selected.votes),
                 ),
+                theme.secondary_button(
+                    "Поддержка", lambda _e: self.show_support(),
+                    disabled=not (has_districts and self.parties),
+                ),
                 theme.primary_button(
                     "Выборы", lambda _e: self.show_elections(),
                     disabled=not (has_districts and self.parties),
                     tooltip=None if self.parties else "Сначала создайте партии",
                 ),
             ]
+        elif self.view == "support":
+            left = [
+                theme.ghost_button("← К карте", lambda _e: self.show_map()),
+                ft.Text("ПОДДЕРЖКА", size=theme.fs(13), font_family=theme.FONT_SEMIBOLD,
+                        color=theme.TEXT, style=ft.TextStyle(letter_spacing=2.1)),
+            ]
+            right = []
         elif self.view == "elections":
             left = [
                 theme.ghost_button("← К карте", lambda _e: self.show_map()),
@@ -178,11 +195,7 @@ class ParlamentApp:
             ]
             usable = bool(self.parties and self.service.project.districts)
             right = [
-                theme.ghost_button("Шаблон таблицы", lambda _e: self.save_votes_template(),
-                                   disabled=not usable),
-                theme.secondary_button("Загрузить таблицу", lambda _e: self.load_votes_file(),
-                                       disabled=not usable),
-                theme.primary_button("Посчитать", lambda _e: self.apply_election(),
+                theme.primary_button("Провести выборы", lambda _e: self.apply_election(),
                                      disabled=not usable),
             ]
         else:
@@ -597,6 +610,10 @@ class ParlamentApp:
         self.view = "elections"
         self.render()
 
+    def show_support(self) -> None:
+        self.view = "support"
+        self.render()
+
     def adopt_map_districts(self) -> None:
         """Заводит округа карты в проекте, начатом до её появления."""
         old_total = self.total_seats
@@ -618,21 +635,25 @@ class ParlamentApp:
     # -- выборы -------------------------------------------------------------
 
     def apply_election(self) -> None:
-        """Считает выборы по введённым голосам и уводит на раскрашенную карту."""
-        votes = self.elections.collect()
-        if not votes:
-            self.toast("Не введено ни одного голоса.", error=True)
-            return
+        """Разыгрывает выборы и уводит на раскрашенную карту."""
+        modifiers = self.elections.collect()
         try:
-            self.service.run_election(self.selected.id, votes)
+            self.service.roll_election(self.selected.id, modifiers)
         except (ValidationError, StoreError) as error:
             self.toast(str(error), error=True)
             return
 
-        filled = len(votes)
+        conv = self.selected
+        if not conv.rolls:
+            # Ни поддержки, ни бонусов — разыгрывать нечего.
+            self.toast("Ни в одном округе нет ни поддержки, ни модификаторов.",
+                       error=True)
+            return
+
+        filled = len(conv.rolls)
         total = len(self.service.project.districts)
         self.show_map()
-        self.toast(f"Выборы посчитаны: {fmt.pluralize(filled, fmt.DISTRICTS)} из {total}.")
+        self.toast(f"Выборы разыграны: {fmt.pluralize(filled, fmt.DISTRICTS)} из {total}.")
 
     def show_district(self, district_id: str) -> None:
         """Расклад одного округа — по клику на маркер карты."""
@@ -641,19 +662,20 @@ class ParlamentApp:
             return
         conv = self.selected
         allocation = self.service.district_allocation(conv.id).get(district_id, {})
-        votes = conv.votes.get(district_id, {})
+        rolls = conv.rolls.get(district_id, {})
+        shares = self.service.district_shares(conv.id, district_id)
         by_id = {p.id: p for p in self.parties}
 
         rows = [
-            (by_id[pid], votes.get(pid, 0), allocation.get(pid, 0))
+            (by_id[pid], rolls.get(pid), allocation.get(pid, 0))
             for pid in sorted(
-                set(votes) | set(allocation),
-                key=lambda pid: (-allocation.get(pid, 0), -votes.get(pid, 0)),
+                set(rolls) | set(allocation),
+                key=lambda pid: (-allocation.get(pid, 0), -shares.get(pid, 0.0)),
             )
             if pid in by_id
         ]
         self.page.show_dialog(dialogs.district_dialog(
-            district, rows, sum(votes.values()), lambda _e: self.close_dialog()))
+            district, rows, shares, lambda _e: self.close_dialog()))
 
     def export_map_png(self) -> None:
         """Сохраняет карту с раскрашенными округами картинкой."""

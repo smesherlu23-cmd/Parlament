@@ -83,11 +83,14 @@ class Convocation:
     seats: dict[str, int] = field(default_factory=dict)
     created_at: str = field(default_factory=now_iso)
     fixed_at: str | None = None
-    #: Голоса по округам — `{district_id: {party_id: голоса}}`. Это источник
-    #: истины для выборов: `seats` пересчитывается из них сервисом. Пустой
-    #: словарь означает состав, набранный руками без выборов — так работают
-    #: старые проекты и ручная правка.
-    votes: dict[str, dict[str, int]] = field(default_factory=dict)
+    #: Вес партий по округам — `{district_id: {party_id: число}}`. Из них
+    #: сервис пересобирает `seats`. Пустой словарь означает состав, набранный
+    #: руками без выборов — так работают старые проекты и ручная правка.
+    votes: dict[str, dict[str, float]] = field(default_factory=dict)
+    #: Разбор розыгрыша — `{district_id: {party_id: PartyRoll}}`. Хранится
+    #: рядом с весами, потому что бросок случаен и второй раз не повторится:
+    #: без него потом не понять, из чего сложился результат.
+    rolls: dict[str, dict] = field(default_factory=dict)
 
     @property
     def is_fixed(self) -> bool:
@@ -111,6 +114,8 @@ class Convocation:
             "createdAt": self.created_at,
             "fixedAt": self.fixed_at,
             "votes": {d: dict(v) for d, v in self.votes.items() if v},
+            "rolls": {d: {p: r.to_dict() for p, r in per.items()}
+                      for d, per in self.rolls.items() if per},
         }
 
     @staticmethod
@@ -124,20 +129,31 @@ class Convocation:
             if value > 0:
                 seats[str(party_id)] = value
 
-        votes: dict[str, dict[str, int]] = {}
+        votes: dict[str, dict[str, float]] = {}
         for district_id, per_party in (raw.get("votes") or {}).items():
             if not isinstance(per_party, dict):
                 continue
-            cleaned: dict[str, int] = {}
+            cleaned: dict[str, float] = {}
             for party_id, count in per_party.items():
                 try:
-                    value = int(count)
+                    value = float(count)
                 except (TypeError, ValueError):
                     continue
                 if value > 0:
                     cleaned[str(party_id)] = value
             if cleaned:
                 votes[str(district_id)] = cleaned
+
+        from .elections import PartyRoll
+
+        rolls: dict[str, dict] = {}
+        for district_id, per_party in (raw.get("rolls") or {}).items():
+            if not isinstance(per_party, dict):
+                continue
+            parsed = {str(pid): PartyRoll.from_dict(r)
+                      for pid, r in per_party.items() if isinstance(r, dict)}
+            if parsed:
+                rolls[str(district_id)] = parsed
 
         return Convocation(
             id=str(raw["id"]),
@@ -147,7 +163,40 @@ class Convocation:
             created_at=str(raw.get("createdAt") or now_iso()),
             fixed_at=raw.get("fixedAt") or None,
             votes=votes,
+            rolls=rolls,
         )
+
+
+@dataclass
+class Settlement:
+    """Населённый пункт внутри округа.
+
+    Несёт очки неформальной популярности, которые игроки делят между
+    партиями (сколько всего очков на пункт — см. `elections.SETTLEMENT_SUPPORT`).
+    Из них складывается модификатор поддержки на выборах.
+    """
+
+    id: str
+    name: str
+    #: `{party_id: очки}`. Партии без очков в словаре не хранятся.
+    support: dict[str, int] = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        return {"id": self.id, "name": self.name,
+                "support": {k: v for k, v in self.support.items() if v > 0}}
+
+    @staticmethod
+    def from_dict(raw: dict) -> "Settlement":
+        support: dict[str, int] = {}
+        for party_id, points in (raw.get("support") or {}).items():
+            try:
+                value = int(points)
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                support[str(party_id)] = value
+        return Settlement(id=str(raw["id"]), name=str(raw.get("name", "")),
+                          support=support)
 
 
 @dataclass
@@ -169,11 +218,22 @@ class District:
     #: полигон; 0 — округ без нарисованных границ (такое бывает у проектов,
     #: заведённых до появления карты).
     code: int = 0
+    #: Населённые пункты округа. Заводятся пользователем на экране поддержки:
+    #: в присланной карте их нет, а модификатор считается по ним.
+    settlements: list[Settlement] = field(default_factory=list)
+
+    def settlement(self, settlement_id: str) -> "Settlement | None":
+        return next((s for s in self.settlements if s.id == settlement_id), None)
+
+    def support_points(self, party_id: str) -> int:
+        """Сумма очков партии по всем НП округа."""
+        return sum(s.support.get(party_id, 0) for s in self.settlements)
 
     def to_dict(self) -> dict:
         return {
             "id": self.id, "name": self.name, "seats": self.seats,
             "region": self.region, "x": self.x, "y": self.y, "code": self.code,
+            "settlements": [s.to_dict() for s in self.settlements],
         }
 
     @staticmethod
@@ -190,6 +250,7 @@ class District:
             x=_clamp_unit(raw.get("x", 0.5)),
             y=_clamp_unit(raw.get("y", 0.5)),
             code=code,
+            settlements=[Settlement.from_dict(s) for s in raw.get("settlements") or []],
         )
 
 
@@ -283,6 +344,12 @@ class Project:
                 if did in known_districts
             }
             conv.votes = {did: v for did, v in conv.votes.items() if v}
+            conv.rolls = {
+                did: {pid: r for pid, r in per.items() if pid in known}
+                for did, per in conv.rolls.items()
+                if did in known_districts
+            }
+            conv.rolls = {did: r for did, r in conv.rolls.items() if r}
 
         if not convocations:
             convocations = [Convocation(id=new_id("c"), number=1, name=convocation_name(1))]

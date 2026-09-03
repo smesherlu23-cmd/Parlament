@@ -286,6 +286,154 @@ class TestRunElection(ElectionTestCase):
                 self.conv.id, self.by_name["Судбригг"].id, {self.a.id: 1.5})
 
 
+class TestSettlementsAndSupport(ElectionTestCase):
+    """Населённые пункты и очки неформальной популярности."""
+
+    def setUp(self):
+        super().setUp()
+        self.district = self.by_name["Гаффинсвик центр"]
+
+    def test_districts_start_without_settlements(self):
+        # В присланной карте НП нет — список наполняет пользователь.
+        self.assertEqual(self.district.settlements, [])
+
+    def test_points_add_up_across_settlements(self):
+        first = self.service.add_settlement(self.district.id, "Гаффинсвик-Сити")
+        second = self.service.add_settlement(self.district.id, "Старый порт")
+        self.service.set_support(self.district.id, first.id, self.a.id, 4)
+        self.service.set_support(self.district.id, second.id, self.a.id, 1)
+        self.assertEqual(self.district.support_points(self.a.id), 5)
+
+    def test_modifier_is_points_over_settlement_count(self):
+        first = self.service.add_settlement(self.district.id, "Первый")
+        self.service.add_settlement(self.district.id, "Второй")
+        self.service.set_support(self.district.id, first.id, self.a.id, 5)
+        self.assertEqual(self.service.support_modifier(self.district.id, self.a.id), 2.5)
+
+    def test_settlement_pool_cannot_be_overspent(self):
+        settlement = self.service.add_settlement(self.district.id, "Гаффинсвик-Сити")
+        self.service.set_support(self.district.id, settlement.id, self.a.id, 4)
+        with self.assertRaises(ValidationError) as ctx:
+            self.service.set_support(self.district.id, settlement.id, self.b.id, 3)
+        self.assertIn("2", str(ctx.exception))   # подсказка про остаток
+
+    def test_zero_points_remove_the_party(self):
+        settlement = self.service.add_settlement(self.district.id, "Гаффинсвик-Сити")
+        self.service.set_support(self.district.id, settlement.id, self.a.id, 3)
+        self.service.set_support(self.district.id, settlement.id, self.a.id, 0)
+        self.assertEqual(settlement.support, {})
+
+    def test_deleting_a_settlement_changes_the_modifier(self):
+        first = self.service.add_settlement(self.district.id, "Первый")
+        second = self.service.add_settlement(self.district.id, "Второй")
+        self.service.set_support(self.district.id, first.id, self.a.id, 6)
+        self.assertEqual(self.service.support_modifier(self.district.id, self.a.id), 3.0)
+        self.service.delete_settlement(self.district.id, second.id)
+        self.assertEqual(self.service.support_modifier(self.district.id, self.a.id), 6.0)
+
+    def test_settlements_survive_restart(self):
+        settlement = self.service.add_settlement(self.district.id, "Гаффинсвик-Сити")
+        self.service.set_support(self.district.id, settlement.id, self.a.id, 4)
+        again = ParlamentService(self.path)
+        again.bootstrap()
+        district = next(d for d in again.project.districts if d.id == self.district.id)
+        self.assertEqual([s.name for s in district.settlements], ["Гаффинсвик-Сити"])
+        self.assertEqual(district.support_points(self.a.id), 4)
+
+    def test_negative_points_are_rejected(self):
+        settlement = self.service.add_settlement(self.district.id, "Гаффинсвик-Сити")
+        with self.assertRaises(ValidationError):
+            self.service.set_support(self.district.id, settlement.id, self.a.id, -1)
+
+
+class TestRollElection(ElectionTestCase):
+    """Розыгрыш выборов сервисом: кто участвует и что попадает в состав."""
+
+    def setUp(self):
+        super().setUp()
+        self.district = self.by_name["Гаффинсвик центр"]
+
+    def give_support(self, party, points, settlements=1):
+        made = [self.service.add_settlement(self.district.id, f"НП {i + 1}")
+                for i in range(settlements)]
+        self.service.set_support(self.district.id, made[0].id, party.id, points)
+        return made
+
+    def test_only_parties_with_something_in_the_district_take_part(self):
+        # Иначе каждая партия лезла бы в каждый округ, включая чужие.
+        self.give_support(self.a, 4)
+        self.service.roll_election(self.conv.id,
+                                   {self.district.id: {self.b.id: {"debate": 1}}},
+                                   rng=random.Random(1))
+        taking_part = set(self.conv.rolls[self.district.id])
+        self.assertEqual(taking_part, {self.a.id, self.b.id})
+        self.assertNotIn(self.c.id, taking_part)
+
+    def test_support_reaches_the_roll(self):
+        self.give_support(self.a, 5, settlements=2)
+        self.service.roll_election(self.conv.id, {}, rng=random.Random(2))
+        self.assertEqual(self.conv.rolls[self.district.id][self.a.id].support, 2.5)
+
+    def test_debate_and_agitation_reach_the_roll(self):
+        self.service.roll_election(
+            self.conv.id,
+            {self.district.id: {self.a.id: {"debate": -3, "agitation": True}}},
+            rng=random.Random(5))
+        roll = self.conv.rolls[self.district.id][self.a.id]
+        self.assertEqual(roll.debate, -3)
+        self.assertTrue(roll.agitation)
+
+    def test_seats_come_from_the_rolled_weights(self):
+        self.give_support(self.a, 6)
+        self.service.roll_election(self.conv.id,
+                                   {self.district.id: {self.b.id: {"debate": 2}}},
+                                   rng=random.Random(7))
+        self.assertEqual(sum(self.conv.seats.values()), self.district.seats)
+
+    def test_shares_add_up_to_a_hundred(self):
+        self.give_support(self.a, 4)
+        self.service.roll_election(self.conv.id,
+                                   {self.district.id: {self.b.id: {"debate": 1}}},
+                                   rng=random.Random(9))
+        self.assertAlmostEqual(
+            sum(self.service.district_shares(self.conv.id, self.district.id).values()),
+            100.0, places=6)
+
+    def test_same_seed_gives_the_same_result(self):
+        self.give_support(self.a, 3)
+        self.service.roll_election(self.conv.id, {}, rng=random.Random(11))
+        first = dict(self.conv.seats)
+        self.service.roll_election(self.conv.id, {}, rng=random.Random(11))
+        self.assertEqual(self.conv.seats, first)
+
+    def test_rolls_are_stored_for_the_record(self):
+        # Бросок случаен и не повторится: без сохранённой разбивки потом не
+        # понять, из чего сложился результат.
+        self.give_support(self.a, 4)
+        self.service.roll_election(self.conv.id, {}, rng=random.Random(13))
+        again = ParlamentService(self.path)
+        again.bootstrap()
+        stored = again.project.active_convocation.rolls[self.district.id][self.a.id]
+        self.assertEqual(stored, self.conv.rolls[self.district.id][self.a.id])
+
+    def test_empty_setup_leaves_the_parliament_empty(self):
+        self.service.roll_election(self.conv.id, {}, rng=random.Random(17))
+        self.assertEqual(self.conv.seats, {})
+        self.assertFalse(self.conv.has_election)
+
+    def test_clearing_wipes_the_rolls_too(self):
+        self.give_support(self.a, 4)
+        self.service.roll_election(self.conv.id, {}, rng=random.Random(19))
+        self.service.clear_election(self.conv.id)
+        self.assertEqual(self.conv.rolls, {})
+        self.assertEqual(self.conv.votes, {})
+
+    def test_bad_debate_bonus_is_rejected(self):
+        with self.assertRaises(ValidationError):
+            self.service.roll_election(
+                self.conv.id, {self.district.id: {self.a.id: {"debate": "ой"}}})
+
+
 class TestVotesImport(ElectionTestCase):
     def table(self, body: str) -> str:
         return "Округ,Народный союз,Партия труда,Аграрный блок\n" + body

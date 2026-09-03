@@ -673,21 +673,38 @@ class TestHelpers(unittest.TestCase):
 
 
 class TestMapAndElections(AppTestCase):
-    """Экран карты и экран выборов: навигация, ввод, раскраска."""
+    """Карта и выборы: навигация, модификаторы, розыгрыш, раскраска."""
 
     def setUp(self):
         super().setUp()
         self.add_parties(3)
         self.by_name = {d.name: d for d in self.service.project.districts}
 
-    def vote(self, district_name: str, **by_party) -> None:
-        """Заполняет строку округа на экране выборов, как это делает человек."""
+    def support(self, district_name: str, party_index: int, points: int,
+                settlements: int = 1):
+        """Даёт партии очки популярности в округе — так она попадает в выборы."""
         district = self.by_name[district_name]
-        for index, votes in by_party.items():
-            party = self.app.parties[int(index[1:])]
-            field = self.app.elections.fields[district.id][party.id]
-            field.value = str(votes)
-            field.on_change(ft.ControlEvent(control=field, name="change", data=field.value))
+        made = [self.service.add_settlement(district.id, f"НП {i + 1}")
+                for i in range(settlements)]
+        self.service.set_support(district.id, made[0].id,
+                                 self.app.parties[party_index].id, points)
+        return district
+
+    def bonus(self, district_name: str, party_index: int, value: str):
+        """Вписывает бонус за дебаты так же, как это делает человек."""
+        district = self.by_name[district_name]
+        field, _button = self.app.elections.cells[district.id][
+            self.app.parties[party_index].id]
+        field.value = value
+        field.on_change(ft.ControlEvent(control=field, name="change", data=value))
+        return field
+
+    def agitate(self, district_name: str, party_index: int):
+        district = self.by_name[district_name]
+        _field, button = self.app.elections.cells[district.id][
+            self.app.parties[party_index].id]
+        button.on_click(ft.ControlEvent(control=button, name="click", data=""))
+        return button
 
     def test_map_is_reachable_from_parliament(self):
         button = find(self.body, lambda c: isinstance(c, ft.Button) and c.content == "Карта")
@@ -705,26 +722,35 @@ class TestMapAndElections(AppTestCase):
                       and c.content == "Экспорт карты в PNG")
         self.assertTrue(export.disabled)
 
+    def test_support_screen_is_reachable_from_the_map(self):
+        self.app.show_map()
+        button = find(self.body, lambda c: isinstance(c, ft.Button)
+                      and c.content == "Поддержка")
+        self.assertIsNotNone(button)
+        button.on_click(None)
+        self.assertEqual(self.app.view, "support")
+
     def test_election_fills_the_parliament_and_colours_the_map(self):
+        district = self.support("Гаффинсвик центр", 0, 4)
         self.app.show_elections()
-        self.vote("Гаффинсвик центр", p0=5000, p1=3000, p2=2000)   # 10 мест
-        self.vote("Саттмалвик центр", p1=9000)                      # 9 мест, без борьбы
+        self.bonus("Гаффинсвик центр", 1, "3")
         self.app.apply_election()
 
         conv = self.app.selected
-        self.assertEqual(self.app.view, "map")           # сразу показали карту
-        self.assertEqual(conv.seats[self.app.parties[1].id], 3 + 9)
-        winners = self.service.district_winners(conv.id)
-        self.assertEqual(winners[self.by_name["Саттмалвик центр"].id],
-                         self.app.parties[1].id)
+        self.assertEqual(self.app.view, "map")          # сразу показали карту
+        self.assertEqual(sum(conv.seats.values()), district.seats)
+        self.assertIn(district.id, self.service.district_winners(conv.id))
 
     def test_districts_are_coloured_by_winner(self):
+        self.support("Судбригг", 2, 6)
         self.app.show_elections()
-        self.vote("Судбригг", p2=600, p0=400)
         self.app.apply_election()
 
         painted = {name: color for _code, name, _s, color in self.app.map_chart._districts}
-        self.assertEqual(painted["Судбригг"], self.app.parties[2].color)
+        winner = self.service.district_winners(self.app.selected.id)[
+            self.by_name["Судбригг"].id]
+        self.assertEqual(painted["Судбригг"],
+                         next(p.color for p in self.app.parties if p.id == winner))
         self.assertIsNone(painted["Гаффинсвик центр"])   # без данных — серый
 
     def test_every_district_has_a_shape_to_draw(self):
@@ -742,89 +768,78 @@ class TestMapAndElections(AppTestCase):
         target = self.by_name["Судбригг"]
         cx, cy = DISTRICT_CENTRES[target.code]
         chart._on_tap(_FakeTapEvent(cx * 1000.0, cy * (1000.0 / MAP_ASPECT)))
+        self.assertIn("Судбригг", texts(self.page.dialog))
 
-        shown = texts(self.page.dialog)
-        self.assertIn("Судбригг", shown)
-
-    def test_row_preview_shows_the_split_while_typing(self):
+    def test_agitation_toggles_and_reaches_the_roll(self):
         self.app.show_elections()
-        self.vote("Гаффинсвик центр", p0=5000, p1=3000, p2=2000)
+        button = self.agitate("Судбригг", 0)
+        self.assertEqual(button.icon_color, theme.ACCENT)
+
+        self.app.apply_election()
+        roll = self.app.selected.rolls[self.by_name["Судбригг"].id][
+            self.app.parties[0].id]
+        self.assertTrue(roll.agitation)
+
+    def test_negative_debate_bonus_is_allowed(self):
+        self.support("Судбригг", 0, 3)
+        self.app.show_elections()
+        self.bonus("Судбригг", 0, "-2")
+        self.app.apply_election()
+        self.assertEqual(
+            self.app.selected.rolls[self.by_name["Судбригг"].id][
+                self.app.parties[0].id].debate, -2)
+
+    def test_letters_never_reach_the_bonus_field(self):
+        self.app.show_elections()
+        field = self.bonus("Судбригг", 0, "-1абв2")
+        self.assertEqual(field.value, "-12")
+
+    def test_preview_shows_support_not_a_promised_result(self):
+        # Обещать итог до броска нельзя: бросок случаен.
+        self.support("Гаффинсвик центр", 0, 6, settlements=2)
+        self.app.show_elections()
         preview = self.app.elections.previews[self.by_name["Гаффинсвик центр"].id]
-        self.assertIn("5", preview.value)      # 50 % от десяти мест
-        self.assertNotEqual(preview.value, "—")
+        self.assertIn("3,0", preview.value)          # 6 очков на 2 пункта
 
-    def test_letters_never_reach_the_vote_fields(self):
+    def test_district_with_nobody_running_says_so(self):
         self.app.show_elections()
-        district = self.by_name["Судбригг"].id
-        field = self.app.elections.fields[district][self.app.parties[0].id]
-        field.value = "12абв3"
-        field.on_change(ft.ControlEvent(control=field, name="change", data=field.value))
-        self.assertEqual(field.value, "123")
+        preview = self.app.elections.previews[self.by_name["Судбригг"].id]
+        self.assertEqual(preview.value, "никто не идёт")
 
-    def test_empty_election_is_refused(self):
+    def test_election_without_any_setup_is_refused(self):
         self.app.show_elections()
         self.app.apply_election()
-        self.assertEqual(self.page.last_toast, "Не введено ни одного голоса.")
-        self.assertEqual(self.app.view, "elections")     # с экрана не увели
+        self.assertIn("ни поддержки, ни модификаторов", self.page.last_toast)
+        self.assertEqual(self.app.view, "elections")   # с экрана не увели
 
-    def test_reopening_shows_what_was_already_entered(self):
-        # Экран выборов — не только ввод с нуля, но и правка результата,
-        # поэтому прошлые голоса подставляются в поля.
+    def test_reopening_shows_previous_modifiers(self):
+        self.support("Судбригг", 0, 3)
         self.app.show_elections()
-        self.vote("Судбригг", p0=100)
+        self.bonus("Судбригг", 0, "2")
+        self.agitate("Судбригг", 0)
         self.app.apply_election()
 
         self.app.show_elections()
         district = self.by_name["Судбригг"].id
-        self.assertEqual(self.app.elections.fields[district][self.app.parties[0].id].value,
-                         "100")
+        field, button = self.app.elections.cells[district][self.app.parties[0].id]
+        self.assertEqual(field.value, "2")
+        self.assertEqual(button.icon_color, theme.ACCENT)
 
-    def test_clearing_a_field_takes_its_seats_back(self):
+    def test_district_dialog_shows_the_breakdown(self):
+        self.support("Гаффинсвик центр", 0, 4)
         self.app.show_elections()
-        self.vote("Судбригг", p0=100)
-        self.app.apply_election()
-        self.assertEqual(self.app.selected.seats, {self.app.parties[0].id: 2})
-
-        self.app.show_elections()
-        self.vote("Судбригг", p0="")
-        self.app.apply_election()
-        # Округ опустел — вместе с ним и весь состав, других данных не было.
-        self.assertEqual(self.page.last_toast, "Не введено ни одного голоса.")
-
-    def test_result_can_be_handed_to_another_party(self):
-        self.app.show_elections()
-        self.vote("Судбригг", p0=100)
+        self.bonus("Гаффинсвик центр", 0, "2")
         self.app.apply_election()
 
-        self.app.show_elections()
-        self.vote("Судбригг", p0="", p1=100)
-        self.app.apply_election()
-        self.assertEqual(self.app.selected.seats, {self.app.parties[1].id: 2})
-
-    def test_template_lists_every_district_and_party(self):
-        data = export_template(self.service.project).decode("utf-8-sig")
-        lines = [line for line in data.splitlines() if line.strip()]
-        self.assertEqual(len(lines), 1 + len(self.service.project.districts))
-        self.assertIn("Народный союз", lines[0])
-        self.assertTrue(any(line.startswith("Судбригг") for line in lines))
-
-    def test_loaded_table_lands_in_the_fields(self):
-        self.app.show_elections()
-        table = ("Округ,Народный союз,Партия труда\n"
-                 "Гаффинсвик центр,5000,3000\n")
-        result = parse_votes_text(table.encode("utf-8"), self.service.project)
-        self.app.elections.fill(result.votes)
-
-        district = self.by_name["Гаффинсвик центр"].id
-        self.assertEqual(self.app.elections.fields[district][self.app.parties[0].id].value,
-                         "5000")
-        # Кнопка «Посчитать» видит загруженное так же, как набранное руками.
-        self.assertEqual(self.app.elections.collect()[district][self.app.parties[0].id], 5000)
+        self.app.show_district(self.by_name["Гаффинсвик центр"].id)
+        shown = " ".join(texts(self.page.dialog))
+        self.assertIn("=", shown)          # «4 + 4,0 + 2 = 10,0»
+        self.assertIn("%", shown)
 
     def test_map_png_renders_without_any_background(self):
         # Подложка необязательна: карта рисуется границами округов.
+        self.support("Судбригг", 0, 4)
         self.app.show_elections()
-        self.vote("Судбригг", p0=100)
         self.app.apply_election()
         data = render_map_png(
             [(d.code, d.name, d.seats, None) for d in self.service.project.districts],
@@ -832,6 +847,56 @@ class TestMapAndElections(AppTestCase):
             legend=[("Народный союз", "#0088b0", 1, 2)],
         )
         self.assertTrue(data.startswith(b"\x89PNG"))
+
+
+class TestSupportScreen(AppTestCase):
+    """Экран поддержки: населённые пункты и очки популярности."""
+
+    def setUp(self):
+        super().setUp()
+        self.add_parties(2)
+        self.district = self.service.project.districts[0]
+        self.app.show_support()
+
+    def field_for(self, settlement, party_index):
+        view = self.app.body.content
+        return find(self.app.body, lambda c: isinstance(c, ft.TextField)
+                    and isinstance(c.data, tuple) and len(c.data) == 4
+                    and c.data[1] == settlement.id
+                    and c.data[2] == self.app.parties[party_index].id)
+
+    def test_district_opens_and_offers_to_add_a_settlement(self):
+        head = find(self.app.body, lambda c: isinstance(c, ft.Container)
+                    and getattr(c, "on_click", None) and c.data is None)
+        self.app.support_opened.add(self.district.id)
+        self.app.render()
+        self.assertIsNotNone(find(self.app.body, lambda c: isinstance(c, ft.Button)
+                                  and c.content == "+ Населённый пункт"))
+
+    def test_points_are_saved_as_you_type(self):
+        settlement = self.service.add_settlement(self.district.id, "Сандавик")
+        self.app.support_opened.add(self.district.id)
+        self.app.render()
+
+        field = self.field_for(settlement, 0)
+        field.value = "4"
+        field.on_change(ft.ControlEvent(control=field, name="change", data="4"))
+        self.assertEqual(settlement.support[self.app.parties[0].id], 4)
+
+    def test_overspending_a_settlement_is_refused_and_rolled_back(self):
+        settlement = self.service.add_settlement(self.district.id, "Сандавик")
+        self.service.set_support(self.district.id, settlement.id,
+                                 self.app.parties[0].id, 4)
+        self.app.support_opened.add(self.district.id)
+        self.app.render()
+
+        field = self.field_for(settlement, 1)
+        field.value = "5"
+        field.on_change(ft.ControlEvent(control=field, name="change", data="5"))
+
+        self.assertNotIn(self.app.parties[1].id, settlement.support)
+        self.assertEqual(field.value, "")        # на экране не осталось лишнего
+        self.assertIn("очков популярности", self.page.last_toast)
 
 
 class TestProjectWithoutDistricts(unittest.TestCase):

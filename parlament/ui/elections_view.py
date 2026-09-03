@@ -1,78 +1,57 @@
-"""Экран «Выборы»: ввод голосов по округам и пересчёт состава.
+"""Экран «Выборы»: модификаторы по округам и розыгрыш голосов.
 
-Таблица «округ × партия»: строка на каждый округ карты, столбец на каждую
-партию справочника. Заполнять можно руками или загрузить таблицу файлом —
-кнопка «Загрузить таблицу» разбирает тот же формат, что описан в
-`votes_import`.
+Голоса не вводятся — они разыгрываются. Каждой партии в округе выпадает
+1–10, к броску прибавляются модификаторы, и уже эти числа делятся между
+партиями пропорционально.
 
-Числа не применяются к проекту по ходу набора: пока идёт ввод, они живут
-только в полях. Состав пересобирается разом по кнопке «Посчитать» — иначе
-наполовину введённые выборы успели бы перекроить схему в зале.
+Здесь выставляется то, что задаёт ведущий: бонус за дебаты (любое число,
+отрицательное — штраф) и потраченное на агитацию действие. Третий
+модификатор, поддержка, не вводится: он считается из очков в населённых
+пунктах и показан справочно.
+
+В розыгрыше участвуют только партии, у которых в округе есть хоть что-то —
+поддержка, дебаты или агитация. Иначе каждая партия автоматически лезла бы
+в каждый округ, включая те, где её нет.
 """
 
 from __future__ import annotations
 
 import flet as ft
 
-from ..elections import allocate_seats
+from ..elections import PartyRoll
 from . import theme
 from .mount import push
 
-#: Ширина поля под голоса. Шестизначные числа влезают без обрезки.
-_VOTE_WIDTH = 92
-_NAME_WIDTH = 210
-_PREVIEW_WIDTH = 240
+_BONUS_WIDTH = 58
+_NAME_WIDTH = 200
+_CELL_WIDTH = 104
+_PREVIEW_WIDTH = 210
 
 
 class ElectionsView:
-    """Таблица результатов. Живёт ровно столько, сколько открыт экран."""
+    """Таблица «округ × партия» с модификаторами."""
 
     def __init__(self, app):
         self.app = app
         self.service = app.service
-        #: `{district_id: {party_id: ft.TextField}}` — поля ввода.
-        self.fields: dict[str, dict[str, ft.TextField]] = {}
-        #: Подписи с раскладом мест справа от каждой строки.
+        #: `{district_id: {party_id: (поле бонуса, кнопка агитации)}}`.
+        self.cells: dict[str, dict[str, tuple]] = {}
+        #: Подписи с ожидаемым раскладом справа от строки.
         self.previews: dict[str, ft.Text] = {}
+        #: Какие агитации включены — кнопка сама состояния не хранит.
+        self.agitation: dict[tuple[str, str], bool] = {}
 
     # -- сборка -------------------------------------------------------------
 
     def build(self) -> ft.Control:
         if not self.app.parties:
-            return self._needs_parties()
+            return self._notice("Сначала создайте партии", "Новая партия",
+                                self.app.show_parties)
         if not self.service.project.districts:
-            return self._needs_districts()
+            return self._notice("В проекте нет округов", "К карте", self.app.show_map)
 
         conv = self.app.selected
-        votes = conv.votes
-
-        header = ft.Row(
-            [
-                ft.Container(theme.label("Округ"), width=_NAME_WIDTH),
-                ft.Container(theme.label("Мест"), width=52),
-                *[
-                    ft.Container(
-                        ft.Row([
-                            theme.swatch(party.color, 10),
-                            # Растягиваем подпись внутри строки: без этого она
-                            # не знает своей ширины, не сокращается многоточием
-                            # и наезжает на соседний столбец.
-                            ft.Container(
-                                ft.Text(party.abbr or party.name, size=theme.fs(11),
-                                        color=theme.NEUTRAL_600, no_wrap=True,
-                                        overflow=ft.TextOverflow.ELLIPSIS),
-                                expand=True,
-                            ),
-                        ], spacing=5),
-                        width=_VOTE_WIDTH,
-                        tooltip=party.name,
-                    )
-                    for party in self.app.parties
-                ],
-                ft.Container(theme.label("Расклад"), width=_PREVIEW_WIDTH),
-            ],
-            spacing=10,
-        )
+        self._preload(conv)
 
         rows: list[ft.Control] = []
         last_region = None
@@ -83,18 +62,20 @@ class ElectionsView:
                     padding=ft.Padding.only(top=14, bottom=4),
                     content=theme.label(district.region or "Прочие"),
                 ))
-            rows.append(self._district_row(district, votes.get(district.id, {})))
+            rows.append(self._district_row(district))
 
         return ft.Column([
             ft.Container(
-                padding=ft.Padding.only(left=28, right=28, top=18, bottom=8),
+                padding=ft.Padding.only(left=28, right=28, top=18, bottom=6),
                 content=ft.Column([
-                    ft.Text(
-                        f"{len(self.service.project.districts)} округов · "
-                        f"{self.service.project.total_seats} мест · {conv.name}",
-                        size=theme.fs(15), font_family=theme.FONT_SEMIBOLD, color=theme.TEXT,
-                    ),
-                ], spacing=4, tight=True),
+                    ft.Text(f"{len(self.service.project.districts)} округов · "
+                            f"{self.service.project.total_seats} мест · {conv.name}",
+                            size=theme.fs(15), font_family=theme.FONT_SEMIBOLD,
+                            color=theme.TEXT),
+                    ft.Text("В клетке — бонус за дебаты и кнопка агитации. "
+                            "Поддержка берётся из населённых пунктов.",
+                            size=theme.fs(12), color=theme.NEUTRAL_700),
+                ], spacing=3, tight=True),
             ),
             ft.Container(
                 expand=True,
@@ -102,49 +83,81 @@ class ElectionsView:
                 # Две прокрутки: вниз по округам и вбок — таблица с десятком
                 # партий шире окна, и без этого правые столбцы недостижимы.
                 content=ft.Row([
-                    ft.Column(
-                        [header, ft.Divider(height=1, color=theme.DIVIDER), *rows],
-                        spacing=4, scroll=ft.ScrollMode.AUTO, expand=True, tight=False,
-                    ),
+                    ft.Column([self._header(), ft.Divider(height=1, color=theme.DIVIDER),
+                               *rows],
+                              spacing=4, scroll=ft.ScrollMode.AUTO, expand=True),
                 ], scroll=ft.ScrollMode.AUTO, expand=True,
                     vertical_alignment=ft.CrossAxisAlignment.START),
             ),
         ], spacing=0, expand=True)
 
-    def _district_row(self, district, votes: dict[str, int]) -> ft.Control:
-        fields: dict[str, ft.TextField] = {}
+    def _preload(self, conv) -> None:
+        """Подставляет модификаторы прошлого розыгрыша, если он был.
+
+        Экран выборов — не только ввод с нуля: результат нередко хочется
+        перебросить, поменяв одну-две правки.
+        """
+        self.agitation.clear()
+        self.previous: dict[str, dict[str, PartyRoll]] = conv.rolls
+
+    def _header(self) -> ft.Control:
+        return ft.Row([
+            ft.Container(theme.label("Округ"), width=_NAME_WIDTH),
+            ft.Container(theme.label("Мест"), width=46),
+            *[ft.Container(
+                ft.Row([
+                    theme.swatch(party.color, 10),
+                    ft.Container(
+                        ft.Text(party.abbr or party.name, size=theme.fs(11),
+                                color=theme.NEUTRAL_600, no_wrap=True,
+                                overflow=ft.TextOverflow.ELLIPSIS),
+                        expand=True),
+                ], spacing=5),
+                width=_CELL_WIDTH, tooltip=party.name)
+              for party in self.app.parties],
+            ft.Container(theme.label("Поддержка"), width=_PREVIEW_WIDTH),
+        ], spacing=10)
+
+    def _district_row(self, district) -> ft.Control:
         cells: list[ft.Control] = [
             ft.Container(
-                ft.Text(district.name, size=theme.fs(14), color=theme.TEXT, no_wrap=True,
-                        overflow=ft.TextOverflow.ELLIPSIS, tooltip=district.name),
-                width=_NAME_WIDTH,
-            ),
+                ft.Text(district.name, size=theme.fs(14), color=theme.TEXT,
+                        no_wrap=True, overflow=ft.TextOverflow.ELLIPSIS,
+                        tooltip=district.name),
+                width=_NAME_WIDTH),
             ft.Container(
                 ft.Text(str(district.seats), size=theme.fs(14),
                         font_family=theme.FONT_SEMIBOLD, color=theme.NEUTRAL_700),
-                width=52,
-            ),
+                width=46),
         ]
 
+        per_party: dict[str, tuple] = {}
+        stored = self.previous.get(district.id, {})
         for party in self.app.parties:
-            value = votes.get(party.id, 0)
-            field = theme.text_field(
-                str(value) if value else "",
-                width=_VOTE_WIDTH,
-                text_align=ft.TextAlign.RIGHT,
-                keyboard_numeric=True,
-            )
-            field.data = (district.id, party.id)
-            field.on_change = self._on_change
-            fields[party.id] = field
-            cells.append(field)
+            was = stored.get(party.id)
+            bonus = theme.text_field(
+                self._format_bonus(was.debate) if was and was.debate else "",
+                width=_BONUS_WIDTH, text_align=ft.TextAlign.RIGHT)
+            bonus.data = (district.id, party.id)
+            bonus.on_change = self._on_bonus
+            bonus.tooltip = "Бонус за дебаты, можно со знаком минус"
+
+            active = bool(was and was.agitation)
+            self.agitation[(district.id, party.id)] = active
+            button = self._agitation_button(district.id, party.id, active)
+
+            per_party[party.id] = (bonus, button)
+            cells.append(ft.Container(
+                ft.Row([bonus, button], spacing=2,
+                       vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                width=_CELL_WIDTH))
 
         preview = ft.Text(size=theme.fs(12), color=theme.NEUTRAL_700, no_wrap=True,
                           overflow=ft.TextOverflow.ELLIPSIS)
         self.previews[district.id] = preview
         cells.append(ft.Container(preview, width=_PREVIEW_WIDTH))
 
-        self.fields[district.id] = fields
+        self.cells[district.id] = per_party
         self._refresh_preview(district.id, live=False)
 
         return ft.Container(
@@ -153,102 +166,111 @@ class ElectionsView:
                            vertical_alignment=ft.CrossAxisAlignment.CENTER),
         )
 
+    def _agitation_button(self, district_id: str, party_id: str,
+                          active: bool) -> ft.IconButton:
+        button = theme.icon_button(
+            ft.Icons.CAMPAIGN,
+            lambda e: self._toggle_agitation(e.control),
+            tooltip="Действие на агитацию", size=15)
+        button.data = (district_id, party_id)
+        button.icon_color = theme.ACCENT if active else theme.NEUTRAL_300
+        return button
+
     # -- ввод ---------------------------------------------------------------
 
-    def _on_change(self, event) -> None:
-        """Чистит ввод и обновляет расклад строки.
-
-        Проект при этом не трогается: выборы применяются целиком по кнопке.
-        """
+    def _on_bonus(self, event) -> None:
+        """Оставляет в поле только число со знаком минус."""
         field = event.control
-        cleaned = "".join(ch for ch in (field.value or "") if ch.isdigit())
+        raw = (field.value or "").replace(",", ".")
+        cleaned = ""
+        for index, ch in enumerate(raw):
+            if ch.isdigit() or (ch == "-" and index == 0) or (ch == "." and "." not in cleaned):
+                cleaned += ch
         if cleaned != field.value:
             field.value = cleaned
             push(field)
         district_id, _party_id = field.data
         self._refresh_preview(district_id)
 
+    def _toggle_agitation(self, button) -> None:
+        district_id, party_id = button.data
+        active = not self.agitation.get((district_id, party_id), False)
+        self.agitation[(district_id, party_id)] = active
+        button.icon_color = theme.ACCENT if active else theme.NEUTRAL_300
+        push(button)
+        self._refresh_preview(district_id)
+
     def _refresh_preview(self, district_id: str, live: bool = True) -> None:
-        """Показывает, как голоса строки лягут в места округа."""
+        """Показывает поддержку партий и кто вообще идёт в округе.
+
+        Именно поддержку, а не итог: бросок случаен, и обещать результат до
+        розыгрыша было бы враньём.
+        """
         district = self.service.project.district(district_id)
-        if district is None:
-            return
-        allocation = allocate_seats(self.collect_district(district_id), district.seats)
         preview = self.previews.get(district_id)
-        if preview is None:
+        if district is None or preview is None:
             return
 
-        if not allocation:
-            preview.value = "—"
-            preview.color = theme.NEUTRAL_600
-        else:
-            names = {p.id: (p.abbr or p.name) for p in self.app.parties}
-            preview.value = "  ".join(
-                f"{names.get(pid, '?')} {seats}"
-                for pid, seats in sorted(allocation.items(), key=lambda kv: -kv[1])
-            )
-            preview.color = theme.TEXT
+        parts = []
+        for party in self.app.parties:
+            support = self.service.support_modifier(district_id, party.id)
+            if not (support or self._running(district_id, party.id)):
+                continue
+            label = party.abbr or party.name
+            parts.append(f"{label} {support:.1f}".replace(".", ","))
+
+        preview.value = "  ".join(parts) if parts else "никто не идёт"
+        preview.color = theme.TEXT if parts else theme.NEUTRAL_600
         if live:
             push(preview)
 
+    def _running(self, district_id: str, party_id: str) -> bool:
+        cell = self.cells.get(district_id, {}).get(party_id)
+        if cell is None:
+            return False
+        bonus, _button = cell
+        has_bonus = bool((bonus.value or "").strip().strip("-").strip("."))
+        return has_bonus or self.agitation.get((district_id, party_id), False)
+
     # -- сбор данных --------------------------------------------------------
 
-    def collect_district(self, district_id: str) -> dict[str, int]:
-        return {
-            party_id: int(field.value)
-            for party_id, field in self.fields.get(district_id, {}).items()
-            if (field.value or "").strip().isdigit() and int(field.value) > 0
-        }
-
-    def collect(self) -> dict[str, dict[str, int]]:
-        """Всё введённое — в виде, который принимает `run_election`."""
-        result = {}
-        for district_id in self.fields:
-            votes = self.collect_district(district_id)
-            if votes:
-                result[district_id] = votes
+    def collect(self) -> dict[str, dict[str, dict]]:
+        """Модификаторы в виде, который принимает `roll_election`."""
+        result: dict[str, dict[str, dict]] = {}
+        for district_id, per_party in self.cells.items():
+            district_setup: dict[str, dict] = {}
+            for party_id, (bonus, _button) in per_party.items():
+                debate = _to_number(bonus.value)
+                agitation = self.agitation.get((district_id, party_id), False)
+                if debate or agitation:
+                    district_setup[party_id] = {"debate": debate,
+                                                "agitation": agitation}
+            if district_setup:
+                result[district_id] = district_setup
         return result
 
-    def fill(self, votes: dict[str, dict[str, int]]) -> None:
-        """Раскладывает загруженную таблицу по полям, затирая прежний ввод."""
-        for district_id, fields in self.fields.items():
-            per_party = votes.get(district_id, {})
-            for party_id, field in fields.items():
-                value = per_party.get(party_id, 0)
-                field.value = str(value) if value else ""
-                push(field)
-            self._refresh_preview(district_id)
+    @staticmethod
+    def _format_bonus(value: float) -> str:
+        return str(int(value)) if float(value).is_integer() else str(value)
 
     # -- пустые состояния ---------------------------------------------------
 
-    def _needs_parties(self) -> ft.Control:
-        return self._notice("Сначала создайте партии",
-                            "Новая партия", self.app.show_parties)
-
-    def _needs_districts(self) -> ft.Control:
-        return self._notice(
-            "В проекте нет округов",
-            "К парламенту", self.app.show_parliament,
-            hint="Округа появляются в новых проектах. Этот создан до карты — "
-                 "места в нём распределяются вручную.",
-        )
-
-    def _notice(self, title: str, button: str, action, hint: str | None = None) -> ft.Control:
-        content: list[ft.Control] = [
-            ft.Text(title, size=theme.fs(18), font_family=theme.FONT_SEMIBOLD,
-                    color=theme.TEXT),
-        ]
-        if hint:
-            content.append(ft.Container(
-                width=430,
-                content=ft.Text(hint, size=theme.fs(13), color=theme.NEUTRAL_700,
-                                text_align=ft.TextAlign.CENTER),
-            ))
-        content.append(theme.primary_button(button, lambda _e: action()))
+    def _notice(self, title: str, button: str, action) -> ft.Control:
         return ft.Container(
             expand=True,
             alignment=ft.Alignment.CENTER,
-            content=ft.Column(content, spacing=16,
-                              alignment=ft.MainAxisAlignment.CENTER,
-                              horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+            content=ft.Column([
+                ft.Text(title, size=theme.fs(18), font_family=theme.FONT_SEMIBOLD,
+                        color=theme.TEXT),
+                theme.primary_button(button, lambda _e: action()),
+            ], spacing=16,
+                alignment=ft.MainAxisAlignment.CENTER,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER),
         )
+
+
+def _to_number(text: str | None) -> float:
+    try:
+        return float((text or "").replace(",", "."))
+    except ValueError:
+        return 0.0
