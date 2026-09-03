@@ -939,6 +939,24 @@ class TestSupportScreen(AppTestCase):
         field.on_change(ft.ControlEvent(control=field, name="change", data="4"))
         self.assertEqual(settlement.support[self.app.parties[0].id], 4)
 
+    def test_settlement_can_be_renamed(self):
+        # Опечатка в названии не безобидна: таблица поддержки сопоставляет
+        # пункты по имени и завела бы второй.
+        settlement = self.service.add_settlement(self.district.id, "Сандавк")
+        self.app.support_opened.add(self.district.id)
+        self.app.render()
+
+        name = find(self.app.body, lambda c: isinstance(c, ft.Container)
+                    and getattr(c, "tooltip", None) == "Переименовать")
+        name.on_click(None)
+        field = find(self.page.dialog, lambda c: isinstance(c, ft.TextField))
+        self.assertEqual(field.value, "Сандавк")
+        field.value = "Сандавик"
+        find(self.page.dialog, lambda c: isinstance(c, ft.Button)
+             and c.content == "Сохранить").on_click(None)
+
+        self.assertEqual(settlement.name, "Сандавик")
+
     def test_overspending_a_settlement_is_refused_and_rolled_back(self):
         settlement = self.service.add_settlement(self.district.id, "Сандавик")
         self.service.set_support(self.district.id, settlement.id,

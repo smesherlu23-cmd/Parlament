@@ -508,9 +508,14 @@ def adopt_districts_dialog(old_total: int, districts: list, on_confirm: Callable
 
 
 def settlement_dialog(district, on_confirm: Callable[[str], str | None],
-                      on_cancel: Callable) -> ft.AlertDialog:
-    """Новый населённый пункт в округе."""
-    name = theme.text_field("", label_text="Название", autofocus=True)
+                      on_cancel: Callable, settlement=None) -> ft.AlertDialog:
+    """Новый населённый пункт в округе, а с `settlement` — переименование.
+
+    Опечатка в названии не безобидна: таблица поддержки сопоставляет пункты
+    по имени, и «Гавань» с «Гавнь» приехали бы в проект двумя разными.
+    """
+    current = settlement.name if settlement else ""
+    name = theme.text_field(current, label_text="Название", autofocus=True)
     error = ft.Text("", size=theme.fs(12), color=theme.ACCENT_2_700, visible=False)
 
     def confirm(_event) -> None:
@@ -522,7 +527,8 @@ def settlement_dialog(district, on_confirm: Callable[[str], str | None],
     return _shell(
         f"Населённый пункт — {district.name}",
         [name, error],
-        [_cancel(on_cancel), theme.primary_button("Добавить", confirm)],
+        [_cancel(on_cancel),
+         theme.primary_button("Сохранить" if settlement else "Добавить", confirm)],
     )
 
 

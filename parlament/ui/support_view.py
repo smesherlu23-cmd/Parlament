@@ -179,7 +179,10 @@ class SupportView:
                             ft.Text(settlement.name, size=theme.fs(13),
                                     color=theme.TEXT, no_wrap=True,
                                     overflow=ft.TextOverflow.ELLIPSIS),
-                            expand=True),
+                            expand=True, ink=True,
+                            tooltip="Переименовать",
+                            on_click=lambda _e, d=district, s=settlement:
+                                self._rename(d, s)),
                         theme.icon_button(
                             ft.Icons.CLOSE,
                             lambda _e, d=district, s=settlement: self._delete(d, s),
@@ -217,6 +220,22 @@ class SupportView:
 
         self.app.page.show_dialog(dialogs.settlement_dialog(
             district, confirm, lambda _e: self.app.close_dialog()))
+
+    def _rename(self, district, settlement) -> None:
+        from . import dialogs
+
+        def confirm(name: str) -> str | None:
+            try:
+                self.service.rename_settlement(district.id, settlement.id, name)
+            except (ValidationError, StoreError) as error:
+                return str(error)
+            self.app.close_dialog()
+            self.app.render()
+            return None
+
+        self.app.page.show_dialog(dialogs.settlement_dialog(
+            district, confirm, lambda _e: self.app.close_dialog(),
+            settlement=settlement))
 
     def _delete(self, district, settlement) -> None:
         try:
