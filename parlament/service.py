@@ -279,6 +279,45 @@ class ParlamentService:
         self._persist()
         return settlement
 
+    def import_support(self, rows: dict[str, dict[str, dict[str, int]]]) -> int:
+        """Заносит разобранную таблицу поддержки.
+
+        Пункт, которого в округе ещё нет, создаётся; существующий узнаётся по
+        названию, и его очки заменяются целиком — таблица считается полной
+        картиной по этому пункту, а не добавкой к прежним очкам.
+
+        Возвращает число обработанных пунктов.
+        """
+        touched = 0
+        for district_id, settlements in (rows or {}).items():
+            district = self._require_district(district_id)
+            by_name = {s.name.strip().casefold(): s for s in district.settlements}
+
+            for name, points in settlements.items():
+                cleaned_name = self._clean_name(name)
+                settlement = by_name.get(cleaned_name.casefold())
+                if settlement is None:
+                    settlement = Settlement(id=new_id("s"), name=cleaned_name)
+                    district.settlements.append(settlement)
+                    by_name[cleaned_name.casefold()] = settlement
+
+                fresh: dict[str, int] = {}
+                for party_id, value in points.items():
+                    self._require_party(party_id)
+                    fresh[party_id] = self._clean_support(value)
+
+                total = sum(fresh.values())
+                if total > elections.SETTLEMENT_SUPPORT:
+                    raise ValidationError(
+                        f"«{cleaned_name}»: роздано {total} очков, "
+                        f"а в населённом пункте их {elections.SETTLEMENT_SUPPORT}."
+                    )
+                settlement.support = {p: n for p, n in fresh.items() if n > 0}
+                touched += 1
+
+        self._persist()
+        return touched
+
     def support_modifier(self, district_id: str, party_id: str) -> float:
         """Модификатор поддержки партии в округе — очки, делённые на число НП."""
         district = self._require_district(district_id)

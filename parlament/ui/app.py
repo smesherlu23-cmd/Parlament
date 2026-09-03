@@ -29,7 +29,12 @@ from .map_view import MapView
 from .parties_view import PartiesView
 from .seat_chart import SeatChart, chart_height_for_width
 from .support_view import SupportView
-from .votes_file import export_template, read_votes_file
+from .votes_file import (
+    export_support_template,
+    export_template,
+    read_support_file,
+    read_votes_file,
+)
 
 
 class ParlamentApp:
@@ -186,7 +191,15 @@ class ParlamentApp:
                 ft.Text("ПОДДЕРЖКА", size=theme.fs(13), font_family=theme.FONT_SEMIBOLD,
                         color=theme.TEXT, style=ft.TextStyle(letter_spacing=2.1)),
             ]
-            right = []
+            usable = bool(self.parties and self.service.project.districts)
+            right = [
+                theme.ghost_button("Шаблон таблицы",
+                                   lambda _e: self.save_support_template(),
+                                   disabled=not usable),
+                theme.secondary_button("Загрузить таблицу",
+                                       lambda _e: self.load_support_file(),
+                                       disabled=not usable),
+            ]
         elif self.view == "elections":
             left = [
                 theme.ghost_button("← К карте", lambda _e: self.show_map()),
@@ -708,6 +721,57 @@ class ParlamentApp:
             )
             if saved:
                 self.toast("Карта сохранена.")
+
+        self.page.run_task(save)
+
+    def load_support_file(self) -> None:
+        """Загружает таблицу с населёнными пунктами и очками поддержки."""
+
+        async def pick() -> None:
+            files = await self.file_picker.pick_files(
+                dialog_title="Таблица поддержки",
+                allowed_extensions=["csv", "txt"],
+                allow_multiple=False,
+                with_data=True,
+            )
+            if not files:
+                return
+            try:
+                result = read_support_file(files[0], self.service.project)
+            except (OSError, ValueError) as error:
+                self.toast(f"Не удалось прочитать файл: {error}", error=True)
+                return
+
+            touched = 0
+            if result.rows:
+                try:
+                    touched = self.service.import_support(result.rows)
+                except (ValidationError, StoreError) as error:
+                    self.toast(str(error), error=True)
+                    return
+
+            self.render()
+            if result.warnings:
+                self.page.show_dialog(dialogs.import_report_dialog(
+                    touched, result.warnings, lambda _e: self.close_dialog()))
+            elif touched:
+                self.toast(f"Загружено населённых пунктов: {touched}.")
+
+        self.page.run_task(pick)
+
+    def save_support_template(self) -> None:
+        """Отдаёт таблицу поддержки под текущие округа, пункты и партии."""
+
+        async def save() -> None:
+            data = export_support_template(self.service.project)
+            saved = await self.file_picker.save_file(
+                dialog_title="Шаблон таблицы поддержки",
+                file_name="Поддержка_шаблон.csv",
+                allowed_extensions=["csv"],
+                src_bytes=data,
+            )
+            if saved:
+                self.toast("Шаблон сохранён.")
 
         self.page.run_task(save)
 

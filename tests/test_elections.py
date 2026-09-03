@@ -25,6 +25,10 @@ from parlament.elections import (  # noqa: E402
     weights,
 )
 from parlament.model import Project  # noqa: E402
+from parlament.ui.votes_file import (  # noqa: E402
+    export_support_template,
+    parse_support_text,
+)
 from parlament.votes_import import parse_votes_csv  # noqa: E402
 
 
@@ -432,6 +436,104 @@ class TestRollElection(ElectionTestCase):
         with self.assertRaises(ValidationError):
             self.service.roll_election(
                 self.conv.id, {self.district.id: {self.a.id: {"debate": "ой"}}})
+
+
+class TestSupportImport(ElectionTestCase):
+    """Таблица поддержки: населённые пункты и очки одним файлом.
+
+    Пунктов много — по нескольку в каждом из 27 округов, — и заводить их
+    руками долго; это ровно та работа, которую удобнее делать в таблице.
+    """
+
+    def parse(self, text: str):
+        return parse_support_text(text.encode("utf-8"), self.service.project)
+
+    def table(self, body: str) -> str:
+        return ("Округ,Населённый пункт,Народный союз,Партия труда,Аграрный блок\n"
+                + body)
+
+    def test_creates_settlements_and_points(self):
+        result = self.parse(self.table("Судбригг,Судурей,4,2,\n"
+                                       "Судбригг,Фьярей,,6,\n"))
+        self.assertEqual(result.warnings, [])
+        self.assertEqual(self.service.import_support(result.rows), 2)
+
+        district = self.by_name["Судбригг"]
+        self.assertEqual([s.name for s in district.settlements], ["Судурей", "Фьярей"])
+        self.assertEqual(district.support_points(self.b.id), 8)
+
+    def test_modifier_follows_the_imported_table(self):
+        result = self.parse(self.table("Судбригг,Судурей,4,,\n"
+                                       "Судбригг,Фьярей,2,,\n"))
+        self.service.import_support(result.rows)
+        # 6 очков на два пункта.
+        self.assertEqual(self.service.support_modifier(self.by_name["Судбригг"].id,
+                                                       self.a.id), 3.0)
+
+    def test_existing_settlement_is_replaced_not_doubled(self):
+        district = self.by_name["Судбригг"]
+        settlement = self.service.add_settlement(district.id, "Судурей")
+        self.service.set_support(district.id, settlement.id, self.a.id, 5)
+
+        result = self.parse(self.table("Судбригг,Судурей,,3,\n"))
+        self.service.import_support(result.rows)
+
+        self.assertEqual(len(district.settlements), 1)
+        self.assertEqual(district.settlements[0].support, {self.b.id: 3})
+
+    def test_names_match_loosely(self):
+        result = self.parse("Округ,Населённый пункт,  народный СОЮЗ \n"
+                            "  судбригг ,Судурей,3\n")
+        self.assertEqual(result.warnings, [])
+        self.service.import_support(result.rows)
+        self.assertEqual(self.by_name["Судбригг"].support_points(self.a.id), 3)
+
+    def test_overspent_settlement_is_refused(self):
+        result = self.parse(self.table("Судбригг,Судурей,5,4,\n"))
+        with self.assertRaises(ValidationError) as ctx:
+            self.service.import_support(result.rows)
+        self.assertIn("Судурей", str(ctx.exception))
+
+    def test_unknown_district_is_reported(self):
+        result = self.parse(self.table("Атлантида,Столица,1,2,\n"))
+        self.assertEqual(result.rows, {})
+        self.assertTrue(any("Атлантида" in w for w in result.warnings))
+
+    def test_row_with_points_but_no_settlement_name_is_reported(self):
+        result = self.parse(self.table("Судбригг,,1,2,\n"))
+        self.assertTrue(any("названия" in w for w in result.warnings))
+
+    def test_blank_template_row_is_not_an_error(self):
+        # Шаблон выдаёт пустую строку там, где пунктов ещё нет: это
+        # приглашение заполнить, а не повод для замечания.
+        result = self.parse(self.table("Судбригг,,,,\n"))
+        self.assertEqual(result.warnings, ["Ни одного населённого пункта "
+                                           "разобрать не удалось."])
+
+    def test_template_lists_every_district(self):
+        data = export_support_template(self.service.project).decode("utf-8-sig")
+        lines = [line for line in data.splitlines() if line.strip()]
+        self.assertEqual(len(lines), 1 + len(self.service.project.districts))
+        self.assertIn("Населённый пункт", lines[0])
+
+    def test_template_carries_existing_settlements(self):
+        district = self.by_name["Судбригг"]
+        settlement = self.service.add_settlement(district.id, "Судурей")
+        self.service.set_support(district.id, settlement.id, self.a.id, 4)
+
+        data = export_support_template(self.service.project).decode("utf-8-sig")
+        self.assertIn("Судбригг,Судурей,4", data)
+
+    def test_template_round_trip(self):
+        district = self.by_name["Судбригг"]
+        settlement = self.service.add_settlement(district.id, "Судурей")
+        self.service.set_support(district.id, settlement.id, self.a.id, 4)
+
+        data = export_support_template(self.service.project)
+        result = parse_support_text(data, self.service.project)
+        self.assertEqual(result.warnings, [])
+        self.service.import_support(result.rows)
+        self.assertEqual(district.settlements[0].support, {self.a.id: 4})
 
 
 class TestVotesImport(ElectionTestCase):

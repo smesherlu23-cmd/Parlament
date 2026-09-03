@@ -535,8 +535,8 @@ def import_report_dialog(filled: int, warnings: list[str],
     """
     body: list[ft.Control] = [
         ft.Text(
-            f"Загружено округов: {filled}." if filled
-            else "Ни одной строки с результатами разобрать не удалось.",
+            f"Загружено строк: {filled}." if filled
+            else "Ни одной строки разобрать не удалось.",
             size=theme.fs(14), color=theme.TEXT,
         ),
         ft.Container(
