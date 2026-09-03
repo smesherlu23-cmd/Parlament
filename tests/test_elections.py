@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 import sys
 import tempfile
 import unittest
@@ -12,9 +13,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from parlament import ParlamentService, ValidationError  # noqa: E402
 from parlament.district_seed import SEED_DISTRICTS, SEED_TOTAL_SEATS  # noqa: E402
 from parlament.elections import (  # noqa: E402
+    MAX_ROLL,
+    MIN_ROLL,
+    PartyRoll,
     allocate_seats,
     district_winner,
+    roll_dice,
+    shares,
+    support_modifier,
     totals_by_party,
+    weights,
 )
 from parlament.model import Project  # noqa: E402
 from parlament.votes_import import parse_votes_csv  # noqa: E402
@@ -62,6 +70,84 @@ class TestAllocation(unittest.TestCase):
     def test_totals_add_up_across_districts(self):
         self.assertEqual(totals_by_party({"d1": {"a": 3, "b": 2}, "d2": {"a": 1}}),
                          {"a": 4, "b": 2})
+
+
+class TestRollMechanic(unittest.TestCase):
+    """Розыгрыш голосов: бросок 1–10, модификаторы, перевод в проценты."""
+
+    def test_example_from_the_brief(self):
+        # Заказчик задал разбор на числах: 3, 5, 7 при сумме 15.
+        rolls = {"a": PartyRoll(roll=3), "b": PartyRoll(roll=5), "c": PartyRoll(roll=7)}
+        percent = {k: round(v, 1) for k, v in shares(rolls).items()}
+        self.assertEqual(percent, {"a": 20.0, "b": 33.3, "c": 46.7})
+
+    def test_dice_stay_within_one_and_ten(self):
+        rng = random.Random(1)
+        values = [roll_dice(rng) for _ in range(2000)]
+        self.assertEqual(min(values), MIN_ROLL)
+        self.assertEqual(max(values), MAX_ROLL)
+
+    def test_support_is_points_per_settlement(self):
+        self.assertEqual(support_modifier(9, 3), 3.0)
+        self.assertAlmostEqual(support_modifier(7, 3), 2.3333, places=3)
+        # Округ без НП не должен ронять расчёт делением на ноль.
+        self.assertEqual(support_modifier(5, 0), 0.0)
+
+    def test_support_is_added_whole_not_capped(self):
+        # По уточнению заказчика: «сколько поддержки — столько и бонус».
+        self.assertEqual(PartyRoll(roll=4, support=3.0).total, 7.0)
+
+    def test_debate_bonus_can_be_any_number(self):
+        self.assertEqual(PartyRoll(roll=5, debate=4).total, 9.0)
+        self.assertEqual(PartyRoll(roll=5, debate=-3).total, 2.0)
+
+    def test_agitation_adds_one(self):
+        self.assertEqual(PartyRoll(roll=5, agitation=True).total, 6.0)
+        self.assertEqual(PartyRoll(roll=5, agitation=False).total, 5.0)
+
+    def test_all_modifiers_stack(self):
+        self.assertAlmostEqual(
+            PartyRoll(roll=4, support=7 / 3, debate=-2, agitation=True).total,
+            4 + 7 / 3 - 2 + 1)
+
+    def test_total_never_goes_below_zero(self):
+        # Отрицательный вес вычитал бы голоса у соседей и ломал пропорцию.
+        self.assertEqual(PartyRoll(roll=1, debate=-9).total, 0.0)
+        self.assertEqual(PartyRoll(roll=2, support=-5).total, 0.0)
+
+    def test_party_at_zero_gets_no_votes(self):
+        rolls = {"a": PartyRoll(roll=6), "b": PartyRoll(roll=1, debate=-5)}
+        self.assertEqual(set(weights(rolls)), {"a"})
+        self.assertEqual(shares(rolls), {"a": 100.0})
+
+    def test_shares_always_add_up_to_a_hundred(self):
+        rng = random.Random(7)
+        for _ in range(200):
+            rolls = {f"p{i}": PartyRoll(roll=roll_dice(rng), support=rng.random() * 4,
+                                        debate=rng.randint(-3, 3),
+                                        agitation=bool(rng.getrandbits(1)))
+                     for i in range(rng.randint(2, 6))}
+            total = sum(shares(rolls).values())
+            if total:
+                self.assertAlmostEqual(total, 100.0, places=6)
+
+    def test_fractional_weights_still_fill_the_district(self):
+        # Средняя поддержка почти всегда дробная — места всё равно раздаются
+        # все до единого.
+        rolls = {"a": PartyRoll(roll=3, support=1 / 3),
+                 "b": PartyRoll(roll=5, support=2 / 3),
+                 "c": PartyRoll(roll=7, support=1 / 7)}
+        seats = allocate_seats(weights(rolls), 9)
+        self.assertEqual(sum(seats.values()), 9)
+
+    def test_roll_survives_a_round_trip(self):
+        original = PartyRoll(roll=6, support=2.5, debate=-1, agitation=True)
+        self.assertEqual(PartyRoll.from_dict(original.to_dict()), original)
+
+    def test_broken_stored_roll_does_not_crash(self):
+        # Файл проекта правится руками — мусор в полях не должен ронять загрузку.
+        self.assertEqual(PartyRoll.from_dict({"roll": "ой", "support": None}),
+                         PartyRoll(roll=0, support=0.0))
 
 
 class ElectionTestCase(unittest.TestCase):
