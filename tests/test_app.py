@@ -874,6 +874,52 @@ class TestRollBreakdown(unittest.TestCase):
         self.assertEqual(_roll_breakdown(None), "—")
 
 
+class TestElectionsPreview(AppTestCase):
+    """Предпросмотр в строке округа обещает ровно то, что произойдёт."""
+
+    def setUp(self):
+        super().setUp()
+        self.add_parties(2)
+        self.district = self.service.project.districts[0]
+        self.app.show_elections()
+
+    def bonus(self, party_index: int, value: str):
+        field, _button = self.app.elections.cells[self.district.id][
+            self.app.parties[party_index].id]
+        field.value = value
+        field.on_change(ft.ControlEvent(control=field, name="change", data=value))
+
+    def test_zero_bonus_does_not_promise_a_run(self):
+        # Ноль — не бонус: в розыгрыш такая партия не попадёт, и обещать
+        # участие нельзя.
+        self.bonus(0, "0")
+        self.assertEqual(self.app.elections.collect(), {})
+        self.assertIn("никто не идёт",
+                      self.app.elections.previews[self.district.id].value)
+
+    def test_real_bonus_does(self):
+        self.bonus(0, "2")
+        self.assertIn(self.district.id, self.app.elections.collect())
+        self.assertNotIn("никто не идёт",
+                         self.app.elections.previews[self.district.id].value)
+
+    def test_empty_roll_keeps_the_previous_result(self):
+        # Кнопка, нажатая на пустом экране, не должна стирать прошлые выборы.
+        settlement = self.service.add_settlement(self.district.id, "НП")
+        self.service.set_support(self.district.id, settlement.id,
+                                 self.app.parties[0].id, 4)
+        self.app.show_elections()
+        self.app.apply_election()
+        seats = dict(self.app.selected.seats)
+
+        self.service.delete_settlement(self.district.id, settlement.id)
+        self.app.show_elections()
+        self.app.apply_election()
+
+        self.assertEqual(self.app.selected.seats, seats)
+        self.assertIn("разыгрывать нечего", self.page.last_toast)
+
+
 class TestSeatsAfterElection(AppTestCase):
     """Зал после выборов: места производные и руками не правятся."""
 
@@ -997,6 +1043,26 @@ class TestSupportScreen(AppTestCase):
         self.assertNotIn(self.app.parties[1].id, settlement.support)
         self.assertEqual(field.value, "")        # на экране не осталось лишнего
         self.assertIn("очков популярности", self.page.last_toast)
+
+
+class TestSupportScreenWidth(AppTestCase):
+    """При десяти партиях строка пункта шире окна — нужна прокрутка вбок."""
+
+    def test_rows_scroll_sideways(self):
+        for index in range(10):
+            self.service.create_party(name=f"Партия {index + 1}",
+                                      color="#0088b0", abbr=f"П{index + 1}")
+        self.app.render()
+        district = self.service.project.districts[0]
+        self.service.add_settlement(district.id, "Гавань")
+        self.app.support_opened.add(district.id)
+        self.app.show_support()
+
+        row = find(self.app.body, lambda c: isinstance(c, ft.Row)
+                   and c.scroll == ft.ScrollMode.AUTO)
+        self.assertIsNotNone(row, "строки пунктов не прокручиваются вбок")
+        column = row.controls[0]
+        self.assertGreater(column.width, theme.WINDOW_MIN_WIDTH - 200)
 
 
 class TestProjectWithoutDistricts(unittest.TestCase):

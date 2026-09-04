@@ -15,6 +15,7 @@ from parlament.district_seed import SEED_DISTRICTS, SEED_TOTAL_SEATS  # noqa: E4
 from parlament.elections import (  # noqa: E402
     MAX_ROLL,
     MIN_ROLL,
+    SETTLEMENT_SUPPORT,
     PartyRoll,
     allocate_seats,
     district_winner,
@@ -401,10 +402,27 @@ class TestRollElection(ElectionTestCase):
         stored = again.project.active_convocation.rolls[self.district.id][self.a.id]
         self.assertEqual(stored, self.conv.rolls[self.district.id][self.a.id])
 
-    def test_empty_setup_leaves_the_parliament_empty(self):
-        self.service.roll_election(self.conv.id, {}, rng=random.Random(17))
+    def test_empty_setup_is_refused(self):
+        with self.assertRaises(ValidationError):
+            self.service.roll_election(self.conv.id, {}, rng=random.Random(17))
         self.assertEqual(self.conv.seats, {})
         self.assertFalse(self.conv.has_election)
+
+    def test_empty_roll_does_not_wipe_the_previous_one(self):
+        # Кнопка, нажатая по ошибке, не должна стирать сыгранные выборы —
+        # для этого есть отдельный сброс с подтверждением.
+        self.give_support(self.a, 4)
+        self.service.roll_election(self.conv.id, {}, rng=random.Random(21))
+        before = dict(self.conv.seats)
+        rolls_before = dict(self.conv.rolls)
+
+        self.service.delete_settlement(self.district.id,
+                                       self.district.settlements[0].id)
+        with self.assertRaises(ValidationError):
+            self.service.roll_election(self.conv.id, {}, rng=random.Random(22))
+
+        self.assertEqual(self.conv.seats, before)
+        self.assertEqual(self.conv.rolls, rolls_before)
 
     def test_clearing_wipes_the_rolls_too(self):
         self.give_support(self.a, 4)
@@ -417,6 +435,62 @@ class TestRollElection(ElectionTestCase):
         with self.assertRaises(ValidationError):
             self.service.roll_election(
                 self.conv.id, {self.district.id: {self.a.id: {"debate": "ой"}}})
+
+
+class TestDeletingAParty(ElectionTestCase):
+    """Удаление партии не должно оставлять за ней следов."""
+
+    def setUp(self):
+        super().setUp()
+        self.district = self.by_name["Гаффинсвик центр"]
+        self.settlement = self.service.add_settlement(self.district.id, "Гавань")
+
+    def test_its_support_points_go_back_into_the_pool(self):
+        # Запас пункта общий: очки исчезнувшей партии навсегда заняли бы
+        # часть запаса, и отдать их другой партии стало бы нельзя.
+        self.service.set_support(self.district.id, self.settlement.id,
+                                 self.a.id, SETTLEMENT_SUPPORT)
+        self.service.delete_party(self.a.id)
+        self.service.set_support(self.district.id, self.settlement.id,
+                                 self.b.id, SETTLEMENT_SUPPORT)
+        self.assertEqual(self.settlement.support, {self.b.id: SETTLEMENT_SUPPORT})
+
+    def test_it_leaves_the_rolled_districts(self):
+        self.service.set_support(self.district.id, self.settlement.id, self.a.id, 3)
+        self.service.set_support(self.district.id, self.settlement.id, self.b.id, 3)
+        self.service.roll_election(self.conv.id, {}, rng=random.Random(31))
+        self.assertEqual(set(self.conv.rolls[self.district.id]), {self.a.id, self.b.id})
+
+        self.service.delete_party(self.a.id)
+        self.assertEqual(set(self.conv.rolls[self.district.id]), {self.b.id})
+        self.assertNotIn(self.a.id, self.conv.votes[self.district.id])
+
+    def test_the_district_is_shared_out_again(self):
+        # Иначе места ушедшей партии просто пропали бы, а округ остался бы
+        # недоразделённым.
+        self.service.set_support(self.district.id, self.settlement.id, self.a.id, 3)
+        self.service.set_support(self.district.id, self.settlement.id, self.b.id, 3)
+        self.service.roll_election(self.conv.id, {}, rng=random.Random(33))
+        self.service.delete_party(self.a.id)
+        self.assertEqual(sum(self.conv.seats.values()), self.district.seats)
+        self.assertEqual(self.conv.seats, {self.b.id: self.district.seats})
+
+    def test_deleting_the_last_party_clears_the_election(self):
+        self.service.set_support(self.district.id, self.settlement.id, self.a.id, 4)
+        self.service.roll_election(self.conv.id, {}, rng=random.Random(35))
+        self.service.delete_party(self.a.id)
+        self.assertEqual(self.conv.seats, {})
+        self.assertEqual(self.conv.votes, {})
+        self.assertFalse(self.conv.has_election)
+
+    def test_survives_restart(self):
+        self.service.set_support(self.district.id, self.settlement.id, self.a.id, 5)
+        self.service.delete_party(self.a.id)
+        again = ParlamentService(self.path)
+        again.bootstrap()
+        stored = again.project.districts
+        self.assertEqual(
+            [s.support for d in stored for s in d.settlements], [{}])
 
 
 class TestSupportImport(ElectionTestCase):
@@ -469,11 +543,32 @@ class TestSupportImport(ElectionTestCase):
         self.service.import_support(result.rows)
         self.assertEqual(self.by_name["Судбригг"].support_points(self.a.id), 3)
 
-    def test_overspent_settlement_is_refused(self):
-        result = self.parse(self.table("Судбригг,Судурей,5,4,\n"))
+    def test_overspent_settlement_is_reported_and_skipped(self):
+        # Разбор ловит перебор сам, чтобы пользователь увидел разом все
+        # плохие строки и правил документ за один заход.
+        result = self.parse(self.table("Судбригг,Судурей,5,4,\n"
+                                       "Гаффинсвик центр,Гавань,3,2,\n"))
+        self.assertTrue(any("Судурей" in w and "6" in w for w in result.warnings))
+        self.assertEqual(list(result.rows), [self.by_name["Гаффинсвик центр"].id])
+
+        self.service.import_support(result.rows)
+        self.assertEqual(self.by_name["Судбригг"].settlements, [])
+        self.assertEqual(self.by_name["Гаффинсвик центр"].support_points(self.a.id), 3)
+
+    def test_service_still_refuses_an_overspent_row(self):
+        # Последний рубеж: разбор можно обойти, проект — нет.
         with self.assertRaises(ValidationError) as ctx:
-            self.service.import_support(result.rows)
+            self.service.import_support(
+                {self.by_name["Судбригг"].id: {"Судурей": {self.a.id: 9}}})
         self.assertIn("Судурей", str(ctx.exception))
+
+    def test_the_same_settlement_twice_is_reported(self):
+        result = self.parse(self.table("Судбригг,Судурей,3,,\n"
+                                       "Судбригг,Судурей,,2,\n"))
+        self.assertTrue(any("дважды" in w for w in result.warnings))
+        self.service.import_support(result.rows)
+        self.assertEqual(len(self.by_name["Судбригг"].settlements), 1)
+        self.assertEqual(self.by_name["Судбригг"].support_points(self.b.id), 2)
 
     def test_unknown_district_is_reported(self):
         result = self.parse(self.table("Атлантида,Столица,1,2,\n"))
@@ -490,6 +585,27 @@ class TestSupportImport(ElectionTestCase):
         result = self.parse(self.table("Судбригг,,,,\n"))
         self.assertEqual(result.warnings, ["Ни одного населённого пункта "
                                            "разобрать не удалось."])
+
+    def test_a_bad_row_cancels_the_whole_import(self):
+        # Иначе половина таблицы оседала бы в памяти, а в файл не попадала:
+        # на экране одно, в проекте другое.
+        first = self.by_name["Судбригг"]
+        second = self.by_name["Гаффинсвик центр"]
+        self.service.import_support({first.id: {"Судурей": {self.a.id: 3}}})
+
+        with self.assertRaises(ValidationError):
+            self.service.import_support({
+                first.id: {"Судурей": {self.a.id: 1}},
+                second.id: {"Гавань": {self.a.id: SETTLEMENT_SUPPORT + 1}},
+            })
+
+        self.assertEqual(first.settlements[0].support, {self.a.id: 3})
+        self.assertEqual(second.settlements, [])
+        again = ParlamentService(self.path)
+        again.bootstrap()
+        stored = {d.name: d for d in again.project.districts}
+        self.assertEqual(stored["Судбригг"].settlements[0].support, {self.a.id: 3})
+        self.assertEqual(stored["Гаффинсвик центр"].settlements, [])
 
     def test_template_lists_every_district(self):
         data = export_support_template(self.service.project).decode("utf-8-sig")

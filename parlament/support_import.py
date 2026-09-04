@@ -24,6 +24,8 @@ import csv
 import io
 from dataclasses import dataclass, field
 
+from .elections import SETTLEMENT_SUPPORT
+
 
 @dataclass
 class SupportImportResult:
@@ -94,9 +96,10 @@ def parse_support_csv(text: str, districts: dict[str, str],
         if not settlement_name:
             # Пустая строка под округом — заготовка из шаблона: он выдаёт такую
             # там, где пунктов ещё нет. Это приглашение заполнить, а не ошибка.
-            # Ругаемся только если очки проставили, а пункт назвать забыли.
+            # Ругаемся только если очки проставили, а пункт назвать забыли —
+            # и только по столбцам знакомых партий: про чужие уже сказано выше.
             if any(index < len(row) and row[index].strip()
-                   for index, _party, _name in columns):
+                   for index, party_id, _name in columns if party_id):
                 result.warnings.append(
                     f"«{district_name}»: очки есть, а названия населённого пункта "
                     f"нет — строка пропущена.")
@@ -118,7 +121,22 @@ def parse_support_csv(text: str, districts: dict[str, str],
             if value > 0:
                 points[party_id] = value
 
-        result.rows.setdefault(district_id, {})[settlement_name] = points
+        total = sum(points.values())
+        if total > SETTLEMENT_SUPPORT:
+            # Ловим здесь, а не при записи в проект: так пользователь получает
+            # список всех перебравших строк разом и правит документ за один
+            # заход, а остальная таблица всё же загружается.
+            result.warnings.append(
+                f"«{settlement_name}»: роздано {total} очков, а в населённом "
+                f"пункте их {SETTLEMENT_SUPPORT} — строка пропущена.")
+            continue
+
+        already = result.rows.setdefault(district_id, {})
+        if settlement_name in already:
+            result.warnings.append(
+                f"«{settlement_name}» в округе «{district_name}» встречается "
+                f"дважды — взята последняя строка.")
+        already[settlement_name] = points
 
     if not result.rows:
         result.warnings.append("Ни одного населённого пункта разобрать не удалось.")

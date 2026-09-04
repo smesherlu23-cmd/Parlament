@@ -225,12 +225,18 @@ class ElectionsView:
             push(preview)
 
     def _running(self, district_id: str, party_id: str) -> bool:
+        """Идёт ли партия в округе — по тому же правилу, что и `collect`.
+
+        Считать «идёт» по непустому полю нельзя: вписанный ноль — это не
+        бонус, и в розыгрыш такая партия не попадёт. Предпросмотр обещал бы
+        участие, которого не будет.
+        """
         cell = self.cells.get(district_id, {}).get(party_id)
         if cell is None:
             return False
         bonus, _button = cell
-        has_bonus = bool((bonus.value or "").strip().strip("-").strip("."))
-        return has_bonus or self.agitation.get((district_id, party_id), False)
+        return bool(_to_number(bonus.value)) or self.agitation.get(
+            (district_id, party_id), False)
 
     # -- сбор данных --------------------------------------------------------
 

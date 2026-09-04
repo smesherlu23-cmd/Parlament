@@ -65,10 +65,24 @@ class SupportView:
             ft.Container(
                 expand=True,
                 padding=ft.Padding.only(left=28, right=28, bottom=18),
-                content=ft.Column(rows, spacing=4, scroll=ft.ScrollMode.AUTO,
-                                  expand=True),
+                # Две прокрутки: вниз по округам и вбок — при десяти партиях
+                # строка пункта шире окна, и без этого правые столбцы
+                # недостижимы.
+                content=ft.Row([
+                    ft.Column(rows, spacing=4, scroll=ft.ScrollMode.AUTO,
+                              expand=True, width=self._row_width()),
+                ], scroll=ft.ScrollMode.AUTO, expand=True,
+                    vertical_alignment=ft.CrossAxisAlignment.START),
             ),
         ], spacing=0, expand=True)
+
+    def _row_width(self) -> float:
+        """Ширина строки пункта — по числу партий, а не по окну.
+
+        Внутри горизонтальной прокрутки колонка иначе сжимается по окну, и
+        прокручивать становится нечего.
+        """
+        return _NAME_WIDTH + (_POINT_WIDTH + 8) * len(self.app.parties) + 68
 
     # -- округ --------------------------------------------------------------
 

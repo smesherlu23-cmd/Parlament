@@ -102,12 +102,36 @@ class ParlamentService:
         return party
 
     def delete_party(self, party_id: str) -> None:
-        """Удаляет партию из справочника; её места во всех созывах становятся
-        нераспределёнными (на схеме — серыми)."""
+        """Удаляет партию из справочника — вместе со всеми её следами.
+
+        Мест в созывах мало: за партией остаются ещё очки популярности в
+        населённых пунктах и её доля в разыгранных округах. Очки особенно
+        важно убрать: запас пункта общий, и очки исчезнувшей партии навсегда
+        заняли бы часть этого запаса — отдать их кому-то другому стало бы
+        нельзя.
+
+        Созывы, где места посчитаны выборами, пересчитываются: округа
+        делятся заново уже без этой партии.
+        """
         party = self._require_party(party_id)
         self.project.parties = [p for p in self.project.parties if p.id != party.id]
+
+        for district in self.project.districts:
+            for settlement in district.settlements:
+                settlement.support.pop(party.id, None)
+
         for conv in self.project.convocations:
             conv.seats.pop(party.id, None)
+            if not conv.votes:
+                continue
+            conv.votes = {did: {pid: n for pid, n in per.items() if pid != party.id}
+                          for did, per in conv.votes.items()}
+            conv.votes = {did: per for did, per in conv.votes.items() if per}
+            conv.rolls = {did: {pid: r for pid, r in per.items() if pid != party.id}
+                          for did, per in conv.rolls.items()}
+            conv.rolls = {did: per for did, per in conv.rolls.items() if per}
+            self._recount(conv)
+
         self._persist()
 
     def party_usage(self, party_id: str) -> list[dict]:
@@ -288,18 +312,14 @@ class ParlamentService:
 
         Возвращает число обработанных пунктов.
         """
-        touched = 0
+        # Сначала проверяем всю таблицу и только потом что-то меняем: иначе
+        # ошибка в последней строке оставляла бы половину импорта в памяти —
+        # на экране одно, в файле другое.
+        planned: list[tuple[District, str, dict[str, int]]] = []
         for district_id, settlements in (rows or {}).items():
             district = self._require_district(district_id)
-            by_name = {s.name.strip().casefold(): s for s in district.settlements}
-
             for name, points in settlements.items():
                 cleaned_name = self._clean_name(name)
-                settlement = by_name.get(cleaned_name.casefold())
-                if settlement is None:
-                    settlement = Settlement(id=new_id("s"), name=cleaned_name)
-                    district.settlements.append(settlement)
-                    by_name[cleaned_name.casefold()] = settlement
 
                 fresh: dict[str, int] = {}
                 for party_id, value in points.items():
@@ -312,8 +332,17 @@ class ParlamentService:
                         f"«{cleaned_name}»: роздано {total} очков, "
                         f"а в населённом пункте их {elections.SETTLEMENT_SUPPORT}."
                     )
-                settlement.support = {p: n for p, n in fresh.items() if n > 0}
-                touched += 1
+                planned.append((district, cleaned_name, fresh))
+
+        touched = 0
+        for district, name, fresh in planned:
+            by_name = {s.name.strip().casefold(): s for s in district.settlements}
+            settlement = by_name.get(name.casefold())
+            if settlement is None:
+                settlement = Settlement(id=new_id("s"), name=name)
+                district.settlements.append(settlement)
+            settlement.support = {p: n for p, n in fresh.items() if n > 0}
+            touched += 1
 
         self._persist()
         return touched
@@ -375,6 +404,16 @@ class ParlamentService:
             if district_rolls:
                 rolls[district.id] = district_rolls
 
+        if not rolls:
+            # Разыгрывать нечего. Молча записать пустой результат нельзя: это
+            # стёрло бы прошлые выборы созыва, а пользователь всего лишь
+            # нажал кнопку, ничего не выставив. Для сброса есть отдельная
+            # операция, и она спрашивает подтверждение.
+            raise ValidationError(
+                "Ни в одном округе нет ни поддержки, ни модификаторов — "
+                "разыгрывать нечего."
+            )
+
         conv.rolls = rolls
         conv.votes = {district_id: elections.weights(per_party)
                       for district_id, per_party in rolls.items()}
@@ -407,13 +446,18 @@ class ParlamentService:
         return points
 
     def _clean_bonus(self, value: object) -> float:
-        """Бонус за дебаты — любое число, в том числе отрицательное."""
+        """Бонус за дебаты — любое конечное число, в том числе отрицательное."""
         if isinstance(value, bool):
             raise ValidationError("Бонус за дебаты должен быть числом.")
         try:
-            return float(value)
+            number = float(value)
         except (TypeError, ValueError):
             raise ValidationError("Бонус за дебаты должен быть числом.") from None
+        # inf и nan проходят через float() молча, а дальше отравляют весь
+        # расчёт: проценты округа становятся nan, места не раздаются.
+        if number != number or number in (float("inf"), float("-inf")):
+            raise ValidationError("Бонус за дебаты должен быть обычным числом.")
+        return number
 
     def clear_election(self, convocation_id: str) -> Convocation:
         """Убирает результаты выборов созыва — состав снова набирается руками."""

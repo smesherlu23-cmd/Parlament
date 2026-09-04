@@ -721,7 +721,11 @@ class ParlamentApp:
     # -- выборы -------------------------------------------------------------
 
     def apply_election(self) -> None:
-        """Разыгрывает выборы и уводит на раскрашенную карту."""
+        """Разыгрывает выборы и уводит на раскрашенную карту.
+
+        Пустой розыгрыш сервис отклоняет сам, не тронув прошлый результат:
+        нажатая по ошибке кнопка не должна стирать уже сыгранные выборы.
+        """
         modifiers = self.elections.collect()
         try:
             self.service.roll_election(self.selected.id, modifiers)
@@ -730,12 +734,6 @@ class ParlamentApp:
             return
 
         conv = self.selected
-        if not conv.rolls:
-            # Ни поддержки, ни бонусов — разыгрывать нечего.
-            self.toast("Ни в одном округе нет ни поддержки, ни модификаторов.",
-                       error=True)
-            return
-
         filled = len(conv.rolls)
         total = len(self.service.project.districts)
         self.show_map()

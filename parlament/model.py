@@ -369,17 +369,26 @@ class Project:
 
     def normalize(self) -> None:
         """Приводит проект к инварианту: созывы упорядочены по номеру, и ровно
-        один из них открыт (не зафиксирован) — последний."""
+        один из них открыт (не зафиксирован) — последний.
+
+        Проверяем не только «сколько открытых», но и «тот ли открыт»: файл
+        правится руками, и открытый созыв в середине истории ломал бы
+        нумерацию следующего — новый созыв получал бы номер, который уже
+        занят.
+        """
+        if not self.convocations:
+            self.convocations = [
+                Convocation(id=new_id("c"), number=1, name=convocation_name(1))
+            ]
         self.convocations.sort(key=lambda c: c.number)
         for index, conv in enumerate(self.convocations):
             conv.number = index + 1
-        open_ones = [c for c in self.convocations if not c.is_fixed]
-        if len(open_ones) != 1:
-            # Открыт всегда последний созыв, остальные — история.
-            for conv in self.convocations[:-1]:
-                if not conv.is_fixed:
-                    conv.fixed_at = conv.created_at
-            self.convocations[-1].fixed_at = None
+
+        last = self.convocations[-1]
+        for conv in self.convocations[:-1]:
+            if not conv.is_fixed:
+                conv.fixed_at = conv.created_at
+        last.fixed_at = None
 
     def remove_convocation(self, convocation_id: str) -> None:
         """Убирает созыв из истории; оставшиеся заново нумеруются по порядку.

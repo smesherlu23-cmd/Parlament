@@ -309,6 +309,38 @@ class TestDeleteConvocation(ServiceTestCase):
         self.assertEqual(len(reloaded.convocations), 1)
 
 
+class TestBrokenFileIsRepaired(unittest.TestCase):
+    """Файл проекта правится руками — из него не должно вылезать битое
+    состояние: открытым обязан быть последний созыв, и хотя бы один."""
+
+    def project(self, convocations: list[dict]) -> Project:
+        return Project.from_dict({"schemaVersion": 2, "totalSeats": 147,
+                                  "parties": [], "convocations": convocations})
+
+    def test_open_convocation_in_the_middle_is_closed(self):
+        # Иначе следующий созыв получил бы уже занятый номер.
+        project = self.project([
+            {"id": "c1", "number": 1, "name": "Первый состав", "fixedAt": "2020-01-01"},
+            {"id": "c2", "number": 2, "name": "Второй состав"},
+            {"id": "c3", "number": 3, "name": "Третий состав", "fixedAt": "2020-03-01"},
+        ])
+        self.assertEqual(project.active_convocation.id, "c3")
+        self.assertEqual([c.number for c in project.convocations], [1, 2, 3])
+        self.assertTrue(project.convocation("c2").is_fixed)
+
+    def test_all_convocations_fixed_reopens_the_last(self):
+        project = self.project([
+            {"id": "c1", "number": 1, "name": "Первый", "fixedAt": "2020-01-01"},
+            {"id": "c2", "number": 2, "name": "Второй", "fixedAt": "2020-02-01"},
+        ])
+        self.assertEqual(project.active_convocation.id, "c2")
+
+    def test_file_without_convocations_gets_one(self):
+        project = self.project([])
+        self.assertEqual(len(project.convocations), 1)
+        self.assertFalse(project.active_convocation.is_fixed)
+
+
 class TestPersistence(ServiceTestCase):
     def test_every_change_is_written_to_disk(self):
         party = self.party()
