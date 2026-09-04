@@ -656,6 +656,16 @@ class TestSupportImport(ElectionTestCase):
         self.assertEqual(len(self.by_name["Судбригг"].settlements), 1)
         self.assertEqual(self.by_name["Судбригг"].support_points(self.b.id), 2)
 
+    def test_a_bad_cell_says_what_is_wrong(self):
+        # «1,5» и «-2» — числа, просто очки бывают только целыми и от нуля:
+        # писать «не число» было бы неправдой.
+        result = self.parse(self.table("Судбригг,Судурей,абв,1,5,\n"))
+        self.assertTrue(any("не подходит" in w and "целое" in w
+                            for w in result.warnings))
+
+        half = self.parse(self.table("Судбригг,Судурей,1.5,,\n"))
+        self.assertTrue(any("не подходит" in w for w in half.warnings))
+
     def test_unknown_district_is_reported(self):
         result = self.parse(self.table("Атлантида,Столица,1,2,\n"))
         self.assertEqual(result.rows, {})

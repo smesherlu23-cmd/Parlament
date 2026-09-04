@@ -114,9 +114,11 @@ def parse_support_csv(text: str, districts: dict[str, str],
                 continue
             value = _parse_number(cell)
             if value is None:
+                # Не «не число»: «1,5» и «-2» — числа, просто очки бывают
+                # только целыми и неотрицательными.
                 result.warnings.append(
-                    f"«{settlement_name}», {party_name}: «{cell}» — не число, "
-                    f"клетка пропущена.")
+                    f"«{settlement_name}», {party_name}: «{cell}» не подходит — "
+                    f"нужно целое число очков от нуля. Клетка пропущена.")
                 continue
             if value > 0:
                 points[party_id] = value
