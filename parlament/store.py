@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
 from .model import Project
@@ -61,3 +62,23 @@ def save(project: Project, path: str | os.PathLike) -> None:
             raise
     except OSError as exc:
         raise StoreError(f"Не удалось сохранить файл: {exc.strerror or exc}") from None
+
+
+def set_aside(path: str | os.PathLike) -> Path | None:
+    """Отодвигает нечитаемый файл проекта в сторону, возвращая новое имя.
+
+    Программа не может открыть такой файл, но и затирать его нельзя: это
+    единственная копия игры, и вручную из неё нередко можно вытащить всё.
+    Без этого первое же действие в чистом проекте сохранялось бы поверх
+    испорченного файла — и спасать было бы уже нечего.
+    """
+    file = Path(path)
+    if not file.exists():
+        return None
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    target = file.with_name(f"{file.name}.broken-{stamp}")
+    try:
+        os.replace(file, target)
+    except OSError:
+        return None
+    return target

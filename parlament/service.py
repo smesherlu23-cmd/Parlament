@@ -122,8 +122,11 @@ class ParlamentService:
 
         for conv in self.project.convocations:
             conv.seats.pop(party.id, None)
-            if not conv.votes:
+            if not conv.has_election:
                 continue
+            # Разбор чистим наравне с голосами: округ, где все ушли в ноль,
+            # голосов не имеет, но разбор по нему хранится — и партия
+            # осталась бы в нём призраком.
             conv.votes = {did: {pid: n for pid, n in per.items() if pid != party.id}
                           for did, per in conv.votes.items()}
             conv.votes = {did: per for did, per in conv.votes.items() if per}
@@ -149,6 +152,7 @@ class ParlamentService:
         """Ставит партии конкретное число мест в созыве."""
         conv = self._require_convocation(convocation_id)
         self._require_party(party_id)
+        self._require_manual(conv)
 
         count = self._clean_seat_count(seats)
         others = sum(n for pid, n in conv.seats.items() if pid != party_id)
@@ -169,6 +173,7 @@ class ParlamentService:
     def set_all_seats(self, convocation_id: str, seats: dict[str, int]) -> Convocation:
         """Заменяет всё распределение созыва разом (импорт, отмена, сброс)."""
         conv = self._require_convocation(convocation_id)
+        self._require_manual(conv)
         cleaned: dict[str, int] = {}
         for party_id, value in (seats or {}).items():
             self._require_party(party_id)
@@ -187,6 +192,19 @@ class ParlamentService:
 
     def reset_seats(self, convocation_id: str) -> Convocation:
         return self.set_all_seats(convocation_id, {})
+
+    def _require_manual(self, conv: Convocation) -> None:
+        """Не даёт править руками состав, посчитанный выборами.
+
+        Иначе зал разошёлся бы с картой: округа остались бы покрашены и
+        расписаны по партиям, а число мест в зале — уже другое. Чтобы
+        вернуться к ручному набору, выборы сбрасываются целиком.
+        """
+        if conv.has_election:
+            raise ValidationError(
+                "Места в этом созыве посчитаны выборами. Чтобы набирать их "
+                "руками, сначала сбросьте выборы."
+            )
 
     # -- созывы -------------------------------------------------------------
 

@@ -178,7 +178,7 @@ class ParlamentApp:
             right = [
                 theme.secondary_button(
                     "Экспорт карты в PNG", lambda _e: self.export_map_png(),
-                    disabled=not (has_districts and self.selected.votes),
+                    disabled=not (has_districts and self.selected.has_election),
                 ),
                 theme.secondary_button(
                     "Поддержка", lambda _e: self.show_support(),

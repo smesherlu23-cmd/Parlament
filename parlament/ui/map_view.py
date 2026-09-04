@@ -25,7 +25,7 @@ class MapView:
             return self._no_districts()
 
         conv = self.app.selected
-        winners = self.service.district_winners(conv.id) if conv.votes else {}
+        winners = self.service.district_winners(conv.id) if conv.has_election else {}
         colors = {p.id: p.color for p in self.app.parties}
 
         # Карта рисуется полигонами округов; связь «код -> округ» нужна,
@@ -68,6 +68,11 @@ class MapView:
         if winners:
             note = (f"{len(winners)} из {len(districts)} округов · "
                     f"{sum(conv.seats.values())} из {self.service.project.total_seats} мест")
+        elif conv.has_election:
+            # Розыгрыш был, но модификаторы увели всех в ноль: голосов нет ни
+            # у кого, и красить нечего — сказать об этом честнее, чем делать
+            # вид, что выборов не было.
+            note = f"{len(districts)} округов · ни одна партия не набрала голосов"
         else:
             note = f"{len(districts)} округов · выборы не проводились"
         return ft.Row([
@@ -111,6 +116,9 @@ class MapView:
             rows.append(ft.Container(
                 padding=ft.Padding.only(top=8),
                 content=ft.Text(
+                    "Выборы разыграны, но ни одна партия не набрала голосов: "
+                    "штрафы увели всех в ноль. Клик по округу покажет разбор."
+                    if conv.has_election else
                     "Раздайте очки поддержки на экране «Поддержка», затем "
                     "нажмите «Выборы» и разыграйте их — карта раскрасится "
                     "в цвета победителей.",

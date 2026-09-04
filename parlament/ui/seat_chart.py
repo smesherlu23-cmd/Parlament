@@ -22,6 +22,7 @@ from dataclasses import dataclass
 import flet as ft
 import flet.canvas as cv
 
+from ..model import DEFAULT_TOTAL_SEATS
 from . import theme
 from .mount import push
 
@@ -49,7 +50,7 @@ class Seat:
 
 
 def compute_seats(
-    total: int = 120,
+    total: int = DEFAULT_TOTAL_SEATS,
     rows: int = 5,
     dist: list[tuple[str, int]] | None = None,
     empty_color: str = theme.EMPTY_SEAT,
@@ -133,7 +134,7 @@ def _shapes(seats: list[Seat], scale: float, offset_x: float = 0.0) -> list[cv.S
 class SeatChart(ft.Container):
     """Схема, которая сама подстраивается под ширину, отданную ей раскладкой."""
 
-    def __init__(self, total: int = 120, rows: int = 5,
+    def __init__(self, total: int = DEFAULT_TOTAL_SEATS, rows: int = 5,
                  dist: list[tuple[str, int]] | None = None,
                  opacity: float = 1.0, height: float | None = None):
         self._total = total

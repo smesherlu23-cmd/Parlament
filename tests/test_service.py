@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from parlament import ParlamentService, ValidationError  # noqa: E402
 from parlament.district_seed import SEED_TOTAL_SEATS  # noqa: E402
 from parlament.model import Project, convocation_name, normalize_color  # noqa: E402
-from parlament.store import StoreError, load, save  # noqa: E402
+from parlament.store import StoreError, load, save, set_aside  # noqa: E402
 
 
 class ServiceTestCase(unittest.TestCase):
@@ -414,6 +414,37 @@ class TestPersistence(ServiceTestCase):
         self.party()
         leftovers = [p.name for p in self.path.parent.iterdir() if p.suffix == ".tmp"]
         self.assertEqual(leftovers, [])
+
+
+class TestBrokenFileIsSetAside(ServiceTestCase):
+    """Нечитаемый файл проекта не затирается чистым."""
+
+    def test_it_is_renamed_and_kept(self):
+        # Файл — единственная копия игры: программа его не понимает, но
+        # руками из него нередко можно вытащить всё.
+        self.path.write_text("{ это не json", encoding="utf-8")
+        service = ParlamentService(self.path)
+        with self.assertRaises(StoreError):
+            service.bootstrap()
+
+        saved = set_aside(self.path)
+        self.assertIsNotNone(saved)
+        self.assertIn("broken", saved.name)
+        self.assertEqual(saved.read_text(encoding="utf-8"), "{ это не json")
+        self.assertFalse(self.path.exists())
+
+    def test_a_clean_project_then_writes_beside_it(self):
+        self.path.write_text("{ это не json", encoding="utf-8")
+        saved = set_aside(self.path)
+        service = ParlamentService(self.path)
+        service.bootstrap()
+        service.create_party(name="Народный союз", color="#0088b0")
+
+        self.assertTrue(self.path.exists())
+        self.assertEqual(saved.read_text(encoding="utf-8"), "{ это не json")
+
+    def test_missing_file_is_not_an_error(self):
+        self.assertIsNone(set_aside(self.path.with_name("нет-такого.json")))
 
 
 class TestRecentColors(ServiceTestCase):

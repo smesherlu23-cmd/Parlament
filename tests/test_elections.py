@@ -455,6 +455,62 @@ class TestRollElection(ElectionTestCase):
                 self.conv.id, {self.district.id: {self.a.id: {"debate": "ой"}}})
 
 
+class TestElectionAndManualSeatsDoNotMix(ElectionTestCase):
+    """Состав, посчитанный выборами, руками не правится."""
+
+    def setUp(self):
+        super().setUp()
+        self.district = self.by_name["Гаффинсвик центр"]
+        settlement = self.service.add_settlement(self.district.id, "Гавань")
+        self.service.set_support(self.district.id, settlement.id, self.a.id, 4)
+        self.service.roll_election(self.conv.id, {}, rng=random.Random(41))
+
+    def test_setting_seats_by_hand_is_refused(self):
+        # Иначе зал разошёлся бы с картой: округа остались бы покрашены и
+        # расписаны по партиям, а число мест в зале — уже другое.
+        with self.assertRaises(ValidationError):
+            self.service.set_seats(self.conv.id, self.b.id, 5)
+        self.assertEqual(self.conv.seats, {self.a.id: self.district.seats})
+
+    def test_resetting_seats_is_refused(self):
+        with self.assertRaises(ValidationError):
+            self.service.reset_seats(self.conv.id)
+        self.assertEqual(sum(self.conv.seats.values()), self.district.seats)
+
+    def test_after_clearing_the_election_hands_are_free_again(self):
+        self.service.clear_election(self.conv.id)
+        self.service.set_seats(self.conv.id, self.b.id, 5)
+        self.assertEqual(self.conv.seats, {self.b.id: 5})
+
+
+class TestEveryoneRolledZero(ElectionTestCase):
+    """Штрафы увели всех в ноль: голосов нет, но выборы состоялись."""
+
+    def setUp(self):
+        super().setUp()
+        self.district = self.by_name["Судбригг"]
+        self.service.roll_election(
+            self.conv.id,
+            {self.district.id: {self.a.id: {"debate": -20}}},
+            rng=random.Random(43))
+
+    def test_the_roll_is_kept_for_the_record(self):
+        self.assertEqual(self.conv.rolls[self.district.id][self.a.id].total, 0.0)
+        self.assertEqual(self.conv.votes, {})
+        self.assertEqual(self.conv.seats, {})
+
+    def test_it_still_counts_as_an_election(self):
+        # Иначе программа предложила бы набрать места руками поверх уже
+        # сыгранного розыгрыша.
+        self.assertTrue(self.conv.has_election)
+        with self.assertRaises(ValidationError):
+            self.service.set_seats(self.conv.id, self.a.id, 2)
+
+    def test_nobody_wins_the_district(self):
+        self.assertEqual(self.service.district_winners(self.conv.id), {})
+        self.assertEqual(self.service.district_shares(self.conv.id, self.district.id), {})
+
+
 class TestDeletingAParty(ElectionTestCase):
     """Удаление партии не должно оставлять за ней следов."""
 
@@ -492,6 +548,18 @@ class TestDeletingAParty(ElectionTestCase):
         self.service.delete_party(self.a.id)
         self.assertEqual(sum(self.conv.seats.values()), self.district.seats)
         self.assertEqual(self.conv.seats, {self.b.id: self.district.seats})
+
+    def test_it_leaves_a_district_where_everyone_rolled_zero(self):
+        # Голосов в таком округе нет, но разбор хранится — партия осталась бы
+        # в нём призраком, которого уже нет в справочнике.
+        self.service.roll_election(
+            self.conv.id, {self.district.id: {self.a.id: {"debate": -20}}},
+            rng=random.Random(37))
+        self.assertIn(self.a.id, self.conv.rolls[self.district.id])
+
+        self.service.delete_party(self.a.id)
+        self.assertEqual(self.conv.rolls, {})
+        self.assertFalse(self.conv.has_election)
 
     def test_deleting_the_last_party_clears_the_election(self):
         self.service.set_support(self.district.id, self.settlement.id, self.a.id, 4)

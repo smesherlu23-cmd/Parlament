@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 from PIL import Image, ImageDraw, ImageFont
 
+from ..model import DEFAULT_TOTAL_SEATS
 from . import theme
 from .seat_chart import VIEWBOX_HEIGHT, VIEWBOX_WIDTH, compute_seats
 
@@ -37,7 +38,7 @@ def _font(name: str, size: int) -> ImageFont.FreeTypeFont:
 
 def render_png(
     distribution: list[LegendEntry],
-    total_seats: int = 120,
+    total_seats: int = DEFAULT_TOTAL_SEATS,
     rows: int = 5,
     width: int = 1920,
     height: int = 1080,
