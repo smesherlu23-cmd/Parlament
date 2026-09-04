@@ -244,6 +244,7 @@ class ParlamentApp:
                 # означала бы, что в проекте, начатом до карты, до выборов не
                 # добраться вовсе.
                 theme.secondary_button("Карта", lambda _e: self.show_map()),
+                theme.secondary_button("Поддержка", lambda _e: self.show_support()),
             ]
             if archive_view:
                 right.append(theme.primary_button("Править состав", lambda _e: self.edit_archived()))
@@ -508,9 +509,6 @@ class ParlamentApp:
                 ft.Container(
                     padding=ft.Padding.only(top=18),
                     content=ft.Column([
-                        ft.Row([theme.secondary_button("К карте",
-                                                       lambda _e: self.show_map(),
-                                                       expand=True)]),
                         ft.Row([theme.secondary_button("Сбросить выборы",
                                                        lambda _e: self.reset_election(),
                                                        expand=True)]),

@@ -115,6 +115,15 @@ class TestAppBar(AppTestCase):
         self.assertTrue(any(b.content == "Экспортировать в PNG" for b in buttons))
         self.assertTrue(any(b.content == "+ Новый созыв" for b in buttons))
 
+    def test_support_is_reachable_directly_from_the_main_screen(self):
+        # Раньше до «Поддержки» можно было дойти только через «Карту» —
+        # теперь кнопка стоит рядом с «Партии» и «Карта» в самой шапке.
+        button = find(self.body, lambda c: isinstance(c, ft.Button)
+                      and c.content == "Поддержка")
+        self.assertIsNotNone(button)
+        button.on_click(None)
+        self.assertEqual(self.app.view, "support")
+
 
 class TestFirstRun(AppTestCase):
     def test_starts_with_one_empty_convocation(self):
@@ -995,6 +1004,13 @@ class TestSeatsAfterElection(AppTestCase):
 
     def test_rail_says_where_the_seats_came_from(self):
         self.assertTrue(any("Места посчитаны по" in t for t in texts(self.body)))
+
+    def test_map_button_in_the_rail_is_gone_now_that_the_top_bar_has_one(self):
+        # «К карте» в панели дублировал «Карта» в шапке — убрана, раз шапка
+        # ведёт туда с любого состояния главного экрана.
+        buttons = find_all(self.body, lambda c: isinstance(c, ft.Button))
+        self.assertEqual([b for b in buttons if b.content == "К карте"], [])
+        self.assertTrue(any(b.content == "Карта" for b in buttons))
 
     def test_resetting_the_election_returns_manual_input(self):
         self.app.reset_election()
