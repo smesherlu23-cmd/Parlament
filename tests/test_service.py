@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from parlament import ParlamentService, ValidationError  # noqa: E402
+from parlament.district_geometry import DISTRICT_SHAPES  # noqa: E402
 from parlament.district_seed import SEED_TOTAL_SEATS  # noqa: E402
 from parlament.model import Project, convocation_name, normalize_color  # noqa: E402
 from parlament.store import StoreError, load, save, set_aside  # noqa: E402
@@ -464,6 +465,74 @@ class TestMapCorrectionsReachOldProjects(ServiceTestCase):
                                      "parties": [], "convocations": []})
         self.assertEqual(project.districts, [])
         self.assertEqual(project.total_seats, 120)
+
+
+class TestOldProjectWithoutDistrictCodes(ServiceTestCase):
+    """Файл сборки, где округа уже были, а номеров на карте ещё не было."""
+
+    #: Как выглядел округ в тех файлах: имя, места, регион и координаты
+    #: маркера — без `code`, потому что его тогда не существовало.
+    OLD = [("Западный берег", 6, "Саттмалвик"), ("Холмавикский", 5, "Саттмалвик"),
+           ("Скалафьялльский", 4, "Саттмалвик"), ("Саттмалвик центр", 9, "Саттмалвик"),
+           ("Саттмалвик порт", 7, "Саттмалвик"), ("Северный мыс", 4, "Саттмалвик"),
+           ("Херсвикский", 5, "Гаффинсвик"), ("Гаффинсвик север", 6, "Гаффинсвик"),
+           ("Гаффинсвик промышленный", 6, "Гаффинсвик"), ("Раудихолмский", 5, "Гаффинсвик"),
+           ("Офридархолтский", 4, "Гаффинсвик"), ("Гаффинсвик центр", 10, "Гаффинсвик"),
+           ("Гаффинсвик порт", 8, "Гаффинсвик"), ("Гаффинсвик юг", 5, "Гаффинсвик"),
+           ("Трэлавикский", 5, "Гаффинсвик"), ("Скьяльдарстадирский", 4, "Гаффинсвик"),
+           ("Стьорнавикский", 4, "Нивенсхолл"), ("Намавикский", 5, "Нивенсхолл"),
+           ("Нивенсхолл шахтный", 6, "Нивенсхолл"), ("Нивенсхолл центр", 8, "Нивенсхолл"),
+           ("Нивенсхолл порт", 6, "Нивенсхолл"), ("Нивенсхолл восток", 5, "Нивенсхолл"),
+           ("Нивенсфелльский", 3, "Нивенсхолл"), ("Киркьюнивенский", 4, "Триединсборг"),
+           ("Триединсборг шахтный", 5, "Триединсборг"),
+           ("Триединсборг центр", 6, "Триединсборг"), ("Судбригг", 2, "Судбригг")]
+
+    def write_old_file(self) -> None:
+        import json
+
+        from parlament.model import new_id
+
+        raw = {
+            "schemaVersion": 2, "totalSeats": 147, "rows": 5,
+            "parties": [{"id": "p1", "name": "Народный союз", "color": "#0088b0"}],
+            "convocations": [{"id": "c1", "number": 1, "name": "Первый состав"}],
+            "districts": [{"id": new_id("d"), "name": name, "seats": seats,
+                           "region": region, "x": 0.5, "y": 0.5}
+                          for name, seats, region in self.OLD],
+        }
+        self.path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+
+    def test_codes_are_restored_by_name(self):
+        # Без номера округ не с чем связать — ни границ, ни подписи, и карта
+        # у такого проекта оставалась пустой.
+        self.write_old_file()
+        project = load(self.path)
+
+        codes = sorted(d.code for d in project.districts)
+        self.assertEqual(codes, list(range(1, 28)))
+        by_code = {d.code: d.name for d in project.districts}
+        self.assertEqual(by_code[11], "Гаффинсвик центр")
+        self.assertEqual(by_code[20], "Судбригг")
+
+    def test_every_district_can_be_drawn(self):
+        self.write_old_file()
+        project = load(self.path)
+        for district in project.districts:
+            self.assertIn(district.code, DISTRICT_SHAPES, district.name)
+
+    def test_settlements_and_ids_survive(self):
+        self.write_old_file()
+        project = load(self.path)
+        before = [d.id for d in project.districts]
+
+        service = ParlamentService(self.path)
+        service.bootstrap()
+        district = service.project.districts[0]
+        service.add_settlement(district.id, "Гавань")
+
+        again = load(self.path)
+        self.assertEqual([d.id for d in again.districts], before)
+        self.assertEqual([s.name for s in again.districts[0].settlements], ["Гавань"])
 
 
 class TestBrokenFileIsSetAside(ServiceTestCase):

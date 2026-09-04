@@ -386,7 +386,17 @@ class Project:
 
         by_code = {code: (name, seats, region)
                    for code, name, seats, region in SEED_DISTRICTS}
+        # Округа появились в программе раньше, чем номера на карте: в файлах
+        # тех сборок `code` нет вовсе, а без него округ не с чем связать —
+        # ни границ, ни подписи, и карта у такого проекта оставалась пустой.
+        # Названия с тех пор не менялись, поэтому номер восстанавливается
+        # по имени.
+        by_name = {_district_key(name): code
+                   for code, name, _seats, _region in SEED_DISTRICTS}
+
         for district in self.districts:
+            if not district.code:
+                district.code = by_name.get(_district_key(district.name), 0)
             fresh = by_code.get(district.code)
             if fresh is None:
                 continue
@@ -451,6 +461,11 @@ class Project:
     def active_convocation(self) -> Convocation:
         """Открытый (редактируемый) созыв — последний по номеру."""
         return next(c for c in reversed(self.convocations) if not c.is_fixed)
+
+
+def _district_key(name: str) -> str:
+    """Ключ сопоставления округа по названию — без регистра и лишних пробелов."""
+    return " ".join(str(name).split()).casefold()
 
 
 def normalize_color(value: object) -> str:
