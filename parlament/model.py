@@ -362,8 +362,37 @@ class Project:
         project = Project(total_seats=total, rows=int(raw.get("rows") or 5),
                           parties=parties, convocations=convocations,
                           recent_colors=recent_colors, districts=districts)
+        project.sync_with_map()
         project.normalize()
         return project
+
+    def sync_with_map(self) -> None:
+        """Подтягивает названия и число мест округов из игровой карты.
+
+        Округа — не пользовательские данные, а карта: их названия и места
+        задаёт игра, и переименовать округ в программе нельзя. Значит,
+        уточнение карты должно доезжать и до уже начатых проектов — иначе у
+        игрока, начавшего партию раньше, навсегда осталась бы прежняя
+        разметка (а по ней он ещё и раздаёт очки поддержки).
+
+        Населённые пункты и очки при этом не трогаются: они привязаны к
+        округу по идентификатору, а не по названию.
+        """
+        if not self.districts:
+            return          # проект начат до карты — досочинять ему нечего
+
+        from .district_seed import SEED_DISTRICTS
+
+        by_code = {code: (name, seats, region)
+                   for code, name, seats, region in SEED_DISTRICTS}
+        for district in self.districts:
+            fresh = by_code.get(district.code)
+            if fresh is None:
+                continue
+            district.name, district.seats, district.region = fresh
+
+        # Размер палаты задаётся картой: разъезжаться этим числам нельзя.
+        self.total_seats = sum(d.seats for d in self.districts)
 
     def normalize(self) -> None:
         """Приводит проект к инварианту: созывы упорядочены по номеру, и ровно

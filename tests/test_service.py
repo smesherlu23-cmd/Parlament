@@ -416,6 +416,56 @@ class TestPersistence(ServiceTestCase):
         self.assertEqual(leftovers, [])
 
 
+class TestMapCorrectionsReachOldProjects(ServiceTestCase):
+    """Уточнение карты доезжает до уже начатых партий."""
+
+    def old_file(self) -> None:
+        """Портит в сохранённом файле то, что задаёт карта, а не пользователь."""
+        import json
+
+        raw = json.loads(self.path.read_text(encoding="utf-8"))
+        for item in raw["districts"]:
+            item["name"] = f"Старое имя {item['code']}"
+            item["region"] = "Старый регион"
+            item["seats"] = 3
+            item["x"], item["y"] = 0.42, 0.42
+        raw["totalSeats"] = 120
+        self.path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+
+    def test_names_seats_and_size_come_from_the_map(self):
+        # Переименовать округ в программе нельзя — значит, это не правка
+        # пользователя, а устаревшая карта.
+        self.party()
+        self.old_file()
+        project = load(self.path)
+
+        district = next(d for d in project.districts if d.code == 11)
+        self.assertEqual(district.name, "Гаффинсвик центр")
+        self.assertEqual(district.region, "Гаффинсвик")
+        self.assertEqual(project.total_seats, SEED_TOTAL_SEATS)
+
+    def test_settlements_and_points_survive(self):
+        party = self.party()
+        service = self.service
+        district = service.project.districts[10]
+        settlement = service.add_settlement(district.id, "Гавань")
+        service.set_support(district.id, settlement.id, party.id, 5)
+        self.old_file()
+
+        project = load(self.path)
+        kept = next(d for d in project.districts if d.id == district.id)
+        self.assertEqual([s.name for s in kept.settlements], ["Гавань"])
+        self.assertEqual(kept.support_points(party.id), 5)
+
+    def test_project_without_districts_is_left_alone(self):
+        # Проект, начатый до карты: досочинять ему округа нельзя, иначе
+        # разъедется набранный руками состав.
+        project = Project.from_dict({"schemaVersion": 1, "totalSeats": 120,
+                                     "parties": [], "convocations": []})
+        self.assertEqual(project.districts, [])
+        self.assertEqual(project.total_seats, 120)
+
+
 class TestBrokenFileIsSetAside(ServiceTestCase):
     """Нечитаемый файл проекта не затирается чистым."""
 
