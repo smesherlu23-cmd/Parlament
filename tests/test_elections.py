@@ -11,7 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from parlament import ParlamentService, ValidationError  # noqa: E402
-from parlament.district_seed import SEED_DISTRICTS, SEED_TOTAL_SEATS  # noqa: E402
+from parlament.district_seed import SEED_DISTRICTS, SEED_TOTAL_SEATS, is_city  # noqa: E402
 from parlament.elections import (  # noqa: E402
     CITY_SUPPORT,
     MAX_ROLL,
@@ -184,6 +184,20 @@ class TestDistrictsFromMap(ElectionTestCase):
         self.assertEqual(len(self.service.project.districts), len(SEED_DISTRICTS))
         self.assertEqual(self.service.project.total_seats, SEED_TOTAL_SEATS)
 
+    def test_islands_stay_contiguous_in_seed_order(self):
+        # Экраны группируют округа по острову в порядке списка; разбей
+        # Виделлиус Судбриггом посередине — и «Остров Виделлиус» всплыл бы
+        # в заголовках дважды с «Остров Нурик» между ними.
+        from parlament.district_seed import island_of
+
+        seen: list[str] = []
+        for district in self.service.project.districts:
+            island = island_of(district.region)
+            if island not in seen:
+                seen.append(island)
+        self.assertEqual(len(seen), len(set(seen)),
+                         f"остров повторился в списке: {seen}")
+
     def test_parliament_size_equals_sum_of_districts(self):
         # Карта — источник истины: разъехаться эти числа не должны.
         self.assertEqual(sum(d.seats for d in self.service.project.districts),
@@ -225,28 +239,50 @@ class TestElectionResults(ElectionTestCase):
 
         Бросок случаен, поэтому «кто победит» задаётся не силой модификаторов,
         а тем, что соперников в округе нет: борьбы не было — победитель
-        забирает всё.
+        забирает всё. Городской округ поддержки не заводит сам — она в
+        общей копилке его города.
         """
         district = self.by_name[district_name]
-        settlement = self.service.add_settlement(district.id, f"НП {district.code}")
-        self.service.set_support(district.id, settlement.id, party.id, 3)
+        if is_city(district.code):
+            city = self.service.project.city(district.region)
+            self.service.set_city_support(city.id, party.id, 3)
+        else:
+            settlement = self.service.add_settlement(district.id, f"НП {district.code}")
+            self.service.set_support(district.id, settlement.id, party.id, 3)
         return district
 
     def test_results_fill_the_districts_that_were_contested(self):
-        first = self.only_party_here("Гаффинсвик центр", self.a)
-        second = self.only_party_here("Саттмалвик центр", self.b)
+        first = self.only_party_here("Херсвикский", self.a)
+        second = self.only_party_here("Холмавикский", self.b)
         self.service.roll_election(self.conv.id, {}, rng=random.Random(3))
         self.assertEqual(self.conv.seats,
                          {self.a.id: first.seats, self.b.id: second.seats})
         self.assertTrue(self.conv.has_election)
 
     def test_winners_drive_the_map(self):
-        big = self.only_party_here("Гаффинсвик центр", self.a)
+        big = self.only_party_here("Херсвикский", self.a)
         small = self.only_party_here("Судбригг", self.c)
         self.service.roll_election(self.conv.id, {}, rng=random.Random(4))
         winners = self.service.district_winners(self.conv.id)
         self.assertEqual(winners[big.id], self.a.id)
         self.assertEqual(winners[small.id], self.c.id)
+
+    def test_city_support_wins_every_district_of_that_city(self):
+        # Копилка общая на весь город: поддержка в ней достаётся сразу всем
+        # его избирательным округам, а не одному конкретному району.
+        gaffinsvik = self.by_name["Гаффинсвик центр"]
+        city = self.service.project.city(gaffinsvik.region)
+        self.service.set_city_support(city.id, self.a.id, 3)
+        city_districts = [d for d in self.service.project.districts
+                          if is_city(d.code) and d.region == gaffinsvik.region]
+        self.assertEqual(len(city_districts), 5)
+
+        self.service.roll_election(self.conv.id, {}, rng=random.Random(7))
+        winners = self.service.district_winners(self.conv.id)
+        for district in city_districts:
+            self.assertEqual(winners[district.id], self.a.id, district.name)
+        self.assertEqual(sum(self.conv.seats.values()),
+                         sum(d.seats for d in city_districts))
 
     def test_districts_without_results_stay_uncoloured(self):
         district = self.only_party_here("Судбригг", self.a)
@@ -298,8 +334,9 @@ class TestSettlementsAndSupport(ElectionTestCase):
         super().setUp()
         #: Сельский округ: четыре пункта с карты.
         self.village = self.by_name["Западный берег"]
-        #: Городской округ: сам себе населённый пункт.
-        self.city = self.by_name["Гаффинсвик центр"]
+        #: Городской округ и его общая копилка: сам округ пунктов не хранит.
+        self.city_district = self.by_name["Гаффинсвик центр"]
+        self.city = self.service.project.city(self.city_district.region)
 
     def test_districts_come_with_their_settlements(self):
         # Пункты есть на карте и все известны: заставлять вбивать их руками
@@ -307,9 +344,14 @@ class TestSettlementsAndSupport(ElectionTestCase):
         self.assertEqual([s.name for s in self.village.settlements],
                          ["Сандавик", "Саттмалахолл", "Вестурфьорд", "Нордурнес"])
 
-    def test_a_city_district_is_its_own_settlement(self):
-        self.assertEqual([s.name for s in self.city.settlements], [self.city.name])
-        self.assertEqual(self.city.settlements[0].capacity, CITY_SUPPORT)
+    def test_a_city_district_has_no_settlements_of_its_own(self):
+        # Его очки — не свои, а общие на весь город (`Project.cities`).
+        self.assertEqual(self.city_district.settlements, [])
+
+    def test_the_city_pool_exists_and_holds_twelve(self):
+        self.assertIsNotNone(self.city)
+        self.assertEqual(self.city.name, self.city_district.region)
+        self.assertEqual(self.city.capacity, CITY_SUPPORT)
 
     def test_a_village_settlement_holds_six(self):
         for settlement in self.village.settlements:
@@ -335,12 +377,25 @@ class TestSettlementsAndSupport(ElectionTestCase):
         self.assertIn("2", str(ctx.exception))   # подсказка про остаток
 
     def test_a_city_pool_is_twice_as_big(self):
-        settlement = self.city.settlements[0]
-        self.service.set_support(self.city.id, settlement.id, self.a.id, 7)
-        self.service.set_support(self.city.id, settlement.id, self.b.id, 5)
-        self.assertEqual(sum(settlement.support.values()), CITY_SUPPORT)
+        self.service.set_city_support(self.city.id, self.a.id, 7)
+        self.service.set_city_support(self.city.id, self.b.id, 5)
+        self.assertEqual(sum(self.city.support.values()), CITY_SUPPORT)
         with self.assertRaises(ValidationError):
-            self.service.set_support(self.city.id, settlement.id, self.c.id, 1)
+            self.service.set_city_support(self.city.id, self.c.id, 1)
+
+    def test_the_city_pool_is_shared_by_all_its_districts(self):
+        # Саттмалвик-порт и -центр делят один и тот же запас: очки,
+        # выставленные через любой из них, видны у обоих.
+        port = self.by_name["Саттмалвик порт"]
+        centre = self.by_name["Саттмалвик центр"]
+        self.assertEqual(port.region, centre.region)
+        city = self.service.project.city(port.region)
+
+        self.service.set_city_support(city.id, self.a.id, 6)
+        self.assertEqual(
+            self.service.support_modifier(port.id, self.a.id),
+            self.service.support_modifier(centre.id, self.a.id))
+        self.assertEqual(self.service.support_modifier(port.id, self.a.id), 6.0)
 
     def test_zero_points_remove_the_party(self):
         settlement = self.village.settlements[0]
@@ -362,6 +417,10 @@ class TestSettlementsAndSupport(ElectionTestCase):
         self.assertEqual(made.capacity, SETTLEMENT_SUPPORT)
         self.assertEqual(len(self.village.settlements), 5)
 
+    def test_a_city_district_refuses_settlements(self):
+        with self.assertRaises(ValidationError):
+            self.service.add_settlement(self.city_district.id, "Пригород")
+
     def test_settlements_survive_restart(self):
         settlement = self.village.settlements[0]
         self.service.set_support(self.village.id, settlement.id, self.a.id, 4)
@@ -372,16 +431,71 @@ class TestSettlementsAndSupport(ElectionTestCase):
                          [s.name for s in self.village.settlements])
         self.assertEqual(district.support_points(self.a.id), 4)
 
-    def test_capacity_survives_restart(self):
+    def test_city_points_survive_restart(self):
+        self.service.set_city_support(self.city.id, self.a.id, 5)
         again = ParlamentService(self.path)
         again.bootstrap()
-        city = next(d for d in again.project.districts if d.id == self.city.id)
-        self.assertEqual(city.settlements[0].capacity, CITY_SUPPORT)
+        city = again.project.city(self.city_district.region)
+        self.assertEqual(city.support, {self.a.id: 5})
+        self.assertEqual(city.capacity, CITY_SUPPORT)
 
     def test_negative_points_are_rejected(self):
         settlement = self.village.settlements[0]
         with self.assertRaises(ValidationError):
             self.service.set_support(self.village.id, settlement.id, self.a.id, -1)
+
+    def test_a_deleted_village_stays_deleted_after_restart(self):
+        # Пункт с карты и «пункт, которого сейчас нет», отличаются только
+        # решением игрока — при следующем открытии файла карта не должна
+        # тихо возвращать удалённое обратно.
+        settlement = self.village.settlements[0]
+        self.service.delete_settlement(self.village.id, settlement.id)
+        again = ParlamentService(self.path)
+        again.bootstrap()
+        village = next(d for d in again.project.districts if d.id == self.village.id)
+        self.assertEqual(len(village.settlements), 3)
+        self.assertNotIn(settlement.name, [s.name for s in village.settlements])
+
+    def test_a_renamed_village_does_not_get_duplicated_after_restart(self):
+        settlement = self.village.settlements[0]
+        old_name = settlement.name
+        self.service.rename_settlement(self.village.id, settlement.id, "Новое имя")
+        again = ParlamentService(self.path)
+        again.bootstrap()
+        village = next(d for d in again.project.districts if d.id == self.village.id)
+        names = [s.name for s in village.settlements]
+        self.assertEqual(len(names), 4)
+        self.assertIn("Новое имя", names)
+        self.assertNotIn(old_name, names)
+
+    def test_an_old_project_without_settlements_gets_migrated_once(self):
+        # Проекты, начатые до появления пунктов на карте, дописываются один
+        # раз — а не при каждом открытии файла.
+        import json
+
+        from parlament import store
+        from parlament.model import new_id
+
+        raw = json.loads(self.path.read_text(encoding="utf-8"))
+        for item in raw["districts"]:
+            if item["id"] == self.village.id:
+                item["settlements"] = []
+                item.pop("settlementsSynced", None)   # старый файл флага не знал
+        self.path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+
+        migrated = store.load(self.path)
+        village = next(d for d in migrated.districts if d.id == self.village.id)
+        self.assertEqual(len(village.settlements), 4)
+        self.assertTrue(village.settlements_synced)
+
+        # Удаляем один пункт и убеждаемся, что повторная миграция не идёт.
+        removed = village.settlements[0]
+        village.settlements = village.settlements[1:]
+        store.save(migrated, self.path)
+        again = store.load(self.path)
+        village_again = next(d for d in again.districts if d.id == self.village.id)
+        self.assertEqual(len(village_again.settlements), 3)
+        self.assertNotIn(removed.name, [s.name for s in village_again.settlements])
 
 
 class TestRollElection(ElectionTestCase):
@@ -495,7 +609,7 @@ class TestElectionAndManualSeatsDoNotMix(ElectionTestCase):
 
     def setUp(self):
         super().setUp()
-        self.district = self.by_name["Гаффинсвик центр"]
+        self.district = self.by_name["Херсвикский"]
         settlement = self.service.add_settlement(self.district.id, "Гавань")
         self.service.set_support(self.district.id, settlement.id, self.a.id, 4)
         self.service.roll_election(self.conv.id, {}, rng=random.Random(41))
@@ -551,7 +665,7 @@ class TestDeletingAParty(ElectionTestCase):
 
     def setUp(self):
         super().setUp()
-        self.district = self.by_name["Гаффинсвик центр"]
+        self.district = self.by_name["Херсвикский"]
         self.settlement = self.service.add_settlement(self.district.id, "Гавань")
 
     def test_its_support_points_go_back_into_the_pool(self):
@@ -667,13 +781,13 @@ class TestSupportImport(ElectionTestCase):
         # Разбор ловит перебор сам, чтобы пользователь увидел разом все
         # плохие строки и правил документ за один заход.
         result = self.parse(self.table("Судбригг,Судурей,5,4,\n"
-                                       "Гаффинсвик центр,Гаффинсвик центр,3,2,\n"))
+                                       "Северный мыс,Барвик,3,2,\n"))
         self.assertTrue(any("Судурей" in w and "6" in w for w in result.warnings))
-        self.assertEqual(list(result.rows), [self.by_name["Гаффинсвик центр"].id])
+        self.assertEqual(list(result.rows), [self.by_name["Северный мыс"].id])
 
         self.service.import_support(result.rows)
         self.assertEqual(self.by_name["Судбригг"].support_points(self.a.id), 0)
-        self.assertEqual(self.by_name["Гаффинсвик центр"].support_points(self.a.id), 3)
+        self.assertEqual(self.by_name["Северный мыс"].support_points(self.a.id), 3)
 
     def test_service_still_refuses_an_overspent_row(self):
         # Последний рубеж: разбор можно обойти, проект — нет.
@@ -691,12 +805,32 @@ class TestSupportImport(ElectionTestCase):
         self.assertEqual(self.by_name["Судбригг"].support_points(self.b.id), 2)
 
     def test_a_city_row_may_hold_twice_as_much(self):
-        result = self.parse(self.table("Гаффинсвик центр,Гаффинсвик центр,7,5,\n"))
+        result = self.parse(self.table("Гаффинсвик,Гаффинсвик,7,5,\n"))
         self.assertEqual(result.warnings, [])
-        self.service.import_support(result.rows)
-        city = self.by_name["Гаффинсвик центр"]
-        self.assertEqual(city.support_points(self.a.id), 7)
-        self.assertEqual(sum(city.settlements[0].support.values()), CITY_SUPPORT)
+        self.assertEqual(result.rows, {})
+        self.service.import_city_support(result.city_rows)
+
+        gaffinsvik = self.by_name["Гаффинсвик центр"]
+        city = self.service.project.city(gaffinsvik.region)
+        self.assertEqual(city.support.get(self.a.id), 7)
+        self.assertEqual(sum(city.support.values()), CITY_SUPPORT)
+        # Модификатор одинаков на любом округе этого города.
+        self.assertEqual(
+            self.service.support_modifier(gaffinsvik.id, self.a.id),
+            self.service.support_modifier(self.by_name["Гаффинсвик порт"].id, self.a.id))
+
+    def test_a_city_row_can_be_matched_by_the_city_name_only(self):
+        # «Гаффинсвик центр» (конкретный округ) в округ не годится — своих
+        # очков у него нет, есть только у «Гаффинсвик» (города).
+        result = self.parse(self.table("Гаффинсвик центр,Гаффинсвик центр,7,5,\n"))
+        self.assertTrue(any("Гаффинсвик центр" in w and "не найден" in w
+                            for w in result.warnings))
+        self.assertEqual(result.city_rows, {})
+
+    def test_a_city_row_can_be_overspent_too(self):
+        result = self.parse(self.table("Гаффинсвик,Гаффинсвик,7,6,\n"))
+        self.assertTrue(any("Гаффинсвик" in w and "13" in w for w in result.warnings))
+        self.assertEqual(result.city_rows, {})
 
     def test_a_village_row_is_still_held_to_six(self):
         result = self.parse(self.table("Судбригг,Судурей,7,,\n"))
@@ -754,10 +888,14 @@ class TestSupportImport(ElectionTestCase):
         data = export_support_template(self.service.project).decode("utf-8-sig")
         lines = [line for line in data.splitlines() if line.strip()]
         places = sum(len(d.settlements) for d in self.service.project.districts)
-        self.assertEqual(len(lines), 1 + places)
+        cities = len(self.service.project.cities)
+        self.assertEqual(len(lines), 1 + places + cities)
         self.assertIn("Населённый пункт", lines[0])
         self.assertIn("Судбригг,Судурей", data)
-        self.assertIn("Гаффинсвик центр,Гаффинсвик центр", data)
+        # Города — по одной строке на метрополию, не на каждый её округ.
+        self.assertIn("Гаффинсвик,Гаффинсвик", data)
+        self.assertNotIn("Гаффинсвик центр,", data)
+        self.assertNotIn("Гаффинсвик порт,", data)
 
     def test_template_carries_the_points_already_given(self):
         district = self.by_name["Судбригг"]
@@ -771,12 +909,50 @@ class TestSupportImport(ElectionTestCase):
         district = self.by_name["Судбригг"]
         settlement = district.settlements[0]
         self.service.set_support(district.id, settlement.id, self.a.id, 4)
+        gaffinsvik = self.by_name["Гаффинсвик центр"]
+        city = self.service.project.city(gaffinsvik.region)
+        self.service.set_city_support(city.id, self.b.id, 6)
 
         data = export_support_template(self.service.project)
         result = parse_support_text(data, self.service.project)
         self.assertEqual(result.warnings, [])
-        self.service.import_support(result.rows)
+        self.service.import_support_table(result.rows, result.city_rows)
         self.assertEqual(district.settlements[0].support, {self.a.id: 4})
+        self.assertEqual(city.support, {self.b.id: 6})
+
+    def test_combined_import_is_all_or_nothing(self):
+        # Ошибка в городской половине не должна оставлять уже принятую
+        # сельскую половину в памяти, но не в файле.
+        district = self.by_name["Судбригг"]
+        gaffinsvik = self.by_name["Гаффинсвик центр"]
+        city = self.service.project.city(gaffinsvik.region)
+
+        with self.assertRaises(ValidationError):
+            self.service.import_support_table(
+                {district.id: {"Судурей": {self.a.id: 3}}},
+                {city.id: {self.a.id: CITY_SUPPORT + 1}},
+            )
+
+        self.assertEqual(district.settlements[0].support, {})
+        self.assertEqual(city.support, {})
+        again = ParlamentService(self.path)
+        again.bootstrap()
+        stored_district = next(d for d in again.project.districts
+                               if d.id == district.id)
+        self.assertEqual(stored_district.settlements[0].support, {})
+
+    def test_combined_import_applies_both_halves_together(self):
+        district = self.by_name["Судбригг"]
+        gaffinsvik = self.by_name["Гаффинсвик центр"]
+        city = self.service.project.city(gaffinsvik.region)
+
+        touched = self.service.import_support_table(
+            {district.id: {"Судурей": {self.a.id: 3}}},
+            {city.id: {self.b.id: 6}},
+        )
+        self.assertEqual(touched, 2)
+        self.assertEqual(district.settlements[0].support, {self.a.id: 3})
+        self.assertEqual(city.support, {self.b.id: 6})
 
 
 def _inside(x: float, y: float, poly) -> bool:

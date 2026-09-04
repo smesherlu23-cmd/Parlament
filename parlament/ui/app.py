@@ -824,9 +824,10 @@ class ParlamentApp:
                 return
 
             touched = 0
-            if result.rows:
+            if result.rows or result.city_rows:
                 try:
-                    touched = self.service.import_support(result.rows)
+                    touched = self.service.import_support_table(
+                        result.rows, result.city_rows)
                 except (ValidationError, StoreError) as error:
                     self.toast(str(error), error=True)
                     return

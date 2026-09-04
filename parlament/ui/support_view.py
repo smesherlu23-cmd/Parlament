@@ -8,6 +8,11 @@
 Населённых пунктов в присланной карте нет, поэтому список наполняется
 здесь же — округ раскрывается, и в него добавляются пункты.
 
+Городской округ (Саттмалвик-порт, -центр...) в этом списке не появляется
+сам по себе: несколько его избирательных округов делят одну общую
+копилку — «Город <название>», показанную один раз на весь город, а не по
+разу на каждый его район.
+
 Очки правятся сразу, без кнопки «сохранить»: это долгоживущие данные игры,
 которые меняются по ходу партии, а не разовый ввод перед выборами.
 """
@@ -16,6 +21,7 @@ from __future__ import annotations
 
 import flet as ft
 
+from .. import district_seed
 from ..elections import CITY_SUPPORT, SETTLEMENT_SUPPORT
 from ..service import ValidationError
 from ..store import StoreError
@@ -43,22 +49,34 @@ class SupportView:
             return self._notice("В проекте нет округов", "К карте", self.app.show_map)
 
         rows: list[ft.Control] = []
-        last_region = None
+        last_island = None
+        shown_cities: set[str] = set()
         for district in self.service.project.districts:
-            if district.region != last_region:
-                last_region = district.region
+            island = district_seed.island_of(district.region)
+            if island != last_island:
+                last_island = island
                 rows.append(ft.Container(
                     padding=ft.Padding.only(top=16, bottom=4),
-                    content=theme.label(district.region or "Прочие"),
+                    content=theme.label(island or "Прочие"),
                 ))
-            rows.append(self._district(district))
+            if district_seed.is_city(district.code):
+                # Несколько округов одного города делят одну копилку —
+                # показываем её раз, на первом же округе этого города.
+                if district.region in shown_cities:
+                    continue
+                shown_cities.add(district.region)
+                city = self.service.project.city(district.region)
+                if city is not None:
+                    rows.append(self._city(city))
+            else:
+                rows.append(self._district(district))
 
         return ft.Column([
             ft.Container(
                 padding=ft.Padding.only(left=28, right=28, top=18, bottom=6),
                 content=ft.Text(
                     f"{SETTLEMENT_SUPPORT} очков на населённый пункт, "
-                    f"{CITY_SUPPORT} на городской округ · "
+                    f"{CITY_SUPPORT} на город — общих на все его округа · "
                     f"модификатор — очки округа, делённые на число пунктов",
                     size=theme.fs(13), color=theme.NEUTRAL_700,
                 ),
@@ -209,6 +227,85 @@ class SupportView:
             ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
         )
 
+    # -- город ----------------------------------------------------------------
+
+    def _city(self, city) -> ft.Control:
+        """Строка города — общей копилки на несколько избирательных округов."""
+        opened = city.id in self.opened
+
+        head = ft.Container(
+            padding=ft.Padding.symmetric(vertical=8, horizontal=10),
+            bgcolor=theme.NEUTRAL_100 if opened else None,
+            border_radius=theme.RADIUS,
+            ink=True,
+            on_click=lambda _e, c=city: self._toggle(c.id),
+            content=ft.Row([
+                ft.Text("▾" if opened else "▸", size=theme.fs(13),
+                        color=theme.NEUTRAL_600),
+                ft.Container(
+                    ft.Text(f"Город {city.name}", size=theme.fs(14), color=theme.TEXT,
+                            no_wrap=True, overflow=ft.TextOverflow.ELLIPSIS),
+                    expand=True,
+                ),
+                ft.Text(self._city_summary(city), size=theme.fs(12),
+                        color=theme.NEUTRAL_600),
+            ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        )
+        if not opened:
+            return head
+
+        body = [self._header(), self._city_points_row(city)]
+        return ft.Column([
+            head,
+            ft.Container(
+                margin=ft.Margin.only(left=22, bottom=8),
+                padding=ft.Padding.only(left=12, top=4, bottom=8, right=8),
+                border=ft.Border.only(left=ft.BorderSide(2, theme.DIVIDER)),
+                content=ft.Column(body, spacing=2, tight=True),
+            ),
+        ], spacing=0, tight=True)
+
+    def _city_summary(self, city) -> str:
+        leaders = sorted(
+            ((p, city.support.get(p.id, 0)) for p in self.app.parties),
+            key=lambda pair: -pair[1],
+        )
+        top = [f"{p.abbr or p.name} {n}" for p, n in leaders[:2] if n]
+        tail = "  ".join(top) if top else "очки не розданы"
+        used = sum(city.support.values())
+        return f"{used}/{city.capacity} · {tail}"
+
+    def _city_points_row(self, city) -> ft.Control:
+        """Единственная строка очков города — без рядов удаления и переименования:
+        город не заводится и не убирается, он есть, пока есть его округа."""
+        used = sum(city.support.values())
+        total = ft.Text(f"{used} / {city.capacity}", size=theme.fs(12),
+                        color=theme.ACCENT_2_700 if used > city.capacity
+                        else theme.NEUTRAL_700)
+
+        fields: list[ft.Control] = []
+        for party in self.app.parties:
+            value = city.support.get(party.id, 0)
+            field = theme.text_field(str(value) if value else "",
+                                     width=_POINT_WIDTH,
+                                     text_align=ft.TextAlign.RIGHT,
+                                     keyboard_numeric=True)
+            field.data = (city.id, party.id, total)
+            field.on_change = self._on_city_points
+            fields.append(field)
+
+        return ft.Container(
+            padding=ft.Padding.symmetric(vertical=3),
+            content=ft.Row([
+                ft.Container(
+                    ft.Text(city.name, size=theme.fs(13), color=theme.TEXT,
+                            no_wrap=True, overflow=ft.TextOverflow.ELLIPSIS),
+                    width=_NAME_WIDTH),
+                *fields,
+                ft.Container(total, width=60),
+            ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        )
+
     # -- действия -----------------------------------------------------------
 
     def _toggle(self, district_id: str) -> None:
@@ -287,6 +384,33 @@ class SupportView:
         settlement = self.service.project.district(district_id).settlement(settlement_id)
         used = sum(settlement.support.values())
         total.value = f"{used} / {settlement.capacity}"
+        total.color = theme.NEUTRAL_700
+        push(total)
+
+    def _on_city_points(self, event) -> None:
+        """То же самое для города — общей копилки нескольких округов."""
+        field = event.control
+        city_id, party_id, total = field.data
+
+        cleaned = "".join(ch for ch in (field.value or "") if ch.isdigit())
+        if cleaned != field.value:
+            field.value = cleaned
+            push(field)
+
+        try:
+            self.service.set_city_support(city_id, party_id, int(cleaned or 0))
+        except ValidationError as error:
+            city = self.service.project.city_by_id(city_id)
+            previous = city.support.get(party_id, 0)
+            field.value = str(previous) if previous else ""
+            push(field)
+            self.app.toast(str(error), error=True)
+        except StoreError as error:
+            self.app.toast(str(error), error=True)
+
+        city = self.service.project.city_by_id(city_id)
+        used = sum(city.support.values())
+        total.value = f"{used} / {city.capacity}"
         total.color = theme.NEUTRAL_700
         push(total)
 

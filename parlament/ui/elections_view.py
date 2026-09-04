@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import flet as ft
 
+from .. import district_seed
 from ..elections import PartyRoll
 from . import theme
 from .mount import push
@@ -54,13 +55,14 @@ class ElectionsView:
         self._preload(conv)
 
         rows: list[ft.Control] = []
-        last_region = None
+        last_island = None
         for district in self.service.project.districts:
-            if district.region != last_region:
-                last_region = district.region
+            island = district_seed.island_of(district.region)
+            if island != last_island:
+                last_island = island
                 rows.append(ft.Container(
                     padding=ft.Padding.only(top=14, bottom=4),
-                    content=theme.label(district.region or "Прочие"),
+                    content=theme.label(island or "Прочие"),
                 ))
             rows.append(self._district_row(district))
 

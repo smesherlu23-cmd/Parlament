@@ -180,14 +180,17 @@ class Convocation:
 
 @dataclass
 class Settlement:
-    """Населённый пункт внутри округа.
+    """Населённый пункт внутри округа — или город, общий на несколько округов.
 
     Несёт очки неформальной популярности, которые игроки делят между
     партиями. Из них складывается модификатор поддержки на выборах.
 
     Запас очков у пунктов разный, поэтому он хранится здесь, а не берётся из
-    одной константы: в обычном селе их шесть, а городской округ сам себе
-    населённый пункт и людей в нём вдвое больше — см. `elections`.
+    одной константы: в обычном селе их шесть, а у города вдвое больше —
+    см. `elections`. Тот же класс используется и для городской копилки в
+    `Project.cities`: несколько избирательных округов одного города (скажем,
+    Саттмалвик-порт и -центр) делят один такой объект вместо того, чтобы
+    каждый заводил себе отдельный.
     """
 
     id: str
@@ -240,8 +243,17 @@ class District:
     #: бывает у проектов, заведённых до появления карты).
     code: int = 0
     #: Населённые пункты округа. Заводятся пользователем на экране поддержки:
-    #: в присланной карте их нет, а модификатор считается по ним.
+    #: в присланной карте их нет, а модификатор считается по ним. У
+    #: городского округа список всегда пуст — его очки не свои, а общие на
+    #: весь город, см. `Project.cities`.
     settlements: list[Settlement] = field(default_factory=list)
+    #: Дописаны ли сельские пункты с карты хотя бы раз. Пока False,
+    #: `sync_with_map` при каждом открытии файла подсаживает недостающие —
+    #: это разовая миграция для проектов, начатых до появления пунктов на
+    #: карте. Как только это случилось, флаг встаёт и больше не сбрасывается:
+    #: иначе удалённый или переименованный пользователем пункт с картовым
+    #: именем при следующем запуске тихо возвращался бы обратно.
+    settlements_synced: bool = False
 
     def settlement(self, settlement_id: str) -> "Settlement | None":
         return next((s for s in self.settlements if s.id == settlement_id), None)
@@ -255,6 +267,7 @@ class District:
             "id": self.id, "name": self.name, "seats": self.seats,
             "region": self.region, "code": self.code,
             "settlements": [s.to_dict() for s in self.settlements],
+            "settlementsSynced": self.settlements_synced,
         }
 
     @staticmethod
@@ -272,6 +285,10 @@ class District:
             region=str(raw.get("region", "")),
             code=code,
             settlements=[Settlement.from_dict(s) for s in raw.get("settlements") or []],
+            # Отсутствующий ключ — файл старше самого поля, и его сельские
+            # пункты миграцию ещё не проходили; ровно то состояние, для
+            # которого миграция и задумана.
+            settlements_synced=bool(raw.get("settlementsSynced", False)),
         )
 
 
@@ -289,6 +306,11 @@ class Project:
     #: Избирательные округа с карты. Пустой список — проект без выборов по
     #: округам: места тогда вводятся руками, как раньше.
     districts: list[District] = field(default_factory=list)
+    #: Городские копилки очков — по одной на метрополию (Саттмалвик,
+    #: Гаффинсвик, Триединсборг, Нивенсхолл), а не по одной на округ. Город
+    #: обычно делится на несколько избирательных округов (Саттмалвик-порт,
+    #: -центр...), но очки популярности в нём общие — см. `district_support`.
+    cities: list[Settlement] = field(default_factory=list)
 
     @staticmethod
     def empty() -> "Project":
@@ -304,6 +326,7 @@ class Project:
             total_seats=sum(d.seats for d in districts),
             parties=[],
             districts=districts,
+            cities=default_cities(),
             convocations=[
                 Convocation(id=new_id("c"), number=1, name=convocation_name(1))
             ],
@@ -311,6 +334,40 @@ class Project:
 
     def district(self, district_id: str) -> "District | None":
         return next((d for d in self.districts if d.id == district_id), None)
+
+    def city(self, region: str) -> "Settlement | None":
+        """Городская копилка метрополии — по названию региона округа."""
+        return next((c for c in self.cities if c.name == region), None)
+
+    def city_by_id(self, city_id: str) -> "Settlement | None":
+        return next((c for c in self.cities if c.id == city_id), None)
+
+    def district_support(self, district: "District", party_id: str) -> int:
+        """Очки партии, которые идут в модификатор округа.
+
+        У городского округа своих очков нет: они общие на весь город, и
+        смотреть надо в копилку его метрополии, а не в пустой `settlements`.
+        """
+        from .district_seed import is_city
+
+        if is_city(district.code):
+            city = self.city(district.region)
+            return city.support.get(party_id, 0) if city else 0
+        return district.support_points(party_id)
+
+    def district_settlement_count(self, district: "District") -> int:
+        """Знаменатель модификатора округа — сколько пунктов делят его очки.
+
+        У городского округа он всегда 1 (общая копилка), даже если сам город
+        разбит на несколько избирательных округов: делить очки ещё и на
+        число районов значило бы дробить их сильнее, чем в других городах,
+        просто потому что этот оказался крупнее на карте.
+        """
+        from .district_seed import is_city
+
+        if is_city(district.code):
+            return 1 if self.city(district.region) else 0
+        return len(district.settlements)
 
     @property
     def district_seats(self) -> dict[str, int]:
@@ -326,6 +383,7 @@ class Project:
             "convocations": [c.to_dict() for c in self.convocations],
             "recentColors": list(self.recent_colors),
             "districts": [d.to_dict() for d in self.districts],
+            "cities": [c.to_dict() for c in self.cities],
         }
 
     @staticmethod
@@ -346,6 +404,7 @@ class Project:
         # мест, набранное руками.
         districts = [District.from_dict(d) for d in raw.get("districts") or []]
         known_districts = {d.id for d in districts}
+        cities = [Settlement.from_dict(c) for c in raw.get("cities") or []]
 
         # Места и голоса, ссылающиеся на несуществующую партию или округ,
         # отбрасываются: файл мог быть отредактирован вручную.
@@ -376,13 +435,14 @@ class Project:
 
         project = Project(total_seats=total, rows=int(raw.get("rows") or 5),
                           parties=parties, convocations=convocations,
-                          recent_colors=recent_colors, districts=districts)
+                          recent_colors=recent_colors, districts=districts,
+                          cities=cities)
         project.sync_with_map()
         project.normalize()
         return project
 
     def sync_with_map(self) -> None:
-        """Подтягивает округа и их населённые пункты из игровой карты.
+        """Подтягивает округа, их пункты и городские копилки из игровой карты.
 
         Округа — не пользовательские данные, а карта: их названия, мандаты и
         состав сёл задаёт игра, и переименовать округ в программе нельзя.
@@ -393,11 +453,16 @@ class Project:
         Розданные очки при этом не трогаются: пункт узнаётся по названию, а
         заведённые пользователем сверх карты остаются как есть — вдруг он
         добавил хутор, которого на карте нет.
+
+        Сельские пункты дописываются только один раз за округ (пока не
+        встал `settlements_synced`) — иначе удалённый или переименованный
+        пользователем картовый пункт тихо возвращался бы обратно при каждом
+        следующем открытии файла.
         """
         if not self.districts:
             return          # проект начат до карты — досочинять ему нечего
 
-        from .district_seed import SEED_DISTRICTS
+        from .district_seed import SEED_DISTRICTS, is_city
 
         by_code = {code: (name, seats, region, places)
                    for code, name, seats, region, places in SEED_DISTRICTS}
@@ -409,6 +474,8 @@ class Project:
         by_name = {_district_key(name): code
                    for code, name, _seats, _region, _places in SEED_DISTRICTS}
 
+        self._ensure_cities()
+
         for district in self.districts:
             if not district.code:
                 district.code = by_name.get(_district_key(district.name), 0)
@@ -416,10 +483,44 @@ class Project:
             if fresh is None:
                 continue
             district.name, district.seats, district.region, places = fresh
-            _merge_settlements(district, places)
+            if is_city(district.code):
+                # Раньше у каждого городского округа была своя копилка —
+                # теперь она общая на весь город. Уже розданные игроками
+                # очки не выбрасываем, а переносим в общую: иначе обновление
+                # программы само стёрло бы то, что накопили за игру.
+                self._absorb_into_city(district)
+                district.settlements = []
+                district.settlements_synced = True
+            elif not district.settlements_synced:
+                _merge_settlements(district, places)
+                district.settlements_synced = True
 
         # Размер палаты задаётся картой: разъезжаться этим числам нельзя.
         self.total_seats = sum(d.seats for d in self.districts)
+
+    def _ensure_cities(self) -> None:
+        """Заводит копилки для новых городов карты, не трогая существующие."""
+        from .district_seed import city_regions
+        from .elections import CITY_SUPPORT
+
+        have = {c.name for c in self.cities}
+        for region in city_regions():
+            if region not in have:
+                self.cities.append(Settlement(id=new_id("s"), name=region,
+                                              capacity=CITY_SUPPORT))
+        for city in self.cities:
+            city.capacity = CITY_SUPPORT
+
+    def _absorb_into_city(self, district: "District") -> None:
+        """Переносит очки старой личной копилки округа в общую городскую."""
+        if not district.settlements:
+            return
+        city = self.city(district.region)
+        if city is None:
+            return
+        for legacy in district.settlements:
+            for party_id, points in legacy.support.items():
+                city.support[party_id] = city.support.get(party_id, 0) + points
 
     def normalize(self) -> None:
         """Приводит проект к инварианту: созывы упорядочены по номеру, и ровно
@@ -479,27 +580,25 @@ class Project:
         return next(c for c in reversed(self.convocations) if not c.is_fixed)
 
 
-def _merge_settlements(district: District, places) -> None:
-    """Дописывает округу пункты с карты, не трогая уже розданные очки.
+def _merge_settlements(district: District, places: tuple[str, ...]) -> None:
+    """Дописывает сельскому округу пункты с карты, не трогая розданные очки.
 
     Пункт узнаётся по названию: идентификаторы у каждого проекта свои, а
-    названия — общие, они и есть карта. Городской округ получает один пункт
-    со своим именем и городским запасом очков.
+    названия — общие, они и есть карта. Для городских округов не зовётся —
+    их очки не свои, а общие на весь город, см. `Project._absorb_into_city`.
     """
-    from .elections import CITY_SUPPORT, SETTLEMENT_SUPPORT
+    from .elections import SETTLEMENT_SUPPORT
 
-    wanted = ([(district.name, CITY_SUPPORT)] if places is None
-              else [(name, SETTLEMENT_SUPPORT) for name in places])
     existing = {_district_key(s.name): s for s in district.settlements}
 
-    for name, capacity in wanted:
+    for name in places:
         settlement = existing.get(_district_key(name))
         if settlement is None:
             district.settlements.append(
-                Settlement(id=new_id("s"), name=name, capacity=capacity))
+                Settlement(id=new_id("s"), name=name, capacity=SETTLEMENT_SUPPORT))
         else:
             settlement.name = name
-            settlement.capacity = capacity
+            settlement.capacity = SETTLEMENT_SUPPORT
 
 
 def _district_key(name: str) -> str:
@@ -526,10 +625,12 @@ def replace_party(party: Party, **changes) -> Party:
 
 
 def default_districts() -> list[District]:
-    """Округа игровой карты вместе с их населёнными пунктами.
+    """Округа игровой карты вместе с их сельскими населёнными пунктами.
 
     Пункты заводятся сразу: они есть на карте, все до одного известны, и
     вбивать их руками в двадцати семи округах — работа на пустом месте.
+    Городские округа своих пунктов не получают — их очки общие на весь
+    город, см. `default_cities`.
 
     Импорт внутри функции, а не наверху модуля: `district_seed` — это данные
     конкретной игры, а `model` описывает формат вообще, и обратной зависимости
@@ -539,20 +640,28 @@ def default_districts() -> list[District]:
 
     return [
         District(id=new_id("d"), name=name, seats=seats, region=region, code=code,
-                 settlements=seed_settlements(name, places))
+                 settlements=seed_settlements(places), settlements_synced=True)
         for code, name, seats, region, places in SEED_DISTRICTS
     ]
 
 
-def seed_settlements(district_name: str, places) -> list[Settlement]:
-    """Населённые пункты округа по карте.
-
-    Городской округ (`places is None`) отдельных сёл не имеет: он сам и есть
-    населённый пункт, поэтому пункт получает имя округа и городской запас
-    очков.
-    """
-    from .elections import CITY_SUPPORT
+def seed_settlements(places: tuple[str, ...] | None) -> list[Settlement]:
+    """Сельские населённые пункты округа по карте — пусто для городского."""
+    from .elections import SETTLEMENT_SUPPORT
 
     if places is None:
-        return [Settlement(id=new_id("s"), name=district_name, capacity=CITY_SUPPORT)]
-    return [Settlement(id=new_id("s"), name=name) for name in places]
+        return []
+    return [Settlement(id=new_id("s"), name=name, capacity=SETTLEMENT_SUPPORT)
+            for name in places]
+
+
+def default_cities() -> list[Settlement]:
+    """Городские копилки очков — по одной на метрополию, а не на округ.
+
+    Импорт внутри функции по тем же причинам, что и в `default_districts`.
+    """
+    from .district_seed import city_regions
+    from .elections import CITY_SUPPORT
+
+    return [Settlement(id=new_id("s"), name=region, capacity=CITY_SUPPORT)
+            for region in city_regions()]

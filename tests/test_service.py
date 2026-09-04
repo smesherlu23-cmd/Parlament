@@ -448,7 +448,7 @@ class TestMapCorrectionsReachOldProjects(ServiceTestCase):
     def test_settlements_and_points_survive(self):
         party = self.party()
         service = self.service
-        district = service.project.districts[10]
+        district = next(d for d in service.project.districts if d.name == "Херсвикский")
         settlement = service.add_settlement(district.id, "Гавань")
         service.set_support(district.id, settlement.id, party.id, 5)
         self.old_file()

@@ -24,7 +24,7 @@ from parlament.ui import format as fmt, theme  # noqa: E402
 from parlament.ui.app import ParlamentApp  # noqa: E402
 from parlament.ui.dialogs import normalize_hex  # noqa: E402
 from parlament.ui.export import LegendEntry, render_png, suggest_file_name  # noqa: E402
-from parlament.district_seed import SEED_TOTAL_SEATS  # noqa: E402
+from parlament.district_seed import SEED_TOTAL_SEATS, is_city  # noqa: E402
 from parlament.elections import allocate_seats  # noqa: E402
 from parlament.district_geometry import (  # noqa: E402
     DISTRICT_CENTRES,
@@ -738,12 +738,21 @@ class TestMapAndElections(AppTestCase):
 
     def support(self, district_name: str, party_index: int, points: int,
                 settlements: int = 1):
-        """Даёт партии очки популярности в округе — так она попадает в выборы."""
+        """Даёт партии очки популярности в округе — так она попадает в выборы.
+
+        Для городского округа очки не свои, а общие на весь город — заводить
+        для него пункты нельзя, `settlements` тут ни при чём.
+        """
         district = self.by_name[district_name]
-        made = [self.service.add_settlement(district.id, f"НП {i + 1}")
-                for i in range(settlements)]
-        self.service.set_support(district.id, made[0].id,
-                                 self.app.parties[party_index].id, points)
+        if is_city(district.code):
+            city = self.service.project.city(district.region)
+            self.service.set_city_support(city.id, self.app.parties[party_index].id,
+                                          points)
+        else:
+            made = [self.service.add_settlement(district.id, f"НП {i + 1}")
+                    for i in range(settlements)]
+            self.service.set_support(district.id, made[0].id,
+                                     self.app.parties[party_index].id, points)
         return district
 
     def bonus(self, district_name: str, party_index: int, value: str):
@@ -787,9 +796,9 @@ class TestMapAndElections(AppTestCase):
         self.assertEqual(self.app.view, "support")
 
     def test_election_fills_the_parliament_and_colours_the_map(self):
-        district = self.support("Гаффинсвик центр", 0, 4)
+        district = self.support("Херсвикский", 0, 4)
         self.app.show_elections()
-        self.bonus("Гаффинсвик центр", 1, "3")
+        self.bonus("Херсвикский", 1, "3")
         self.app.apply_election()
 
         conv = self.app.selected
@@ -852,12 +861,13 @@ class TestMapAndElections(AppTestCase):
 
     def test_preview_shows_support_not_a_promised_result(self):
         # Обещать итог до броска нельзя: бросок случаен.
-        self.support("Гаффинсвик центр", 0, 6, settlements=2)
+        district = self.by_name["Судбригг"]           # два пункта с карты
+        self.service.set_support(district.id, district.settlements[0].id,
+                                 self.app.parties[0].id, 6)
         self.app.show_elections()
-        preview = self.app.elections.previews[self.by_name["Гаффинсвик центр"].id]
-        # 6 очков на все пункты округа.
-        expected = 6 / len(self.by_name["Гаффинсвик центр"].settlements)
-        self.assertIn(f"{expected:.1f}".replace(".", ","), preview.value)
+        preview = self.app.elections.previews[district.id]
+        # 6 очков на два пункта.
+        self.assertIn("3,0", preview.value)
 
     def test_district_with_nobody_running_says_so(self):
         self.app.show_elections()
@@ -986,7 +996,7 @@ class TestSeatsAfterElection(AppTestCase):
         super().setUp()
         self.add_parties(3)
         self.by_name = {d.name: d for d in self.service.project.districts}
-        self.district = self.by_name["Гаффинсвик центр"]
+        self.district = self.by_name["Херсвикский"]
         settlement = self.service.add_settlement(self.district.id, "НП 1")
         self.service.set_support(self.district.id, settlement.id,
                                  self.app.parties[0].id, 4)
@@ -1215,6 +1225,51 @@ class TestSupportScreen(AppTestCase):
         self.assertNotIn(self.app.parties[1].id, settlement.support)
         self.assertEqual(field.value, "")        # на экране не осталось лишнего
         self.assertIn("очков популярности", self.page.last_toast)
+
+
+class TestSupportScreenCities(AppTestCase):
+    """Городские округа на экране поддержки — один город на несколько округов."""
+
+    def setUp(self):
+        super().setUp()
+        self.add_parties(2)
+        self.gaffinsvik = self.by_name = {
+            d.name: d for d in self.service.project.districts
+        }["Гаффинсвик центр"]
+        self.city = self.service.project.city(self.gaffinsvik.region)
+        self.app.show_support()
+
+    def test_the_city_shows_up_once_not_once_per_district(self):
+        # У Гаффинсвика пять окружных районов — но копилка одна.
+        rows = find_all(self.app.body, lambda c: isinstance(c, ft.Text)
+                        and str(c.value).startswith("Город "))
+        gaffinsvik_rows = [r for r in rows if "Гаффинсвик" in r.value]
+        self.assertEqual(len(gaffinsvik_rows), 1)
+
+    def test_island_label_replaces_the_region(self):
+        # Серая подпись группы теперь «Остров...», а не название метрополии.
+        self.assertIn("ОСТРОВ КАСПИАН (ЦЕНТР)", texts(self.app.body))
+        self.assertNotIn("ГАФФИНСВИК", texts(self.app.body))
+
+    def test_typing_city_points_updates_the_shared_pool(self):
+        self.app.support_opened.add(self.city.id)
+        self.app.render()
+
+        field = find(self.app.body, lambda c: isinstance(c, ft.TextField)
+                    and isinstance(c.data, tuple) and len(c.data) == 3
+                    and c.data[0] == self.city.id
+                    and c.data[1] == self.app.parties[0].id)
+        self.assertIsNotNone(field)
+        field.value = "5"
+        field.on_change(ft.ControlEvent(control=field, name="change", data="5"))
+
+        self.assertEqual(self.city.support[self.app.parties[0].id], 5)
+        # Тот же модификатор виден и на другом округе того же города.
+        port = next(d for d in self.service.project.districts
+                   if d.name == "Гаффинсвик порт")
+        self.assertEqual(
+            self.service.support_modifier(self.gaffinsvik.id, self.app.parties[0].id),
+            self.service.support_modifier(port.id, self.app.parties[0].id))
 
 
 class TestSupportScreenWidth(AppTestCase):

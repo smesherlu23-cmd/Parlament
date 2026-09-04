@@ -4,8 +4,8 @@
 округ, населённый пункт, дальше по столбцу на партию.
 
     Округ,Населённый пункт,Народный союз,Партия труда,Аграрный блок
-    Гаффинсвик центр,Верхний квартал,4,2,
-    Гаффинсвик центр,Гавань,,3,3
+    Западный берег,Сандавик,4,2,
+    Гаффинсвик,Гаффинсвик,,3,3
 
 Разделитель определяется сам (запятая или точка с запятой — русский Excel
 сохраняет со второй), пустая клетка считается нулём. Округа и партии
@@ -16,6 +16,12 @@
 замечаний: опечатка в документе иначе тихо съела бы часть таблицы.
 Населённые пункты — наоборот, заводятся: их в игровой карте нет, и таблица
 для того и нужна, чтобы не набивать список руками.
+
+Город — особая строка: округ этой строки не сельский, а название города
+(«Гаффинсвик», а не «Гаффинсвик центр» — конкретный округ города своих очков
+не хранит, они общие на всех его округах). Такая строка узнаётся по
+совпадению с известным городом и не создаёт населённого пункта — очки идут
+прямо в общую копилку.
 """
 
 from __future__ import annotations
@@ -23,8 +29,9 @@ from __future__ import annotations
 import csv
 import io
 from dataclasses import dataclass, field
+from typing import Callable
 
-from .elections import SETTLEMENT_SUPPORT
+from .elections import CITY_SUPPORT, SETTLEMENT_SUPPORT
 
 
 @dataclass
@@ -34,16 +41,22 @@ class SupportImportResult:
     #: `{district_id: {название НП: {party_id: очки}}}` — названия, а не id,
     #: потому что пункты в проекте могут ещё не существовать и будут созданы.
     rows: dict[str, dict[str, dict[str, int]]] = field(default_factory=dict)
+    #: `{city_id: {party_id: очки}}` — города не создаются таблицей, они уже
+    #: есть в проекте, поэтому сразу по id.
+    city_rows: dict[str, dict[str, int]] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
 
     @property
     def settlements_filled(self) -> int:
-        return sum(len(v) for v in self.rows.values())
+        return sum(len(v) for v in self.rows.values()) + len(self.city_rows)
 
 
 def parse_support_csv(text: str, districts: dict[str, str],
                       parties: dict[str, str],
-                      capacity=None) -> SupportImportResult:
+                      cities: dict[str, str] | None = None,
+                      capacity: Callable[[str, str], int] | None = None,
+                      city_capacity: Callable[[str], int] | None = None,
+                      ) -> SupportImportResult:
     """Разбирает таблицу «округ, населённый пункт, очки по партиям».
 
         Округ,Населённый пункт,Народный союз,Партия труда
@@ -53,11 +66,16 @@ def parse_support_csv(text: str, districts: dict[str, str],
     лишних пробелов, незнакомые округа и партии не создаются молча, а
     попадают в замечания.
 
-    :param capacity: `(district_id, название пункта) -> запас очков`. Запас
-                     разный: шесть в селе, вдвое больше в городском округе, —
-                     а перебор надо поймать до записи в проект.
+    :param districts: `{название сельского округа: id}` — городские округа
+                      сюда не входят, их очки идут через `cities`.
+    :param cities: `{название города: id}` — например, «Гаффинсвик», а не
+                   «Гаффинсвик центр»: город один на несколько округов.
+    :param capacity: `(district_id, название пункта) -> запас очков` для
+                     сельских пунктов — а перебор надо поймать до записи.
+    :param city_capacity: `city_id -> запас очков` для городов.
     """
     limit = capacity or (lambda _district_id, _name: SETTLEMENT_SUPPORT)
+    city_limit = city_capacity or (lambda _city_id: CITY_SUPPORT)
     result = SupportImportResult()
 
     rows = list(csv.reader(io.StringIO(text.lstrip("﻿")),
@@ -71,6 +89,7 @@ def parse_support_csv(text: str, districts: dict[str, str],
         return result
 
     by_district = {_key(name): did for name, did in districts.items()}
+    by_city = {_key(name): cid for name, cid in (cities or {}).items()}
     by_party = {_key(name): pid for name, pid in parties.items()}
 
     header = rows[0]
@@ -94,11 +113,31 @@ def parse_support_csv(text: str, districts: dict[str, str],
         settlement_name = (row[1].strip() if len(row) > 1 else "")
         if not district_name and not settlement_name:
             continue
+
         district_id = by_district.get(_key(district_name))
-        if district_id is None:
+        city_id = by_city.get(_key(district_name)) if district_id is None else None
+        if district_id is None and city_id is None:
             result.warnings.append(
                 f"Округ «{district_name}» не найден на карте — строка пропущена.")
             continue
+
+        if city_id is not None:
+            points, warnings = _read_points(row, columns, settlement_name)
+            result.warnings.extend(warnings)
+            total = sum(points.values())
+            allowed = city_limit(city_id)
+            if total > allowed:
+                result.warnings.append(
+                    f"«{district_name}»: роздано {total} очков, а в городе их "
+                    f"{allowed} — строка пропущена.")
+                continue
+            if city_id in result.city_rows:
+                result.warnings.append(
+                    f"Город «{district_name}» встречается в таблице дважды — "
+                    f"взята последняя строка.")
+            result.city_rows[city_id] = points
+            continue
+
         if not settlement_name:
             # Пустая строка под округом — заготовка из шаблона: он выдаёт такую
             # там, где пунктов ещё нет. Это приглашение заполнить, а не ошибка.
@@ -111,24 +150,8 @@ def parse_support_csv(text: str, districts: dict[str, str],
                     f"нет — строка пропущена.")
             continue
 
-        points: dict[str, int] = {}
-        for index, party_id, party_name in columns:
-            if party_id is None or index >= len(row):
-                continue
-            cell = row[index].strip()
-            if not cell:
-                continue
-            value = _parse_number(cell)
-            if value is None:
-                # Не «не число»: «1,5» и «-2» — числа, просто очки бывают
-                # только целыми и неотрицательными.
-                result.warnings.append(
-                    f"«{settlement_name}», {party_name}: «{cell}» не подходит — "
-                    f"нужно целое число очков от нуля. Клетка пропущена.")
-                continue
-            if value > 0:
-                points[party_id] = value
-
+        points, warnings = _read_points(row, columns, settlement_name)
+        result.warnings.extend(warnings)
         total = sum(points.values())
         allowed = limit(district_id, settlement_name)
         if total > allowed:
@@ -147,9 +170,33 @@ def parse_support_csv(text: str, districts: dict[str, str],
                 f"дважды — взята последняя строка.")
         already[settlement_name] = points
 
-    if not result.rows:
+    if not result.rows and not result.city_rows:
         result.warnings.append("Ни одного населённого пункта разобрать не удалось.")
     return result
+
+
+def _read_points(row: list[str], columns: list[tuple[int, str | None, str]],
+                 place_name: str) -> tuple[dict[str, int], list[str]]:
+    """Очки по столбцам партий одной строки — без проверки общей суммы."""
+    points: dict[str, int] = {}
+    warnings: list[str] = []
+    for index, party_id, party_name in columns:
+        if party_id is None or index >= len(row):
+            continue
+        cell = row[index].strip()
+        if not cell:
+            continue
+        value = _parse_number(cell)
+        if value is None:
+            # Не «не число»: «1,5» и «-2» — числа, просто очки бывают только
+            # целыми и неотрицательными.
+            warnings.append(
+                f"«{place_name}», {party_name}: «{cell}» не подходит — нужно "
+                f"целое число очков от нуля. Клетка пропущена.")
+            continue
+        if value > 0:
+            points[party_id] = value
+    return points, warnings
 
 
 def _sniff_delimiter(text: str) -> str:
@@ -166,7 +213,7 @@ def _key(name: str) -> str:
 def _parse_number(cell: str) -> int | None:
     """Целое число из клетки. Терпит пробелы-разделители тысяч («12 500»),
     неразрывные пробелы и дробное «1500,0» — но не выдумывает числа из букв."""
-    text = cell.replace(" ", "").replace(" ", "").replace(",", ".")
+    text = cell.replace(" ", "").replace(" ", "").replace(",", ".")
     try:
         number = float(text)
     except ValueError:

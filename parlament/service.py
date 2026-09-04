@@ -11,7 +11,7 @@ from __future__ import annotations
 import random
 from pathlib import Path
 
-from . import elections, store
+from . import district_seed, elections, store
 from .model import (
     Convocation,
     District,
@@ -124,6 +124,8 @@ class ParlamentService:
         for district in self.project.districts:
             for settlement in district.settlements:
                 settlement.support.pop(party.id, None)
+        for city in self.project.cities:
+            city.support.pop(party.id, None)
 
         for conv in self.project.convocations:
             conv.seats.pop(party.id, None)
@@ -165,6 +167,11 @@ class ParlamentService:
                 if value:
                     points += value
                     settlements += 1
+        for city in self.project.cities:
+            value = city.support.get(party_id, 0)
+            if value:
+                points += value
+                settlements += 1
         rolled = sum(1 for conv in self.project.convocations
                      for per in conv.rolls.values() if party_id in per)
         return {
@@ -312,6 +319,10 @@ class ParlamentService:
         первым — импорт молча писал бы очки не туда.
         """
         district = self._require_district(district_id)
+        if district_seed.is_city(district.code):
+            raise ValidationError(
+                "У городского округа нет своих населённых пунктов — очки "
+                "делятся через сам город, на экране поддержки.")
         clean = self._clean_name(name)
         if any(_same_name(s.name, clean) for s in district.settlements):
             raise ValidationError(
@@ -342,11 +353,12 @@ class ParlamentService:
 
     def set_support(self, district_id: str, settlement_id: str,
                     party_id: str, points: int) -> Settlement:
-        """Ставит партии очки популярности в населённом пункте.
+        """Ставит партии очки популярности в сельском населённом пункте.
 
-        Сумма по пункту ограничена его запасом — шесть очков в обычном селе и
-        вдвое больше в городском округе. Раздать больше нельзя: иначе
-        поддержка перестала бы быть дележом общего запаса.
+        Сумма по пункту ограничена его запасом — шесть очков. Раздать
+        больше нельзя: иначе поддержка перестала бы быть дележом общего
+        запаса. Для городского округа очки общие на весь город — см.
+        `set_city_support`.
         """
         settlement = self._require_settlement(district_id, settlement_id)
         self._require_party(party_id)
@@ -367,21 +379,88 @@ class ParlamentService:
         self._persist()
         return settlement
 
+    def set_city_support(self, city_id: str, party_id: str, points: int) -> Settlement:
+        """Ставит партии очки популярности в городе — общие на все его округа.
+
+        В отличие от сельского пункта, город не привязан к одному округу:
+        несколько избирательных округов метрополии (Саттмалвик-порт,
+        -центр...) делят один и тот же запас.
+        """
+        city = self._require_city(city_id)
+        self._require_party(party_id)
+
+        value = self._clean_support(points)
+        others = sum(n for pid, n in city.support.items() if pid != party_id)
+        if others + value > city.capacity:
+            raise ValidationError(
+                f"В городе «{city.name}» всего {city.capacity} очков "
+                f"популярности. Другим партиям уже отдано {others}, "
+                f"этой можно дать не больше {city.capacity - others}."
+            )
+
+        if value == 0:
+            city.support.pop(party_id, None)
+        else:
+            city.support[party_id] = value
+        self._persist()
+        return city
+
     def import_support(self, rows: dict[str, dict[str, dict[str, int]]]) -> int:
-        """Заносит разобранную таблицу поддержки.
+        """Заносит разобранную таблицу поддержки для сельских пунктов.
 
         Пункт, которого в округе ещё нет, создаётся; существующий узнаётся по
         названию, и его очки заменяются целиком — таблица считается полной
         картиной по этому пункту, а не добавкой к прежним очкам.
 
-        Возвращает число обработанных пунктов.
+        Возвращает число обработанных пунктов. Если в той же таблице есть ещё
+        и городские строки, лучше `import_support_table` — иначе ошибка в
+        одной части может остаться незамеченной, пока применяется другая.
         """
-        # Сначала проверяем всю таблицу и только потом что-то меняем: иначе
-        # ошибка в последней строке оставляла бы половину импорта в памяти —
-        # на экране одно, в файле другое.
+        planned = self._plan_support(rows)
+        self._apply_support(planned)
+        self._persist()
+        return len(planned)
+
+    def import_city_support(self, rows: dict[str, dict[str, int]]) -> int:
+        """Заносит разобранную таблицу поддержки для городов.
+
+        Как и `import_support`: очки заменяются целиком, таблица считается
+        полной картиной по городу, а не добавкой к прежним очкам.
+        """
+        planned = self._plan_city_support(rows)
+        self._apply_city_support(planned)
+        self._persist()
+        return len(planned)
+
+    def import_support_table(self, rows: dict[str, dict[str, dict[str, int]]],
+                             city_rows: dict[str, dict[str, int]]) -> int:
+        """Заносит обе части одной разобранной таблицы разом — сёла и города.
+
+        Обе части сперва проверяются целиком, и только потом меняется хоть
+        что-то: иначе ошибка в городской половине оставляла бы уже принятую
+        сельскую половину в памяти, но не в файле — на экране одно, в
+        проекте другое, а следующее сохранение тихо дописало бы её тоже.
+        """
+        planned = self._plan_support(rows)
+        planned_cities = self._plan_city_support(city_rows)
+        self._apply_support(planned)
+        self._apply_city_support(planned_cities)
+        self._persist()
+        return len(planned) + len(planned_cities)
+
+    def _plan_support(self, rows: dict[str, dict[str, dict[str, int]]],
+                      ) -> list[tuple[District, str, dict[str, int]]]:
+        """Проверяет таблицу сельских пунктов, ничего не меняя в проекте."""
         planned: list[tuple[District, str, dict[str, int]]] = []
         for district_id, settlements in (rows or {}).items():
             district = self._require_district(district_id)
+            if district_seed.is_city(district.code):
+                # Разбор таблицы сам не должен был сюда попасть — округ
+                # города строкой распознаётся как город, а не как обычный
+                # округ. Но файл могли и подправить руками.
+                raise ValidationError(
+                    f"«{district.name}» — городской округ, у него нет своих "
+                    f"пунктов: очки идут через город «{district.region}».")
             for name, points in settlements.items():
                 cleaned_name = self._clean_name(name)
 
@@ -398,8 +477,9 @@ class ParlamentService:
                         f"а в населённом пункте их {capacity}."
                     )
                 planned.append((district, cleaned_name, fresh))
+        return planned
 
-        touched = 0
+    def _apply_support(self, planned: list[tuple[District, str, dict[str, int]]]) -> None:
         for district, name, fresh in planned:
             by_name = {s.name.strip().casefold(): s for s in district.settlements}
             settlement = by_name.get(name.casefold())
@@ -407,10 +487,31 @@ class ParlamentService:
                 settlement = Settlement(id=new_id("s"), name=name)
                 district.settlements.append(settlement)
             settlement.support = {p: n for p, n in fresh.items() if n > 0}
-            touched += 1
 
-        self._persist()
-        return touched
+    def _plan_city_support(self, rows: dict[str, dict[str, int]],
+                           ) -> list[tuple[Settlement, dict[str, int]]]:
+        """Проверяет таблицу городов, ничего не меняя в проекте."""
+        planned: list[tuple[Settlement, dict[str, int]]] = []
+        for city_id, points in (rows or {}).items():
+            city = self._require_city(city_id)
+
+            fresh: dict[str, int] = {}
+            for party_id, value in points.items():
+                self._require_party(party_id)
+                fresh[party_id] = self._clean_support(value)
+
+            total = sum(fresh.values())
+            if total > city.capacity:
+                raise ValidationError(
+                    f"«{city.name}»: роздано {total} очков, "
+                    f"а в городе их {city.capacity}."
+                )
+            planned.append((city, fresh))
+        return planned
+
+    def _apply_city_support(self, planned: list[tuple[Settlement, dict[str, int]]]) -> None:
+        for city, fresh in planned:
+            city.support = {p: n for p, n in fresh.items() if n > 0}
 
     def settlement_capacity(self, district: District, name: str) -> int:
         """Запас очков пункта — по имени, ещё до того как он заведён.
@@ -425,10 +526,17 @@ class ParlamentService:
         return elections.SETTLEMENT_SUPPORT
 
     def support_modifier(self, district_id: str, party_id: str) -> float:
-        """Модификатор поддержки партии в округе — очки, делённые на число НП."""
+        """Модификатор поддержки партии в округе — очки, делённые на число НП.
+
+        У городского округа очки не свои — общие на весь город (см.
+        `Project.district_support`), а делитель всегда 1: несколько
+        избирательных округов одного города получают один и тот же
+        модификатор, а не дробят его ещё и на число районов.
+        """
         district = self._require_district(district_id)
-        return elections.support_modifier(district.support_points(party_id),
-                                          len(district.settlements))
+        return elections.support_modifier(
+            self.project.district_support(district, party_id),
+            self.project.district_settlement_count(district))
 
     # -- розыгрыш выборов ------------------------------------------------------
 
@@ -461,7 +569,7 @@ class ParlamentService:
         rolls: dict[str, dict[str, elections.PartyRoll]] = {}
         for district in self.project.districts:
             per_district = modifiers.get(district.id, {})
-            settlements = len(district.settlements)
+            settlements = self.project.district_settlement_count(district)
             district_rolls: dict[str, elections.PartyRoll] = {}
 
             for party in self.project.parties:
@@ -469,7 +577,7 @@ class ParlamentService:
                 debate = self._clean_bonus(setup.get("debate", 0))
                 agitation = bool(setup.get("agitation"))
                 support = elections.support_modifier(
-                    district.support_points(party.id), settlements)
+                    self.project.district_support(district, party.id), settlements)
 
                 if not (support or debate or agitation):
                     continue
@@ -510,6 +618,12 @@ class ParlamentService:
         if settlement is None:
             raise ValidationError("Населённый пункт не найден.")
         return settlement
+
+    def _require_city(self, city_id: str) -> Settlement:
+        city = self.project.city_by_id(city_id)
+        if city is None:
+            raise ValidationError("Город не найден.")
+        return city
 
     def _clean_support(self, value: object) -> int:
         if isinstance(value, bool) or isinstance(value, float) and not value.is_integer():
