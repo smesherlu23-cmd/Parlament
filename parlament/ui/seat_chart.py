@@ -96,8 +96,14 @@ def compute_seats(
     # Слева направо: угол π — левый край полукруга, 0 — правый.
     placed.sort(key=lambda item: item[0], reverse=True)
 
+    # Размер места ограничен с двух сторон: расстоянием между рядами и шагом
+    # соседей по дуге. Раньше учитывалось только первое, а размер 12,5 был
+    # подобран под палату на 120 мест — на 147 соседи по дуге стоят ближе,
+    # и кружки наезжали друг на друга.
     gap = (_OUTER_RADIUS - _INNER_RADIUS) / (row_count - 1)
-    seat_radius = min(gap * 0.30, 12.5)
+    along_arc = min((radii[i] * math.pi / counts[i]
+                     for i in range(row_count) if counts[i]), default=math.inf)
+    seat_radius = min(gap * 0.30, along_arc * 0.45, 12.5)
 
     return [
         Seat(

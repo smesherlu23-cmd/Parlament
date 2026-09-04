@@ -676,6 +676,27 @@ class TestHelpers(unittest.TestCase):
                          "Карта_Третий_состав.png")
         self.assertEqual(suggest_file_name("///"), "Парламент.png")
 
+    def test_seats_never_overlap(self):
+        # Размер кружка был подобран под палату на 120 мест; на 147 соседи по
+        # дуге стоят ближе, и места наезжали друг на друга.
+        import math
+
+        for total in (60, 120, 147, 200, 300):
+            seats = compute_seats(total, 5, [])
+            radius = seats[0].radius
+            closest = min(
+                math.dist((a.x, a.y), (b.x, b.y))
+                for index, a in enumerate(seats)
+                for b in seats[index + 1:]
+                if abs(a.x - b.x) < 60 and abs(a.y - b.y) < 60
+            )
+            self.assertGreaterEqual(closest, 2 * radius,
+                                    f"{total} мест: кружки наезжают друг на друга")
+
+    def test_seat_size_still_matches_the_design_where_it_fits(self):
+        # Там, где места и так не мешали друг другу, размер прежний.
+        self.assertAlmostEqual(compute_seats(60, 5, [])[0].radius, 12.5, places=2)
+
     def test_row_counts_sum_to_total(self):
         for total in (60, 120, 300):
             for rows in (3, 5, 8):
