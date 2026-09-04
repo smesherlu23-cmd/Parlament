@@ -10,9 +10,10 @@
 модификатор, поддержка, не вводится: он считается из очков в населённых
 пунктах и показан справочно.
 
-В розыгрыше участвуют только партии, у которых в округе есть хоть что-то —
-поддержка или модификатор. Иначе каждая партия автоматически лезла бы в
-каждый округ, включая те, где её нет.
+В розыгрыше участвуют все партии во всех округах — своя клетка не открывает
+партии доступ в округ, а просто прибавляет к её броску: без поддержки и без
+модификатора партия всё равно бросает кубик наравне с остальными, просто без
+прибавки.
 """
 
 from __future__ import annotations
@@ -193,10 +194,12 @@ class ElectionsView:
             self._refresh_preview(district_id)
 
     def _refresh_preview(self, district_id: str, live: bool = True) -> None:
-        """Показывает поддержку партий и кто вообще идёт в округе.
+        """Показывает, у кого в округе есть поддержка сверх голого броска.
 
-        Именно поддержку, а не итог: бросок случаен, и обещать результат до
-        розыгрыша было бы враньём.
+        Участвуют всегда все партии — этот столбец не про то, кто идёт (идут
+        все), а про то, у кого есть очковая прибавка. Именно поддержку, а не
+        итог: бросок случаен, и обещать результат до розыгрыша было бы
+        враньём.
         """
         district = self.service.project.district(district_id)
         preview = self.previews.get(district_id)
@@ -206,27 +209,15 @@ class ElectionsView:
         parts = []
         for party in self.app.parties:
             support = self.service.support_modifier(district_id, party.id)
-            if not (support or self._running(district_id, party.id)):
+            if not support:
                 continue
             label = party.abbr or party.name
             parts.append(f"{label} {support:.1f}".replace(".", ","))
 
-        preview.value = "  ".join(parts) if parts else "никто не идёт"
+        preview.value = "  ".join(parts) if parts else "поддержки нет — решит бросок"
         preview.color = theme.TEXT if parts else theme.NEUTRAL_600
         if live:
             push(preview)
-
-    def _running(self, district_id: str, party_id: str) -> bool:
-        """Идёт ли партия в округе — по тому же правилу, что и `collect`.
-
-        Считать «идёт» по непустому полю нельзя: вписанный ноль — это не
-        модификатор, и в розыгрыш такая партия не попадёт. Предпросмотр
-        обещал бы участие, которого не будет.
-        """
-        bonus = self.cells.get(district_id, {}).get(party_id)
-        if bonus is None:
-            return False
-        return bool(_to_number(bonus.value))
 
     # -- сбор данных --------------------------------------------------------
 

@@ -794,7 +794,8 @@ class TestMapAndElections(AppTestCase):
 
         conv = self.app.selected
         self.assertEqual(self.app.view, "map")          # сразу показали карту
-        self.assertEqual(sum(conv.seats.values()), district.seats)
+        # Бросают все партии во всех округах — палата набирается целиком.
+        self.assertEqual(sum(conv.seats.values()), SEED_TOTAL_SEATS)
         self.assertIn(district.id, self.service.district_winners(conv.id))
 
     def test_districts_are_coloured_by_winner(self):
@@ -803,11 +804,13 @@ class TestMapAndElections(AppTestCase):
         self.app.apply_election()
 
         painted = {name: color for _code, name, _s, color in self.app.map_chart._districts}
-        winner = self.service.district_winners(self.app.selected.id)[
-            self.by_name["Судбригг"].id]
+        winners = self.service.district_winners(self.app.selected.id)
+        winner = winners[self.by_name["Судбригг"].id]
         self.assertEqual(painted["Судбригг"],
                          next(p.color for p in self.app.parties if p.id == winner))
-        self.assertIsNone(painted["Гаффинсвик центр"])   # без данных — серый
+        # Бросают все партии во всех округах — раскрашивается вся карта,
+        # даже там, где поддержки никто не выставлял.
+        self.assertEqual(len(winners), len(self.service.project.districts))
 
     def test_every_district_has_a_shape_to_draw(self):
         # Карта рисуется полигонами: округ без геометрии остался бы дырой.
@@ -850,16 +853,18 @@ class TestMapAndElections(AppTestCase):
         # 6 очков на два пункта.
         self.assertIn("3,0", preview.value)
 
-    def test_district_with_nobody_running_says_so(self):
+    def test_district_with_no_support_says_so(self):
         self.app.show_elections()
         preview = self.app.elections.previews[self.by_name["Судбригг"].id]
-        self.assertEqual(preview.value, "никто не идёт")
+        self.assertEqual(preview.value, "поддержки нет — решит бросок")
 
-    def test_election_without_any_setup_is_refused(self):
+    def test_election_without_any_setup_still_fills_the_parliament(self):
+        # Бросают все партии всегда — пустая настройка не «нечего
+        # разыгрывать», а голый кубик без единой прибавки.
         self.app.show_elections()
         self.app.apply_election()
-        self.assertIn("ни поддержки, ни модификаторов", self.page.last_toast)
-        self.assertEqual(self.app.view, "elections")   # с экрана не увели
+        self.assertEqual(self.app.view, "map")
+        self.assertEqual(sum(self.app.selected.seats.values()), SEED_TOTAL_SEATS)
 
     def test_reopening_shows_previous_modifiers(self):
         self.support("Судбригг", 0, 3)
@@ -914,6 +919,47 @@ class TestMapAndElections(AppTestCase):
         )
         self.assertTrue(data.startswith(b"\x89PNG"))
 
+    def test_map_export_opens_the_same_kind_of_dialog_as_the_chart(self):
+        self.support("Судбригг", 0, 4)
+        self.app.show_elections()
+        self.app.apply_election()
+        self.app.show_map()
+        self.app.export_map_png()
+
+        field = find(self.page.dialog, lambda c: isinstance(c, ft.TextField))
+        self.assertEqual(field.value, "Карта_Первый_состав.png")
+        radios = find_all(self.page.dialog, lambda c: isinstance(c, ft.Radio))
+        self.assertEqual([r.label for r in radios],
+                         ["1920 × 1080", "2560 × 1440", "3840 × 2160"])
+        checks = find_all(self.page.dialog, lambda c: isinstance(c, ft.Checkbox))
+        self.assertEqual([c.label for c in checks],
+                         ["Легенда на картинке", "Название созыва"])
+
+    def test_map_export_save_flow_hands_png_bytes_to_the_picker(self):
+        self.support("Судбригг", 0, 4)
+        self.app.show_elections()
+        self.app.apply_election()
+        self.app.show_map()
+
+        calls = []
+
+        class StubPicker:
+            async def save_file(self, **kwargs):
+                calls.append(kwargs)
+                return "/куда-то/Карта_Первый_состав.png"
+
+        self.app.file_picker = StubPicker()
+        self.app.export_map_png()
+        find(self.page.dialog, lambda c: isinstance(c, ft.Button)
+             and c.content == "Сохранить как…").on_click(None)
+
+        self.assertEqual(len(calls), 1)
+        call = calls[0]
+        self.assertEqual(call["file_name"], "Карта_Первый_состав.png")
+        self.assertTrue(call["src_bytes"].startswith(b"\x89PNG"))
+        self.assertEqual(int.from_bytes(call["src_bytes"][16:20], "big"), 1920)
+        self.assertEqual(self.page.last_toast, "Карта сохранена.")
+
 
 class TestRollBreakdown(unittest.TestCase):
     """Строка разбора броска в диалоге округа."""
@@ -956,35 +1002,38 @@ class TestElectionsPreview(AppTestCase):
         field.value = value
         field.on_change(ft.ControlEvent(control=field, name="change", data=value))
 
-    def test_zero_bonus_does_not_promise_a_run(self):
-        # Ноль — не бонус: в розыгрыш такая партия не попадёт, и обещать
-        # участие нельзя.
+    def test_zero_modifier_is_not_sent_to_the_roll(self):
+        # Ноль — не модификатор: лишняя запись в модификаторах не нужна,
+        # хотя бросать партия всё равно будет — на голом кубике.
         self.bonus(0, "0")
         self.assertEqual(self.app.elections.collect(), {})
-        self.assertIn("никто не идёт",
-                      self.app.elections.previews[self.district.id].value)
 
-    def test_real_bonus_does(self):
+    def test_modifier_alone_does_not_show_in_the_support_preview(self):
+        # Строка справа — про поддержку из НП, а не про модификатор: он и
+        # так виден в своей клетке рядом, а бросают тут все партии всегда.
         self.bonus(0, "2")
         self.assertIn(self.district.id, self.app.elections.collect())
-        self.assertNotIn("никто не идёт",
-                         self.app.elections.previews[self.district.id].value)
+        self.assertEqual(self.app.elections.previews[self.district.id].value,
+                         "поддержки нет — решит бросок")
 
-    def test_empty_roll_keeps_the_previous_result(self):
-        # Кнопка, нажатая на пустом экране, не должна стирать прошлые выборы.
+    def test_reapplying_the_election_always_produces_a_fresh_result(self):
+        # Раньше пустая настройка (после того как последнюю поддержку
+        # убрали) отклонялась и берегла прошлый результат. Теперь бросают
+        # все партии всегда — повторный розыгрыш просто переигрывает палату
+        # заново, а не отказывается.
         settlement = self.service.add_settlement(self.district.id, "НП")
         self.service.set_support(self.district.id, settlement.id,
                                  self.app.parties[0].id, 4)
         self.app.show_elections()
         self.app.apply_election()
-        seats = dict(self.app.selected.seats)
+        self.assertEqual(sum(self.app.selected.seats.values()), SEED_TOTAL_SEATS)
 
         self.service.delete_settlement(self.district.id, settlement.id)
         self.app.show_elections()
         self.app.apply_election()
 
-        self.assertEqual(self.app.selected.seats, seats)
-        self.assertIn("разыгрывать нечего", self.page.last_toast)
+        self.assertEqual(self.app.view, "map")
+        self.assertEqual(sum(self.app.selected.seats.values()), SEED_TOTAL_SEATS)
 
 
 class TestSeatsAfterElection(AppTestCase):
@@ -1271,6 +1320,124 @@ class TestSupportScreenWidth(AppTestCase):
         self.assertIsNotNone(row, "строки пунктов не прокручиваются вбок")
         column = row.controls[0]
         self.assertGreater(column.width, theme.WINDOW_MIN_WIDTH - 200)
+
+
+class TestSupportFileFlow(AppTestCase):
+    """Выгрузка и загрузка таблицы поддержки через экран «Поддержка»."""
+
+    def setUp(self):
+        super().setUp()
+        self.add_parties(2)
+        self.by_name = {d.name: d for d in self.service.project.districts}
+
+    def test_template_download_starts_with_the_help_lines(self):
+        # Подсказки о формате — прямо в файле: там их и читают, не отдельно
+        # в приложении.
+        calls = []
+
+        class StubPicker:
+            async def save_file(self, **kwargs):
+                calls.append(kwargs)
+                return "/куда-то/Поддержка_шаблон.csv"
+
+        self.app.file_picker = StubPicker()
+        self.app.save_support_template()
+
+        data = calls[0]["src_bytes"].decode("utf-8-sig")
+        lines = data.splitlines()
+        self.assertIn("#", lines[0])            # строка-подсказка, не заголовок
+        self.assertNotEqual(lines[0], "Округ,Населённый пункт")
+        self.assertIn("Округ,Населённый пункт", data)
+        self.assertEqual(self.page.last_toast, "Шаблон сохранён.")
+
+    def test_loading_a_clean_file_reports_what_was_filled(self):
+        district = self.by_name["Западный берег"]
+        settlement = district.settlements[0]
+        party = self.app.parties[0]
+        csv_text = (f"Округ,Населённый пункт,{party.name}\n"
+                   f"{district.name},{settlement.name},4\n")
+
+        class StubPicker:
+            async def pick_files(self, **kwargs):
+                return [type("Picked", (), {"bytes": csv_text.encode("utf-8-sig")})()]
+
+        self.app.file_picker = StubPicker()
+        self.app.load_support_file()
+
+        shown = " ".join(texts(self.page.dialog))
+        self.assertIn("Таблица загружена", shown)
+        self.assertNotIn("с замечаниями", shown)
+        self.assertIn("1 населённый пункт", shown)
+        self.assertEqual(settlement.support.get(party.id), 4)
+
+    def test_loading_reports_warnings_alongside_the_summary(self):
+        # Отчёт не выбирает между «что загрузилось» и «что не так» — и то,
+        # и другое видно в одном диалоге сразу.
+        district = self.by_name["Западный берег"]
+        settlement = district.settlements[0]
+        party = self.app.parties[0]
+        csv_text = (f"Округ,Населённый пункт,{party.name}\n"
+                   f"{district.name},{settlement.name},4\n"
+                   "Такого округа нет,Пункт,3\n")
+
+        class StubPicker:
+            async def pick_files(self, **kwargs):
+                return [type("Picked", (), {"bytes": csv_text.encode("utf-8-sig")})()]
+
+        self.app.file_picker = StubPicker()
+        self.app.load_support_file()
+
+        shown = " ".join(texts(self.page.dialog))
+        self.assertIn("Таблица загружена с замечаниями", shown)
+        self.assertIn("1 населённый пункт", shown)
+        self.assertIn("не найден", shown)
+        self.assertEqual(settlement.support.get(party.id), 4)
+
+    def test_loading_a_city_row_reports_it_separately_from_settlements(self):
+        gaffinsvik = self.by_name["Гаффинсвик центр"]
+        city = self.service.project.city(gaffinsvik.region)
+        party = self.app.parties[0]
+        csv_text = f"Округ,Населённый пункт,{party.name}\n{city.name},,5\n"
+
+        class StubPicker:
+            async def pick_files(self, **kwargs):
+                return [type("Picked", (), {"bytes": csv_text.encode("utf-8-sig")})()]
+
+        self.app.file_picker = StubPicker()
+        self.app.load_support_file()
+
+        shown = " ".join(texts(self.page.dialog))
+        self.assertIn("1 город", shown)
+        self.assertEqual(city.support.get(party.id), 5)
+
+    def test_loading_the_exported_template_round_trips_cleanly(self):
+        # Ровно тот файл, который выгружает сама программа, должен
+        # загружаться без единого замечания — иначе шаблон бесполезен.
+        district = self.by_name["Западный берег"]
+        self.service.set_support(district.id, district.settlements[0].id,
+                                 self.app.parties[0].id, 3)
+
+        save_calls = []
+
+        class SavePicker:
+            async def save_file(self, **kwargs):
+                save_calls.append(kwargs)
+                return "/куда-то/Поддержка_шаблон.csv"
+
+        self.app.file_picker = SavePicker()
+        self.app.save_support_template()
+        template = save_calls[0]["src_bytes"]
+
+        class LoadPicker:
+            async def pick_files(self, **kwargs):
+                return [type("Picked", (), {"bytes": template})()]
+
+        self.app.file_picker = LoadPicker()
+        self.app.load_support_file()
+
+        shown = " ".join(texts(self.page.dialog))
+        self.assertIn("Таблица загружена", shown)
+        self.assertNotIn("с замечаниями", shown)
 
 
 class TestProjectWithoutDistricts(unittest.TestCase):

@@ -81,6 +81,9 @@ def parse_support_csv(text: str, districts: dict[str, str],
     rows = list(csv.reader(io.StringIO(text.lstrip("﻿")),
                            delimiter=_sniff_delimiter(text)))
     rows = [r for r in rows if any(cell.strip() for cell in r)]
+    # Строки-подсказки над заголовком (см. `export_support_template`) начинаются
+    # с «#» — это не данные, пропускаем молча, стирать их вручную не обязательно.
+    rows = [r for r in rows if not r[0].strip().startswith("#")]
     if len(rows) < 2:
         result.warnings.append(
             "В файле нет данных: нужна строка заголовка (округ, населённый пункт, "
@@ -122,7 +125,10 @@ def parse_support_csv(text: str, districts: dict[str, str],
             continue
 
         if city_id is not None:
-            points, warnings = _read_points(row, columns, settlement_name)
+            # Название для замечаний — сам город, а не «Населённый пункт»:
+            # у городской строки эта клетка обычно пустая (это не отдельное
+            # село), и замечание с пустым именем ничего бы не объяснило.
+            points, warnings = _read_points(row, columns, district_name)
             result.warnings.extend(warnings)
             total = sum(points.values())
             allowed = city_limit(city_id)
@@ -200,9 +206,15 @@ def _read_points(row: list[str], columns: list[tuple[int, str | None, str]],
 
 
 def _sniff_delimiter(text: str) -> str:
-    """Запятая или точка с запятой — что чаще встречается в первой строке."""
-    first = text.lstrip("﻿").splitlines()[0] if text.strip() else ""
-    return ";" if first.count(";") > first.count(",") else ","
+    """Запятая или точка с запятой — по первой содержательной строке.
+
+    Строки-подсказки («#…») в счёт не идут: в них хватает своих запятых,
+    чтобы сбить угадывание, а определять формат должен настоящий заголовок.
+    """
+    for line in text.lstrip("﻿").splitlines():
+        if line.strip() and not line.strip().startswith("#"):
+            return ";" if line.count(";") > line.count(",") else ","
+    return ","
 
 
 def _key(name: str) -> str:

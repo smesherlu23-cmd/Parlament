@@ -14,6 +14,7 @@ from typing import Callable
 import flet as ft
 
 from ..model import Convocation, Party
+from . import format as fmt
 from . import theme
 from .mount import push
 from .export import RESOLUTIONS, suggest_file_name
@@ -555,20 +556,34 @@ def settlement_dialog(district, on_confirm: Callable[[str], str | None],
     )
 
 
-def import_report_dialog(filled: int, warnings: list[str],
+def import_report_dialog(settlements: int, cities: int, warnings: list[str],
                          on_close: Callable) -> ft.AlertDialog:
     """Что удалось разобрать в загруженной таблице, а что вызвало вопросы.
+
+    Показывается всегда, даже без единого замечания: тост исчезает с экрана
+    сам, раньше, чем его успевают прочитать, а тут решает сам человек, когда
+    закрыть — и видит не общее число строк, а что именно из них — сёла,
+    что — города, чтобы можно было сверить с документом на глаз.
 
     Замечания показываются списком, а не одной строкой: по ним пользователь
     правит свой документ, и обрезать их было бы вредно.
     """
+    filled = settlements + cities
+    if filled:
+        parts = []
+        if settlements:
+            parts.append(fmt.pluralize(settlements, fmt.SETTLEMENTS))
+        if cities:
+            parts.append(fmt.pluralize(cities, fmt.CITIES))
+        summary = f"Занесено очков поддержки: {', '.join(parts)}."
+    else:
+        summary = "Ни одной строки разобрать не удалось."
+
     body: list[ft.Control] = [
-        ft.Text(
-            f"Загружено строк: {filled}." if filled
-            else "Ни одной строки разобрать не удалось.",
-            size=theme.fs(14), color=theme.TEXT,
-        ),
-        ft.Container(
+        ft.Text(summary, size=theme.fs(14), color=theme.TEXT),
+    ]
+    if warnings:
+        body.append(ft.Container(
             padding=ft.Padding.all(10),
             bgcolor=theme.NEUTRAL_100,
             border=ft.Border.all(1, theme.DIVIDER),
@@ -579,10 +594,9 @@ def import_report_dialog(filled: int, warnings: list[str],
                 spacing=5, tight=True, scroll=ft.ScrollMode.AUTO,
             ),
             height=min(240, 30 + 22 * len(warnings)),
-        ),
-    ]
-    return _shell("Таблица загружена с замечаниями", body,
-                  [_cancel_as_close(on_close)], width=520)
+        ))
+    title = "Таблица загружена с замечаниями" if warnings else "Таблица загружена"
+    return _shell(title, body, [_cancel_as_close(on_close)], width=520)
 
 
 def _cancel_as_close(on_close: Callable) -> ft.Control:
@@ -691,6 +705,76 @@ def export_dialog(convocation: Convocation, total: int, rows: int,
                                 ft.Text(f"{abbr} {seats}", size=theme.fs(10), color=theme.TEXT)],
                                spacing=5, tight=True)
                         for abbr, color, seats in distribution
+                    ], wrap=True, spacing=14, run_spacing=4),
+                ], spacing=4, tight=True),
+            ),
+            file_field,
+            ft.Column([
+                ft.Text("Разрешение", size=theme.fs(12), color=theme.NEUTRAL_700),
+                resolution_picker,
+            ], spacing=5, tight=True),
+            ft.Row([legend_check, title_check], spacing=20),
+        ],
+        [_cancel(on_cancel), theme.primary_button("Сохранить как…", confirm)],
+        width=500,
+    )
+
+
+def map_export_dialog(convocation_name: str, districts,
+                      legend: list[tuple[str, str, int, int]],
+                      background,
+                      on_confirm: Callable[[dict], None],
+                      on_cancel: Callable) -> ft.AlertDialog:
+    """Тот же диалог экспорта, что и у схемы зала, но для карты округов.
+
+    `districts` — `(код, название, мест, цвет|None)` для предпросмотра;
+    `legend` — `(название партии, цвет, округов, мест)` строками сводки.
+    """
+    from .map_chart import MapChart
+
+    file_field = theme.text_field(suggest_file_name(convocation_name, prefix="Карта"),
+                                  label_text="Имя файла")
+
+    resolution_picker = ft.RadioGroup(
+        value="0",
+        content=ft.Row([
+            ft.Radio(value=str(index), label=label, active_color=theme.ACCENT,
+                     label_style=ft.TextStyle(size=theme.fs(13), color=theme.TEXT))
+            for index, (label, _w, _h) in enumerate(RESOLUTIONS)
+        ], spacing=2),
+    )
+
+    legend_check = ft.Checkbox(label="Легенда на картинке", value=True,
+                               active_color=theme.ACCENT,
+                               label_style=ft.TextStyle(size=theme.fs(13), color=theme.TEXT))
+    title_check = ft.Checkbox(label="Название созыва", value=True,
+                              active_color=theme.ACCENT,
+                              label_style=ft.TextStyle(size=theme.fs(13), color=theme.TEXT))
+
+    preview_map = MapChart(districts=districts, background=background, height=150)
+
+    def confirm(_event) -> None:
+        _label, width, _height = RESOLUTIONS[int(resolution_picker.value)]
+        on_confirm({
+            "file_name": file_field.value,
+            "width": width,
+            "with_legend": legend_check.value,
+            "with_title": title_check.value,
+        })
+
+    return _shell(
+        "Экспорт карты в PNG",
+        [
+            ft.Container(
+                bgcolor=theme.BG,
+                padding=12,
+                content=ft.Column([
+                    preview_map,
+                    ft.Row([
+                        ft.Row([theme.swatch(color, 7),
+                                ft.Text(f"{name} {seats}", size=theme.fs(10), color=theme.TEXT)],
+                               spacing=5, tight=True)
+                        for name, color, _won, seats in legend
                     ], wrap=True, spacing=14, run_spacing=4),
                 ], spacing=4, tight=True),
             ),

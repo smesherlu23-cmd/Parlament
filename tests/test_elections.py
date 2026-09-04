@@ -32,6 +32,7 @@ from parlament.district_geometry import (  # noqa: E402
 )
 from parlament.model import Project  # noqa: E402
 from parlament.ui.support_file import (  # noqa: E402
+    _HELP_LINES,
     export_support_template,
     parse_support_text,
 )
@@ -236,13 +237,23 @@ class TestDistrictsFromMap(ElectionTestCase):
 class TestElectionResults(ElectionTestCase):
     """Что розыгрыш делает с составом созыва и с картой."""
 
-    def only_party_here(self, district_name: str, party):
-        """Даёт партии единственную поддержку в округе — округ уходит ей.
+    def setUp(self):
+        super().setUp()
+        #: `{district_id: {party_id: {"modifier": ...}}}` — подавляющий
+        #: перевес, зарегистрированный через `only_party_here`. Передаётся в
+        #: `roll_election` вместо пустого набора модификаторов.
+        self.dominance: dict[str, dict[str, dict]] = {}
 
-        Бросок случаен, поэтому «кто победит» задаётся не силой модификаторов,
-        а тем, что соперников в округе нет: борьбы не было — победитель
-        забирает всё. Городской округ поддержки не заводит сам — она в
-        общей копилке его города.
+    def only_party_here(self, district_name: str, party):
+        """Даёт партии подавляющий перевес в округе — округ уходит ей
+        гарантированно, а не по случайности броска.
+
+        Раньше единственная поддержка была гарантией сама по себе: соперники
+        вообще не участвовали в розыгрыше. Теперь бросают все, и обычной
+        поддержки (до 6 очков на сельский пункт) мало, чтобы обыграть чужой
+        бросок 1–10 в худшем случае — поэтому рядом с реальной поддержкой
+        регистрируется огромный модификатор в `self.dominance`, который
+        соперники не могут перекрыть уже никаким броском.
         """
         district = self.by_name[district_name]
         if is_city(district.code):
@@ -251,30 +262,35 @@ class TestElectionResults(ElectionTestCase):
         else:
             settlement = self.service.add_settlement(district.id, f"НП {district.code}")
             self.service.set_support(district.id, settlement.id, party.id, 3)
+        self.dominance.setdefault(district.id, {})[party.id] = {"modifier": 1000}
         return district
 
     def test_results_fill_the_districts_that_were_contested(self):
         first = self.only_party_here("Херсвикский", self.a)
         second = self.only_party_here("Холмавикский", self.b)
-        self.service.roll_election(self.conv.id, {}, rng=random.Random(3))
-        self.assertEqual(self.conv.seats,
-                         {self.a.id: first.seats, self.b.id: second.seats})
+        self.service.roll_election(self.conv.id, self.dominance, rng=random.Random(3))
+        allocation = self.service.district_allocation(self.conv.id)
+        self.assertEqual(allocation[first.id], {self.a.id: first.seats})
+        self.assertEqual(allocation[second.id], {self.b.id: second.seats})
         self.assertTrue(self.conv.has_election)
 
     def test_winners_drive_the_map(self):
         big = self.only_party_here("Херсвикский", self.a)
         small = self.only_party_here("Судбригг", self.c)
-        self.service.roll_election(self.conv.id, {}, rng=random.Random(4))
+        self.service.roll_election(self.conv.id, self.dominance, rng=random.Random(4))
         winners = self.service.district_winners(self.conv.id)
         self.assertEqual(winners[big.id], self.a.id)
         self.assertEqual(winners[small.id], self.c.id)
 
     def test_city_support_wins_every_district_of_that_city(self):
         # Копилка общая на весь город: поддержка в ней достаётся сразу всем
-        # его избирательным округам, а не одному конкретному району.
+        # его избирательным округам, а не одному конкретному району. Берём
+        # весь запас города (12): при делителе 1 это больше, чем может дать
+        # чужой голый бросок (максимум 10) — победа гарантирована безо
+        # всякого искусственного перевеса, только настоящей поддержкой.
         gaffinsvik = self.by_name["Гаффинсвик центр"]
         city = self.service.project.city(gaffinsvik.region)
-        self.service.set_city_support(city.id, self.a.id, 3)
+        self.service.set_city_support(city.id, self.a.id, CITY_SUPPORT)
         city_districts = [d for d in self.service.project.districts
                           if is_city(d.code) and d.region == gaffinsvik.region]
         self.assertEqual(len(city_districts), 5)
@@ -283,28 +299,32 @@ class TestElectionResults(ElectionTestCase):
         winners = self.service.district_winners(self.conv.id)
         for district in city_districts:
             self.assertEqual(winners[district.id], self.a.id, district.name)
-        self.assertEqual(sum(self.conv.seats.values()),
-                         sum(d.seats for d in city_districts))
+        allocation = self.service.district_allocation(self.conv.id)
+        self.assertEqual(
+            sum(sum(allocation.get(d.id, {}).values()) for d in city_districts),
+            sum(d.seats for d in city_districts))
 
-    def test_districts_without_results_stay_uncoloured(self):
+    def test_every_district_gets_a_winner(self):
+        # Раньше округ без ставок оставался серым — участников там не было.
+        # Теперь бросают все, поэтому карта раскрашивается целиком, даже
+        # там, где поддержки никто не выставлял.
         district = self.only_party_here("Судбригг", self.a)
-        self.service.roll_election(self.conv.id, {}, rng=random.Random(5))
+        self.service.roll_election(self.conv.id, self.dominance, rng=random.Random(5))
         winners = self.service.district_winners(self.conv.id)
-        self.assertEqual(list(winners), [district.id])
+        self.assertEqual(winners[district.id], self.a.id)
+        self.assertEqual(len(winners), len(self.service.project.districts))
 
     def test_rerunning_replaces_previous_results(self):
-        # Выборы — это результат целиком, а не точечная правка: округа, где
-        # в новый розыгрыш никто не пошёл, обнуляются.
+        # Выборы — это результат целиком, а не точечная правка: второй
+        # розыгрыш переписывает разбор округа заново, а не донакладывает
+        # его на прошлый.
         district = self.only_party_here("Судбригг", self.a)
-        self.service.roll_election(
-            self.conv.id, {district.id: {self.a.id: {"modifier": 1}},
-                           self.by_name["Гаффинсвик центр"].id:
-                               {self.b.id: {"modifier": 1}}},
-            rng=random.Random(6))
-        self.assertEqual(set(self.conv.seats), {self.a.id, self.b.id})
+        self.service.roll_election(self.conv.id, self.dominance, rng=random.Random(6))
+        self.assertEqual(self.service.district_winners(self.conv.id)[district.id], self.a.id)
+        self.assertEqual(self.conv.rolls[district.id][self.a.id].modifier, 1000)
 
         self.service.roll_election(self.conv.id, {}, rng=random.Random(6))
-        self.assertEqual(self.conv.seats, {self.a.id: district.seats})
+        self.assertEqual(self.conv.rolls[district.id][self.a.id].modifier, 0)
 
     def test_never_exceeds_the_parliament(self):
         # Даже если разыграть все округа, сумма ровно равна размеру палаты.
@@ -514,15 +534,15 @@ class TestRollElection(ElectionTestCase):
         self.service.set_support(self.district.id, settlement.id, party.id, points)
         return settlement
 
-    def test_only_parties_with_something_in_the_district_take_part(self):
-        # Иначе каждая партия лезла бы в каждый округ, включая чужие.
+    def test_every_party_takes_part_regardless_of_support(self):
+        # Раньше в округ лезли только партии с поддержкой или модификатором —
+        # это и была ошибка: бросают все, а поддержка лишь прибавляется.
         self.give_support(self.a, 4)
         self.service.roll_election(self.conv.id,
                                    {self.district.id: {self.b.id: {"modifier": 1}}},
                                    rng=random.Random(1))
         taking_part = set(self.conv.rolls[self.district.id])
-        self.assertEqual(taking_part, {self.a.id, self.b.id})
-        self.assertNotIn(self.c.id, taking_part)
+        self.assertEqual(taking_part, {self.a.id, self.b.id, self.c.id})
 
     def test_support_reaches_the_roll(self):
         # Пять очков на два пункта округа — модификатор 2,5.
@@ -543,7 +563,8 @@ class TestRollElection(ElectionTestCase):
         self.service.roll_election(self.conv.id,
                                    {self.district.id: {self.b.id: {"modifier": 2}}},
                                    rng=random.Random(7))
-        self.assertEqual(sum(self.conv.seats.values()), self.district.seats)
+        # Бросают все партии во всех округах — палата набирается целиком.
+        self.assertEqual(sum(self.conv.seats.values()), SEED_TOTAL_SEATS)
 
     def test_shares_add_up_to_a_hundred(self):
         self.give_support(self.a, 4)
@@ -571,26 +592,39 @@ class TestRollElection(ElectionTestCase):
         stored = again.project.active_convocation.rolls[self.district.id][self.a.id]
         self.assertEqual(stored, self.conv.rolls[self.district.id][self.a.id])
 
-    def test_empty_setup_is_refused(self):
-        with self.assertRaises(ValidationError):
-            self.service.roll_election(self.conv.id, {}, rng=random.Random(17))
-        self.assertEqual(self.conv.seats, {})
-        self.assertFalse(self.conv.has_election)
+    def test_empty_setup_still_fills_the_whole_parliament(self):
+        # Пустая настройка — не «нечего разыгрывать»: без поддержки и
+        # модификаторов все партии всё равно бросают голый кубик.
+        self.service.roll_election(self.conv.id, {}, rng=random.Random(17))
+        self.assertEqual(sum(self.conv.seats.values()), SEED_TOTAL_SEATS)
+        self.assertTrue(self.conv.has_election)
 
-    def test_empty_roll_does_not_wipe_the_previous_one(self):
-        # Кнопка, нажатая по ошибке, не должна стирать сыгранные выборы —
-        # для этого есть отдельный сброс с подтверждением.
+    def test_no_districts_is_refused(self):
+        empty = ParlamentService(Path(self._dir.name) / "без-округов.parlament.json")
+        empty.bootstrap()
+        empty.project.districts.clear()
+        conv = empty.project.active_convocation
+        empty.create_party(name="Народный союз", color="#0088b0")
+        with self.assertRaises(ValidationError):
+            empty.roll_election(conv.id, {})
+
+    def test_no_parties_is_refused(self):
+        empty = ParlamentService(Path(self._dir.name) / "без-партий.parlament.json")
+        empty.bootstrap()
+        conv = empty.project.active_convocation
+        with self.assertRaises(ValidationError):
+            empty.roll_election(conv.id, {})
+
+    def test_rerolling_replaces_the_previous_result(self):
+        # Повторный розыгрыш — это новый результат целиком, а не добавка к
+        # старому: даже без штрафов и поддержки он переписывает прошлый.
         self.give_support(self.a, 4)
         self.service.roll_election(self.conv.id, {}, rng=random.Random(21))
-        before = dict(self.conv.seats)
-        rolls_before = dict(self.conv.rolls)
+        before = dict(self.conv.rolls)
 
-        self.give_support(self.a, 0)          # поддержки больше нет
-        with self.assertRaises(ValidationError):
-            self.service.roll_election(self.conv.id, {}, rng=random.Random(22))
-
-        self.assertEqual(self.conv.seats, before)
-        self.assertEqual(self.conv.rolls, rolls_before)
+        self.service.roll_election(self.conv.id, {}, rng=random.Random(22))
+        self.assertNotEqual(self.conv.rolls, before)
+        self.assertEqual(sum(self.conv.seats.values()), SEED_TOTAL_SEATS)
 
     def test_clearing_wipes_the_rolls_too(self):
         self.give_support(self.a, 4)
@@ -618,14 +652,17 @@ class TestElectionAndManualSeatsDoNotMix(ElectionTestCase):
     def test_setting_seats_by_hand_is_refused(self):
         # Иначе зал разошёлся бы с картой: округа остались бы покрашены и
         # расписаны по партиям, а число мест в зале — уже другое.
+        before = dict(self.conv.seats)
         with self.assertRaises(ValidationError):
             self.service.set_seats(self.conv.id, self.b.id, 5)
-        self.assertEqual(self.conv.seats, {self.a.id: self.district.seats})
+        self.assertEqual(self.conv.seats, before)
 
     def test_resetting_seats_is_refused(self):
         with self.assertRaises(ValidationError):
             self.service.reset_seats(self.conv.id)
-        self.assertEqual(sum(self.conv.seats.values()), self.district.seats)
+        # Бросают все партии во всех округах — палата всегда набирается
+        # целиком, вне зависимости от того, где расставлена поддержка.
+        self.assertEqual(sum(self.conv.seats.values()), SEED_TOTAL_SEATS)
 
     def test_after_clearing_the_election_hands_are_free_again(self):
         self.service.clear_election(self.conv.id)
@@ -634,20 +671,28 @@ class TestElectionAndManualSeatsDoNotMix(ElectionTestCase):
 
 
 class TestEveryoneRolledZero(ElectionTestCase):
-    """Штрафы увели всех в ноль: голосов нет, но выборы состоялись."""
+    """Штрафы увели всех в ноль: в округе голосов нет, но выборы состоялись.
+
+    Раньше округ можно было обнулить, обнулив единственную участвующую
+    партию — теперь бросают все, так что обнулить округ целиком можно,
+    только дав штраф -20 (больше максимума броска) каждой партии.
+    """
 
     def setUp(self):
         super().setUp()
         self.district = self.by_name["Судбригг"]
+        penalty = {"modifier": -20}
         self.service.roll_election(
             self.conv.id,
-            {self.district.id: {self.a.id: {"modifier": -20}}},
+            {self.district.id: {self.a.id: penalty, self.b.id: penalty,
+                                self.c.id: penalty}},
             rng=random.Random(43))
 
     def test_the_roll_is_kept_for_the_record(self):
         self.assertEqual(self.conv.rolls[self.district.id][self.a.id].total, 0.0)
-        self.assertEqual(self.conv.votes, {})
-        self.assertEqual(self.conv.seats, {})
+        self.assertNotIn(self.district.id, self.conv.votes)
+        self.assertEqual(self.service.district_allocation(self.conv.id)
+                         .get(self.district.id, {}), {})
 
     def test_it_still_counts_as_an_election(self):
         # Иначе программа предложила бы набрать места руками поверх уже
@@ -657,7 +702,7 @@ class TestEveryoneRolledZero(ElectionTestCase):
             self.service.set_seats(self.conv.id, self.a.id, 2)
 
     def test_nobody_wins_the_district(self):
-        self.assertEqual(self.service.district_winners(self.conv.id), {})
+        self.assertNotIn(self.district.id, self.service.district_winners(self.conv.id))
         self.assertEqual(self.service.district_shares(self.conv.id, self.district.id), {})
 
 
@@ -680,14 +725,17 @@ class TestDeletingAParty(ElectionTestCase):
         self.assertEqual(self.settlement.support, {self.b.id: SETTLEMENT_SUPPORT})
 
     def test_it_leaves_the_rolled_districts(self):
+        # Бросают все партии, включая ту, что без ставок (self.c) — она
+        # остаётся в разборе округа и после удаления соседей.
         self.service.set_support(self.district.id, self.settlement.id, self.a.id, 3)
         self.service.set_support(self.district.id, self.settlement.id, self.b.id, 3)
         self.service.roll_election(self.conv.id, {}, rng=random.Random(31))
-        self.assertEqual(set(self.conv.rolls[self.district.id]), {self.a.id, self.b.id})
+        self.assertEqual(set(self.conv.rolls[self.district.id]),
+                         {self.a.id, self.b.id, self.c.id})
 
         self.service.delete_party(self.a.id)
-        self.assertEqual(set(self.conv.rolls[self.district.id]), {self.b.id})
-        self.assertNotIn(self.a.id, self.conv.votes[self.district.id])
+        self.assertEqual(set(self.conv.rolls[self.district.id]), {self.b.id, self.c.id})
+        self.assertNotIn(self.a.id, self.conv.votes.get(self.district.id, {}))
 
     def test_the_district_is_shared_out_again(self):
         # Иначе места ушедшей партии просто пропали бы, а округ остался бы
@@ -696,27 +744,42 @@ class TestDeletingAParty(ElectionTestCase):
         self.service.set_support(self.district.id, self.settlement.id, self.b.id, 3)
         self.service.roll_election(self.conv.id, {}, rng=random.Random(33))
         self.service.delete_party(self.a.id)
-        self.assertEqual(sum(self.conv.seats.values()), self.district.seats)
-        self.assertEqual(self.conv.seats, {self.b.id: self.district.seats})
+        # Бросают все партии во всех округах — палата набирается целиком, а
+        # не только этим округом; здесь проверяем, что сам округ по-прежнему
+        # полностью разделён и что a среди претендентов больше нет.
+        allocation = self.service.district_allocation(self.conv.id)[self.district.id]
+        self.assertEqual(sum(allocation.values()), self.district.seats)
+        self.assertNotIn(self.a.id, allocation)
+        self.assertEqual(sum(self.conv.seats.values()), SEED_TOTAL_SEATS)
 
-    def test_it_leaves_a_district_where_everyone_rolled_zero(self):
-        # Голосов в таком округе нет, но разбор хранится — партия осталась бы
-        # в нём призраком, которого уже нет в справочнике.
+    def test_deleting_a_party_removes_only_its_own_roll(self):
+        # У партии с одним лишь штрафом всё равно есть свой бросок в разборе
+        # округа, даже если итог ушёл в ноль. Удаление партии стирает именно
+        # её запись — другие партии в этом же округе остаются как были.
         self.service.roll_election(
             self.conv.id, {self.district.id: {self.a.id: {"modifier": -20}}},
             rng=random.Random(37))
         self.assertIn(self.a.id, self.conv.rolls[self.district.id])
 
         self.service.delete_party(self.a.id)
-        self.assertEqual(self.conv.rolls, {})
-        self.assertFalse(self.conv.has_election)
+        self.assertNotIn(self.a.id, self.conv.rolls[self.district.id])
+        self.assertIn(self.b.id, self.conv.rolls[self.district.id])
 
-    def test_deleting_the_last_party_clears_the_election(self):
+    def test_deleting_every_party_clears_the_election(self):
+        # Пока остаётся хоть одна партия, она бросает кубик во всех округах,
+        # и созыв не пустеет. Обнуляется он только когда партий не осталось.
         self.service.set_support(self.district.id, self.settlement.id, self.a.id, 4)
         self.service.roll_election(self.conv.id, {}, rng=random.Random(35))
+        self.assertTrue(self.conv.has_election)
+
         self.service.delete_party(self.a.id)
+        self.service.delete_party(self.b.id)
+        self.assertTrue(self.conv.has_election)
+
+        self.service.delete_party(self.c.id)
         self.assertEqual(self.conv.seats, {})
         self.assertEqual(self.conv.votes, {})
+        self.assertEqual(self.conv.rolls, {})
         self.assertFalse(self.conv.has_election)
 
     def test_survives_restart(self):
@@ -890,11 +953,14 @@ class TestSupportImport(ElectionTestCase):
         lines = [line for line in data.splitlines() if line.strip()]
         places = sum(len(d.settlements) for d in self.service.project.districts)
         cities = len(self.service.project.cities)
-        self.assertEqual(len(lines), 1 + places + cities)
-        self.assertIn("Населённый пункт", lines[0])
+        help_lines = len(_HELP_LINES)
+        self.assertEqual(len(lines), help_lines + 1 + places + cities)
+        self.assertIn("Населённый пункт", lines[help_lines])
         self.assertIn("Судбригг,Судурей", data)
-        # Города — по одной строке на метрополию, не на каждый её округ.
-        self.assertIn("Гаффинсвик,Гаффинсвик", data)
+        # Города — по одной строке на метрополию, не на каждый её округ, и
+        # без «населённого пункта» с тем же именем — это не отдельное село.
+        self.assertIn("Гаффинсвик,,", data)
+        self.assertNotIn("Гаффинсвик,Гаффинсвик", data)
         self.assertNotIn("Гаффинсвик центр,", data)
         self.assertNotIn("Гаффинсвик порт,", data)
 

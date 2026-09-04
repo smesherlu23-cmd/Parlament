@@ -23,7 +23,6 @@ from __future__ import annotations
 import flet as ft
 
 from .. import district_seed
-from ..elections import CITY_SUPPORT, SETTLEMENT_SUPPORT
 from ..service import ValidationError
 from ..store import StoreError
 from . import theme
@@ -74,17 +73,8 @@ class SupportView:
 
         return ft.Column([
             ft.Container(
-                padding=ft.Padding.only(left=28, right=28, top=18, bottom=6),
-                content=ft.Text(
-                    f"{SETTLEMENT_SUPPORT} очков на населённый пункт, "
-                    f"{CITY_SUPPORT} на город — общих на все его округа · "
-                    f"модификатор — очки округа, делённые на число пунктов",
-                    size=theme.fs(13), color=theme.NEUTRAL_700,
-                ),
-            ),
-            ft.Container(
                 expand=True,
-                padding=ft.Padding.only(left=28, right=28, bottom=18),
+                padding=ft.Padding.only(left=28, right=28, top=18, bottom=18),
                 # Две прокрутки: вниз по округам и вбок — при десяти партиях
                 # строка пункта шире окна, и без этого правые столбцы
                 # недостижимы.

@@ -550,11 +550,19 @@ class ParlamentService:
                           передаётся: она считается из очков в населённых
                           пунктах.
 
-        Участвуют только партии, у которых в округе есть хоть что-то — очки
-        поддержки или модификатор. Иначе каждая партия автоматически лезла
-        бы в каждый округ, включая те, где её нет.
+        В розыгрыше участвуют все партии во всех округах — у каждой свой
+        бросок 1–10, а поддержка и модификатор просто прибавляются к нему.
+        Партия без поддержки и без модификатора идёт наравне с остальными,
+        на одном голом броске: у неё просто нет прибавки.
         """
         conv = self._require_convocation(convocation_id)
+        # Нечего разыгрывать не по нехватке модификаторов (их и не может не
+        # хватать — участвуют все), а только если разыгрывать физически
+        # некого или негде.
+        if not self.project.districts:
+            raise ValidationError("В проекте нет округов — разыгрывать нечего.")
+        if not self.project.parties:
+            raise ValidationError("В проекте нет партий — разыгрывать некого.")
         modifiers = modifiers or {}
         generator = rng or random.Random()
 
@@ -578,25 +586,12 @@ class ParlamentService:
                 support = elections.support_modifier(
                     self.project.district_support(district, party.id), settlements)
 
-                if not (support or modifier):
-                    continue
                 district_rolls[party.id] = elections.PartyRoll(
                     roll=elections.roll_dice(generator),
                     support=support, modifier=modifier,
                 )
 
-            if district_rolls:
-                rolls[district.id] = district_rolls
-
-        if not rolls:
-            # Разыгрывать нечего. Молча записать пустой результат нельзя: это
-            # стёрло бы прошлые выборы созыва, а пользователь всего лишь
-            # нажал кнопку, ничего не выставив. Для сброса есть отдельная
-            # операция, и она спрашивает подтверждение.
-            raise ValidationError(
-                "Ни в одном округе нет ни поддержки, ни модификаторов — "
-                "разыгрывать нечего."
-            )
+            rolls[district.id] = district_rolls
 
         conv.rolls = rolls
         conv.votes = {district_id: elections.weights(per_party)

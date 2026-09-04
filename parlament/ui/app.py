@@ -772,7 +772,7 @@ class ParlamentApp:
             district, rows, shares, lambda _e: self.close_dialog()))
 
     def export_map_png(self) -> None:
-        """Сохраняет карту с раскрашенными округами картинкой."""
+        """Открывает диалог экспорта карты — тот же, что и у схемы зала."""
         conv = self.selected
         winners = self.service.district_winners(conv.id)
         colors = {p.id: p.color for p in self.parties}
@@ -790,20 +790,36 @@ class ParlamentApp:
              for p in self.parties if conv.seats.get(p.id, 0) or won.get(p.id, 0)),
             key=lambda row: (row[3], row[2]), reverse=True,
         )
+        background = map_image_path(self.service.path.parent)
 
-        async def save() -> None:
-            data = render_map_png(shapes, title=conv.name, legend=legend,
-                                  background=map_image_path(self.service.path.parent))
+        async def confirm(settings: dict) -> None:
+            self.close_dialog()
+            data = render_map_png(
+                shapes, width=settings["width"],
+                title=conv.name if settings["with_title"] else None,
+                legend=legend if settings["with_legend"] else None,
+                background=background,
+            )
+
+            file_name = (settings["file_name"] or "").strip() or suggest_file_name(
+                conv.name, prefix="Карта")
+            if not file_name.lower().endswith(".png"):
+                file_name += ".png"
+
             saved = await self.file_picker.save_file(
                 dialog_title="Экспорт карты в PNG",
-                file_name=suggest_file_name(conv.name, prefix="Карта"),
+                file_name=file_name,
                 allowed_extensions=["png"],
                 src_bytes=data,
             )
             if saved:
                 self.toast("Карта сохранена.")
 
-        self.page.run_task(save)
+        self.page.show_dialog(dialogs.map_export_dialog(
+            conv.name, shapes, legend, background,
+            lambda settings: self.page.run_task(confirm, settings),
+            lambda _e: self.close_dialog(),
+        ))
 
     def load_support_file(self) -> None:
         """Загружает таблицу с населёнными пунктами и очками поддержки."""
@@ -823,21 +839,21 @@ class ParlamentApp:
                 self.toast(f"Не удалось прочитать файл: {error}", error=True)
                 return
 
-            touched = 0
             if result.rows or result.city_rows:
                 try:
-                    touched = self.service.import_support_table(
-                        result.rows, result.city_rows)
+                    self.service.import_support_table(result.rows, result.city_rows)
                 except (ValidationError, StoreError) as error:
                     self.toast(str(error), error=True)
                     return
 
             self.render()
-            if result.warnings:
-                self.page.show_dialog(dialogs.import_report_dialog(
-                    touched, result.warnings, lambda _e: self.close_dialog()))
-            elif touched:
-                self.toast(f"Загружено населённых пунктов: {touched}.")
+            # Диалог, а не тост, и всегда — не только при замечаниях: тост
+            # исчезает сам, а тут человек видит, что именно занесено (сёла
+            # отдельно от городов), и закрывает, когда прочитал.
+            settlements = sum(len(v) for v in result.rows.values())
+            self.page.show_dialog(dialogs.import_report_dialog(
+                settlements, len(result.city_rows), result.warnings,
+                lambda _e: self.close_dialog()))
 
         self.page.run_task(pick)
 

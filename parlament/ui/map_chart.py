@@ -48,9 +48,14 @@ class MapChart(ft.Container):
     :param districts: `(code, название, мест, цвет|None)` — цвет None означает
                       округ без результата, он заливается серым.
     :param on_pick: зовётся с кодом округа по клику внутри его границ.
+    :param height: явная высота — для маленького предпросмотра в диалоге
+                   экспорта, который сам себя в ширину не растягивает.
+                   Без неё холст занимает всё место, отданное раскладкой,
+                   как на самом экране карты.
     """
 
-    def __init__(self, districts=None, on_pick=None, background: Path | None = None):
+    def __init__(self, districts=None, on_pick=None, background: Path | None = None,
+                 height: float | None = None):
         self._districts = list(districts or [])
         self._on_pick = on_pick
         self._background = background
@@ -63,7 +68,8 @@ class MapChart(ft.Container):
         self._canvas = cv.Canvas(shapes=[], expand=True, on_resize=self._on_resize)
         super().__init__(
             content=ft.GestureDetector(content=self._canvas, on_tap_down=self._on_tap),
-            expand=True,
+            expand=height is None,
+            height=height,
         )
 
     def set_districts(self, districts) -> None:
