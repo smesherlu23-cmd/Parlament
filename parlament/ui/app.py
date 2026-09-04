@@ -910,7 +910,8 @@ class ParlamentApp:
         self.service.remember_recent_color(color)
 
     def delete_party(self, party: Party) -> None:
-        usage = self.service.party_usage(party.id)
+        footprint = self.service.party_footprint(party.id)
+        usage = footprint["convocations"]
 
         def confirm(_event) -> None:
             try:
@@ -923,7 +924,8 @@ class ParlamentApp:
             self.toast(f"Партия «{party.name}» удалена.")
 
         self.page.show_dialog(dialogs.delete_party_dialog(
-            party, usage, fmt.plural, confirm, lambda _e: self.close_dialog()))
+            party, usage, fmt.plural, confirm, lambda _e: self.close_dialog(),
+            footprint=footprint))
 
     # -- созывы -------------------------------------------------------------
 

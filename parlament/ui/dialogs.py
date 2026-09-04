@@ -347,11 +347,20 @@ def _open_custom_color_dialog(page: ft.Page, current: str,
 
 
 def delete_party_dialog(party: Party, usage: list[dict], plural: Callable,
-                        on_confirm: Callable, on_cancel: Callable) -> ft.AlertDialog:
+                        on_confirm: Callable, on_cancel: Callable,
+                        footprint: dict | None = None) -> ft.AlertDialog:
+    """Подтверждение удаления партии — со всем, что уйдёт вместе с ней.
+
+    `footprint` — сводка от `ParlamentService.party_footprint`: очки
+    популярности копятся всю игру, и унести их молча было бы нечестно.
+    """
     body: list[ft.Control] = []
+    recounted = (footprint or {}).get("recountedConvocations", 0)
     if usage:
-        body.append(ft.Text("Места партии станут нераспределёнными:",
-                            size=theme.fs(14), color=theme.TEXT))
+        body.append(ft.Text(
+            "Округа этих созывов поделятся заново, уже без неё:" if recounted
+            else "Места партии станут нераспределёнными:",
+            size=theme.fs(14), color=theme.TEXT))
         body.append(ft.Container(
             bgcolor=theme.BG,
             padding=ft.Padding.symmetric(horizontal=12, vertical=10),
@@ -367,6 +376,16 @@ def delete_party_dialog(party: Party, usage: list[dict], plural: Callable,
                 ], spacing=2, tight=True),
             ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.START),
         ))
+
+    points = (footprint or {}).get("supportPoints", 0)
+    settlements = (footprint or {}).get("settlements", 0)
+    if points:
+        body.append(ft.Text(
+            f"Пропадут {points} {plural(points, ['очко', 'очка', 'очков'])} "
+            f"популярности в {settlements} "
+            f"{plural(settlements, ['населённом пункте', 'населённых пунктах', 'населённых пунктах'])} "
+            f"— их запас вернётся другим партиям.",
+            size=theme.fs(13), color=theme.NEUTRAL_700))
 
     return _shell(
         f"Удалить «{party.name}»?",

@@ -988,6 +988,41 @@ class TestSeatsAfterElection(AppTestCase):
         self.assertFalse(self.app.manual_seats)
 
 
+class TestDeletePartyWarning(AppTestCase):
+    """Перед удалением партии видно, что уйдёт вместе с ней."""
+
+    def setUp(self):
+        super().setUp()
+        self.add_parties(2)
+        self.party = self.app.parties[0]
+        district = self.service.project.districts[0]
+        settlement = self.service.add_settlement(district.id, "Гавань")
+        self.service.set_support(district.id, settlement.id, self.party.id, 4)
+
+    def test_support_points_are_named(self):
+        # Очки копятся всю игру: унести их молча было бы нечестно.
+        self.app.delete_party(self.party)
+        said = " ".join(texts(self.page.dialog))
+        self.assertIn("4 очка", said)
+        self.assertIn("населённом пункте", said)
+
+    def test_election_convocations_are_described_as_re_split(self):
+        self.app.show_elections()
+        self.app.apply_election()
+        self.app.show_parliament()
+
+        self.app.delete_party(self.party)
+        said = " ".join(texts(self.page.dialog))
+        self.assertIn("поделятся заново", said)
+
+    def test_a_party_without_a_trace_asks_plainly(self):
+        clean = self.app.parties[1]
+        self.app.delete_party(clean)
+        said = " ".join(texts(self.page.dialog))
+        self.assertIn(clean.name, said)
+        self.assertNotIn("очк", said)
+
+
 class TestArchivedConvocationIsProtected(AppTestCase):
     """Историю нельзя переписать в обход «Править состав»."""
 

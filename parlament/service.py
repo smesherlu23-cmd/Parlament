@@ -146,6 +146,33 @@ class ParlamentService:
             if c.seats.get(party_id, 0) > 0
         ]
 
+    def party_footprint(self, party_id: str) -> dict:
+        """Что пропадёт вместе с партией — для предупреждения перед удалением.
+
+        Мест в созывах мало: за партией стоят ещё очки популярности, копившиеся
+        всю игру, и её доля в разыгранных округах. Уносить это молча нельзя.
+        """
+        self._require_party(party_id)
+        points = settlements = 0
+        for district in self.project.districts:
+            for settlement in district.settlements:
+                value = settlement.support.get(party_id, 0)
+                if value:
+                    points += value
+                    settlements += 1
+        rolled = sum(1 for conv in self.project.convocations
+                     for per in conv.rolls.values() if party_id in per)
+        return {
+            "convocations": self.party_usage(party_id),
+            "supportPoints": points,
+            "settlements": settlements,
+            "rolledDistricts": rolled,
+            "recountedConvocations": sum(
+                1 for conv in self.project.convocations
+                if conv.has_election and any(party_id in per for per in conv.rolls.values())
+            ),
+        }
+
     # -- распределение мест -------------------------------------------------
 
     def set_seats(self, convocation_id: str, party_id: str, seats: int) -> Convocation:
