@@ -1098,17 +1098,21 @@ class TestSupportScreen(AppTestCase):
         self.app.show_support()
 
     def field_for(self, settlement, party_index):
-        view = self.app.body.content
         return find(self.app.body, lambda c: isinstance(c, ft.TextField)
                     and isinstance(c.data, tuple) and len(c.data) == 4
                     and c.data[1] == settlement.id
                     and c.data[2] == self.app.parties[party_index].id)
 
-    def test_district_opens_and_offers_to_add_a_settlement(self):
+    def test_district_opens_by_a_click_and_offers_to_add_a_settlement(self):
+        # Округ раскрывается нажатием на его строку — до этого кнопки нет.
+        self.assertIsNone(find(self.app.body, lambda c: isinstance(c, ft.Button)
+                               and c.content == "+ Населённый пункт"))
         head = find(self.app.body, lambda c: isinstance(c, ft.Container)
-                    and getattr(c, "on_click", None) and c.data is None)
-        self.app.support_opened.add(self.district.id)
-        self.app.render()
+                    and getattr(c, "on_click", None) and c.ink)
+        self.assertIsNotNone(head)
+        head.on_click(None)
+
+        self.assertIn(self.district.id, self.app.support_opened)
         self.assertIsNotNone(find(self.app.body, lambda c: isinstance(c, ft.Button)
                                   and c.content == "+ Населённый пункт"))
 

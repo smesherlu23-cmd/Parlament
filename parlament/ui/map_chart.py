@@ -31,6 +31,7 @@ from .mount import push
 #: туда программа и так пишет, права администратора не нужны.
 MAP_FILE_NAMES = ("map.png", "map.jpg", "map.jpeg", "map.webp")
 
+
 def map_image_path(project_dir: Path | None = None) -> Path | None:
     """Необязательная подложка под границами округов."""
     if project_dir is None:

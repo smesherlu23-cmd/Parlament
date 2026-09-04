@@ -11,8 +11,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import flet as ft
 
 from .. import model
@@ -21,7 +19,7 @@ from ..service import ParlamentService, ValidationError
 from ..store import StoreError
 from . import dialogs, format as fmt, theme
 from .mount import push
-from .export import LegendEntry, RESOLUTIONS, render_png, suggest_file_name
+from .export import LegendEntry, render_png, suggest_file_name
 from .elections_view import ElectionsView
 from .map_chart import map_image_path
 from .map_export import render_map_png
@@ -225,7 +223,6 @@ class ParlamentApp:
                                      disabled=not usable),
             ]
         else:
-            has_parties = bool(self.parties)
             archive_view = self.selected.is_fixed and not self.is_editable
 
             left = [
@@ -731,6 +728,7 @@ class ParlamentApp:
     def apply_election(self) -> None:
         """Разыгрывает выборы и уводит на раскрашенную карту.
 
+        Созыв из истории не переигрывается: для этого есть «Править состав».
         Пустой розыгрыш сервис отклоняет сам, не тронув прошлый результат:
         нажатая по ошибке кнопка не должна стирать уже сыгранные выборы.
         """

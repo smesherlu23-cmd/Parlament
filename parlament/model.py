@@ -277,16 +277,17 @@ class Project:
     districts: list[District] = field(default_factory=list)
 
     @staticmethod
-    def empty(total_seats: int | None = None) -> "Project":
+    def empty() -> "Project":
         """Новый проект — округа с карты, один пустой созыв, партий ещё нет.
 
-        Общее число мест по умолчанию берётся не из константы, а из суммы
-        округов: карта — источник истины, и разъехаться эти числа не должны.
+        Общее число мест берётся не из константы, а из суммы округов: карта —
+        источник истины, и разъехаться эти числа не должны. Задать его извне
+        нельзя: при следующем открытии файла `sync_with_map` всё равно
+        пересчитает его по округам.
         """
         districts = default_districts()
         return Project(
-            total_seats=total_seats if total_seats is not None
-                        else sum(d.seats for d in districts),
+            total_seats=sum(d.seats for d in districts),
             parties=[],
             districts=districts,
             convocations=[
