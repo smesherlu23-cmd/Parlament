@@ -133,9 +133,6 @@ SETTLEMENT_SUPPORT = 6
 #: больше: город многолюднее деревни, и делить в нём есть что.
 CITY_SUPPORT = 12
 
-#: Прибавка за потраченное на агитацию действие.
-AGITATION_BONUS = 1
-
 
 @dataclass(frozen=True)
 class PartyRoll:
@@ -150,9 +147,10 @@ class PartyRoll:
     #: Средняя поддержка по НП округа: сумма очков партии, делённая на число
     #: населённых пунктов. Дробная величина — так и задумано.
     support: float = 0.0
-    #: Свободный бонус за дебаты; отрицательный — штраф.
-    debate: float = 0.0
-    agitation: bool = False
+    #: Свободный модификатор, который выставляет ведущий руками — любое
+    #: число, отрицательное действует как штраф. Причина не задана нарочно:
+    #: это может быть что угодно по ходу партии, не только дебаты.
+    modifier: float = 0.0
 
     @property
     def total(self) -> float:
@@ -162,12 +160,11 @@ class PartyRoll:
         модификаторы способны увести сумму в минус, но отрицательный «вес»
         сломал бы пропорцию — он вычитал бы голоса у остальных.
         """
-        bonus = AGITATION_BONUS if self.agitation else 0
-        return max(0.0, self.roll + self.support + self.debate + bonus)
+        return max(0.0, self.roll + self.support + self.modifier)
 
     def to_dict(self) -> dict:
         return {"roll": self.roll, "support": self.support,
-                "debate": self.debate, "agitation": self.agitation}
+                "modifier": self.modifier}
 
     @staticmethod
     def from_dict(raw: dict) -> "PartyRoll":
@@ -179,8 +176,10 @@ class PartyRoll:
         return PartyRoll(
             roll=int(number(raw.get("roll"), 0)),
             support=number(raw.get("support"), 0.0),
-            debate=number(raw.get("debate"), 0.0),
-            agitation=bool(raw.get("agitation")),
+            # Старые файлы хранили это же поле под именем "debate" (раньше
+            # оно было привязано конкретно к дебатам) — читаем его как
+            # запасной вариант, чтобы прежние сохранения не потеряли данные.
+            modifier=number(raw.get("modifier", raw.get("debate")), 0.0),
         )
 
 

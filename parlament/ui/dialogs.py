@@ -476,23 +476,21 @@ def district_dialog(district, rows: list[tuple], shares: dict[str, float],
 
 
 def _roll_breakdown(roll) -> str:
-    """«4 + 2,5 − 1 + 1 = 6,5» — из чего сложился вес партии."""
+    """«4 + 2,5 − 1 = 5,5» — из чего сложился вес партии."""
     if roll is None:
         return "—"
     parts = [str(roll.roll)]
     if roll.support:
         parts.append(f"+ {roll.support:.1f}".replace(".", ","))
-    if roll.debate:
-        sign = "+" if roll.debate > 0 else "−"
-        parts.append(f"{sign} {abs(roll.debate):g}".replace(".", ","))
-    if roll.agitation:
-        parts.append("+ 1")
+    if roll.modifier:
+        sign = "+" if roll.modifier > 0 else "−"
+        parts.append(f"{sign} {abs(roll.modifier):g}".replace(".", ","))
     total = f"{roll.total:.1f}".replace(".", ",")
     line = f"{' '.join(parts)} = {total}"
     # Штрафы могли увести сумму в минус, а вес ниже нуля не бывает: иначе
     # партия вычитала бы голоса у остальных. Без оговорки строка выглядела
     # бы арифметической ошибкой.
-    if roll.roll + roll.support + roll.debate + (1 if roll.agitation else 0) < 0:
+    if roll.roll + roll.support + roll.modifier < 0:
         line += " (не ниже нуля)"
     return line
 

@@ -13,10 +13,9 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from ..district_geometry import DISTRICT_CENTRES, DISTRICT_SHAPES, MAP_ASPECT
+from ..district_geometry import DISTRICT_SHAPES, MAP_ASPECT
 from . import theme
 from .export import _font  # общий подбор шрифта: тот же Source Serif, что в окне
-from .map_label import MIN_LABEL_SIZE, label_size
 
 _REGULAR = "SourceSerif4-Regular.ttf"
 _SEMIBOLD = "SourceSerif4-SemiBold.ttf"
@@ -59,22 +58,6 @@ def render_map_png(districts, width: int = 1920, title: str | None = None,
             points = [(x * width, title_height + y * map_height) for x, y in poly]
             draw.polygon(points, fill=fill, outline=_BORDER)
 
-    base = max(11, round(width / 95))
-    for code, _name, seats, color in districts:
-        centre = DISTRICT_CENTRES.get(code)
-        if centre is None:
-            continue
-        # Тот же расчёт, что и на экране: цифра не крупнее самого округа,
-        # иначе городские округа накрывают подписями соседей.
-        text = str(seats)
-        size = label_size(code, base, width, text)
-        if size < MIN_LABEL_SIZE:
-            continue
-        cx = centre[0] * width
-        cy = title_height + centre[1] * map_height
-        draw.text((cx, cy), text, font=_font(_SEMIBOLD, round(size)),
-                  fill=_readable_on(color or theme.EMPTY_SEAT), anchor="mm")
-
     if legend:
         _draw_legend(draw, width, title_height + map_height, legend)
 
@@ -115,11 +98,3 @@ def _draw_legend(draw: ImageDraw.ImageDraw, width: int, top: int, legend) -> Non
                   f"{districts} окр.   {seats} мест",
                   font=font, fill=theme.NEUTRAL_700, anchor="rm")
         y += line
-
-
-def _readable_on(background: str) -> str:
-    try:
-        r, g, b = (int(background[i:i + 2], 16) for i in (1, 3, 5))
-    except (ValueError, IndexError):
-        return theme.TEXT
-    return theme.TEXT if (r * 299 + g * 587 + b * 114) / 1000 > 150 else "#ffffff"

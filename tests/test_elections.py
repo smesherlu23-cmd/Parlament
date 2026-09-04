@@ -106,26 +106,22 @@ class TestRollMechanic(unittest.TestCase):
         # По уточнению заказчика: «сколько поддержки — столько и бонус».
         self.assertEqual(PartyRoll(roll=4, support=3.0).total, 7.0)
 
-    def test_debate_bonus_can_be_any_number(self):
-        self.assertEqual(PartyRoll(roll=5, debate=4).total, 9.0)
-        self.assertEqual(PartyRoll(roll=5, debate=-3).total, 2.0)
-
-    def test_agitation_adds_one(self):
-        self.assertEqual(PartyRoll(roll=5, agitation=True).total, 6.0)
-        self.assertEqual(PartyRoll(roll=5, agitation=False).total, 5.0)
+    def test_modifier_can_be_any_number(self):
+        self.assertEqual(PartyRoll(roll=5, modifier=4).total, 9.0)
+        self.assertEqual(PartyRoll(roll=5, modifier=-3).total, 2.0)
 
     def test_all_modifiers_stack(self):
         self.assertAlmostEqual(
-            PartyRoll(roll=4, support=7 / 3, debate=-2, agitation=True).total,
-            4 + 7 / 3 - 2 + 1)
+            PartyRoll(roll=4, support=7 / 3, modifier=-2).total,
+            4 + 7 / 3 - 2)
 
     def test_total_never_goes_below_zero(self):
         # Отрицательный вес вычитал бы голоса у соседей и ломал пропорцию.
-        self.assertEqual(PartyRoll(roll=1, debate=-9).total, 0.0)
+        self.assertEqual(PartyRoll(roll=1, modifier=-9).total, 0.0)
         self.assertEqual(PartyRoll(roll=2, support=-5).total, 0.0)
 
     def test_party_at_zero_gets_no_votes(self):
-        rolls = {"a": PartyRoll(roll=6), "b": PartyRoll(roll=1, debate=-5)}
+        rolls = {"a": PartyRoll(roll=6), "b": PartyRoll(roll=1, modifier=-5)}
         self.assertEqual(set(weights(rolls)), {"a"})
         self.assertEqual(shares(rolls), {"a": 100.0})
 
@@ -133,8 +129,7 @@ class TestRollMechanic(unittest.TestCase):
         rng = random.Random(7)
         for _ in range(200):
             rolls = {f"p{i}": PartyRoll(roll=roll_dice(rng), support=rng.random() * 4,
-                                        debate=rng.randint(-3, 3),
-                                        agitation=bool(rng.getrandbits(1)))
+                                        modifier=rng.randint(-3, 3))
                      for i in range(rng.randint(2, 6))}
             total = sum(shares(rolls).values())
             if total:
@@ -150,8 +145,15 @@ class TestRollMechanic(unittest.TestCase):
         self.assertEqual(sum(seats.values()), 9)
 
     def test_roll_survives_a_round_trip(self):
-        original = PartyRoll(roll=6, support=2.5, debate=-1, agitation=True)
+        original = PartyRoll(roll=6, support=2.5, modifier=-1)
         self.assertEqual(PartyRoll.from_dict(original.to_dict()), original)
+
+    def test_old_files_still_load_the_modifier_under_its_old_name(self):
+        # Раньше поле называлось "debate" — тем же значением ещё не
+        # перезаписанные старые файлы не должны обнулиться.
+        self.assertEqual(
+            PartyRoll.from_dict({"roll": 5, "support": 0, "debate": 3}),
+            PartyRoll(roll=5, support=0, modifier=3))
 
     def test_broken_stored_roll_does_not_crash(self):
         # Файл проекта правится руками — мусор в полях не должен ронять загрузку.
@@ -295,9 +297,9 @@ class TestElectionResults(ElectionTestCase):
         # в новый розыгрыш никто не пошёл, обнуляются.
         district = self.only_party_here("Судбригг", self.a)
         self.service.roll_election(
-            self.conv.id, {district.id: {self.a.id: {"agitation": True}},
+            self.conv.id, {district.id: {self.a.id: {"modifier": 1}},
                            self.by_name["Гаффинсвик центр"].id:
-                               {self.b.id: {"agitation": True}}},
+                               {self.b.id: {"modifier": 1}}},
             rng=random.Random(6))
         self.assertEqual(set(self.conv.seats), {self.a.id, self.b.id})
 
@@ -306,8 +308,8 @@ class TestElectionResults(ElectionTestCase):
 
     def test_never_exceeds_the_parliament(self):
         # Даже если разыграть все округа, сумма ровно равна размеру палаты.
-        setup = {d.id: {self.a.id: {"agitation": True},
-                        self.b.id: {"debate": 2}}
+        setup = {d.id: {self.a.id: {"modifier": 1},
+                        self.b.id: {"modifier": 2}}
                  for d in self.service.project.districts}
         self.service.roll_election(self.conv.id, setup, rng=random.Random(8))
         self.assertEqual(sum(self.conv.seats.values()), SEED_TOTAL_SEATS)
@@ -323,7 +325,7 @@ class TestElectionResults(ElectionTestCase):
     def test_unknown_district_is_rejected(self):
         with self.assertRaises(ValidationError):
             self.service.roll_election(self.conv.id,
-                                       {"нет-такого": {self.a.id: {"debate": 1}}})
+                                       {"нет-такого": {self.a.id: {"modifier": 1}}})
 
 
 
@@ -516,7 +518,7 @@ class TestRollElection(ElectionTestCase):
         # Иначе каждая партия лезла бы в каждый округ, включая чужие.
         self.give_support(self.a, 4)
         self.service.roll_election(self.conv.id,
-                                   {self.district.id: {self.b.id: {"debate": 1}}},
+                                   {self.district.id: {self.b.id: {"modifier": 1}}},
                                    rng=random.Random(1))
         taking_part = set(self.conv.rolls[self.district.id])
         self.assertEqual(taking_part, {self.a.id, self.b.id})
@@ -528,26 +530,25 @@ class TestRollElection(ElectionTestCase):
         self.service.roll_election(self.conv.id, {}, rng=random.Random(2))
         self.assertEqual(self.conv.rolls[self.district.id][self.a.id].support, 2.5)
 
-    def test_debate_and_agitation_reach_the_roll(self):
+    def test_modifier_reaches_the_roll(self):
         self.service.roll_election(
             self.conv.id,
-            {self.district.id: {self.a.id: {"debate": -3, "agitation": True}}},
+            {self.district.id: {self.a.id: {"modifier": -3}}},
             rng=random.Random(5))
         roll = self.conv.rolls[self.district.id][self.a.id]
-        self.assertEqual(roll.debate, -3)
-        self.assertTrue(roll.agitation)
+        self.assertEqual(roll.modifier, -3)
 
     def test_seats_come_from_the_rolled_weights(self):
         self.give_support(self.a, 6)
         self.service.roll_election(self.conv.id,
-                                   {self.district.id: {self.b.id: {"debate": 2}}},
+                                   {self.district.id: {self.b.id: {"modifier": 2}}},
                                    rng=random.Random(7))
         self.assertEqual(sum(self.conv.seats.values()), self.district.seats)
 
     def test_shares_add_up_to_a_hundred(self):
         self.give_support(self.a, 4)
         self.service.roll_election(self.conv.id,
-                                   {self.district.id: {self.b.id: {"debate": 1}}},
+                                   {self.district.id: {self.b.id: {"modifier": 1}}},
                                    rng=random.Random(9))
         self.assertAlmostEqual(
             sum(self.service.district_shares(self.conv.id, self.district.id).values()),
@@ -598,10 +599,10 @@ class TestRollElection(ElectionTestCase):
         self.assertEqual(self.conv.rolls, {})
         self.assertEqual(self.conv.votes, {})
 
-    def test_bad_debate_bonus_is_rejected(self):
+    def test_bad_modifier_is_rejected(self):
         with self.assertRaises(ValidationError):
             self.service.roll_election(
-                self.conv.id, {self.district.id: {self.a.id: {"debate": "ой"}}})
+                self.conv.id, {self.district.id: {self.a.id: {"modifier": "ой"}}})
 
 
 class TestElectionAndManualSeatsDoNotMix(ElectionTestCase):
@@ -640,7 +641,7 @@ class TestEveryoneRolledZero(ElectionTestCase):
         self.district = self.by_name["Судбригг"]
         self.service.roll_election(
             self.conv.id,
-            {self.district.id: {self.a.id: {"debate": -20}}},
+            {self.district.id: {self.a.id: {"modifier": -20}}},
             rng=random.Random(43))
 
     def test_the_roll_is_kept_for_the_record(self):
@@ -702,7 +703,7 @@ class TestDeletingAParty(ElectionTestCase):
         # Голосов в таком округе нет, но разбор хранится — партия осталась бы
         # в нём призраком, которого уже нет в справочнике.
         self.service.roll_election(
-            self.conv.id, {self.district.id: {self.a.id: {"debate": -20}}},
+            self.conv.id, {self.district.id: {self.a.id: {"modifier": -20}}},
             rng=random.Random(37))
         self.assertIn(self.a.id, self.conv.rolls[self.district.id])
 

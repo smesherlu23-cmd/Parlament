@@ -24,7 +24,6 @@ import flet.canvas as cv
 
 from ..district_geometry import DISTRICT_SHAPES, MAP_ASPECT
 from . import theme
-from .map_label import MIN_LABEL_SIZE, label_size
 from .mount import push
 
 #: Куда можно положить необязательную подложку. Папка проекта пользователя —
@@ -51,12 +50,10 @@ class MapChart(ft.Container):
     :param on_pick: зовётся с кодом округа по клику внутри его границ.
     """
 
-    def __init__(self, districts=None, on_pick=None, background: Path | None = None,
-                 show_counts: bool = True):
+    def __init__(self, districts=None, on_pick=None, background: Path | None = None):
         self._districts = list(districts or [])
         self._on_pick = on_pick
         self._background = background
-        self._show_counts = show_counts
         self._width_px = 0.0
         self._height_px = 0.0
         #: Прямоугольник карты внутри холста: по нему считаются полигоны и
@@ -114,7 +111,6 @@ class MapChart(ft.Container):
             shapes.append(cv.Image(src=str(self._background), x=left, y=top,
                                    width=width, height=height))
 
-        base_size = max(10.0, width / 95)
         for code, name, seats, color in self._districts:
             polys = DISTRICT_SHAPES.get(code)
             if not polys:
@@ -134,26 +130,6 @@ class MapChart(ft.Container):
                     + [cv.Path.Close()],
                     paint=ft.Paint(color="#ffffff", stroke_width=1.4,
                                    style=ft.PaintingStyle.STROKE),
-                ))
-
-        if self._show_counts:
-            for code, name, seats, color in self._districts:
-                centre = _centre_of(code)
-                if centre is None:
-                    continue
-                text = str(seats)
-                size = label_size(code, base_size, width, text)
-                if size < MIN_LABEL_SIZE:
-                    continue
-                cx = left + centre[0] * width
-                cy = top + centre[1] * height
-                fill = color or theme.EMPTY_SEAT
-                shapes.append(cv.Text(
-                    cx, cy, text,
-                    alignment=ft.Alignment.CENTER,
-                    style=ft.TextStyle(size=size,
-                                       font_family=theme.FONT_SEMIBOLD,
-                                       color=_readable_on(fill)),
                 ))
 
         self._canvas.shapes = shapes
@@ -187,12 +163,6 @@ class MapChart(ft.Container):
                     return
 
 
-def _centre_of(code: int):
-    from ..district_geometry import DISTRICT_CENTRES
-
-    return DISTRICT_CENTRES.get(code)
-
-
 def _inside(x: float, y: float, poly) -> bool:
     """Точка внутри многоугольника — трассировка луча."""
     inside = False
@@ -206,13 +176,3 @@ def _inside(x: float, y: float, poly) -> bool:
                 inside = not inside
         j = i
     return inside
-
-
-def _readable_on(background: str) -> str:
-    """Чёрная или белая подпись — та, что читается на этой заливке."""
-    try:
-        r, g, b = (int(background[i:i + 2], 16) for i in (1, 3, 5))
-    except (ValueError, IndexError):
-        return theme.TEXT
-    # Формула яркости из sRGB: зелёный глаз воспринимает сильнее прочих.
-    return theme.TEXT if (r * 299 + g * 587 + b * 114) / 1000 > 150 else "#ffffff"

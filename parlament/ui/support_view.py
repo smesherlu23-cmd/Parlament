@@ -5,8 +5,9 @@
 получается модификатор: сумма очков партии в округе, делённая на число
 пунктов.
 
-Населённых пунктов в присланной карте нет, поэтому список наполняется
-здесь же — округ раскрывается, и в него добавляются пункты.
+Список пунктов берётся с карты и руками не правится — добавлять или
+убирать их здесь нельзя, только переименовать (опечатка в названии не
+безобидна: таблица поддержки сопоставляет пункты по имени) и раздать очки.
 
 Городской округ (Саттмалвик-порт, -центр...) в этом списке не появляется
 сам по себе: несколько его избирательных округов делят одну общую
@@ -141,11 +142,6 @@ class SupportView:
                 content=ft.Text("Населённых пунктов пока нет.",
                                 size=theme.fs(13), color=theme.NEUTRAL_700),
             ))
-        body.append(ft.Container(
-            padding=ft.Padding.only(top=6),
-            content=theme.ghost_button("+ Населённый пункт",
-                                       lambda _e, d=district: self._add(d)),
-        ))
 
         return ft.Column([
             head,
@@ -207,20 +203,13 @@ class SupportView:
             padding=ft.Padding.symmetric(vertical=3),
             content=ft.Row([
                 ft.Container(
-                    ft.Row([
-                        ft.Container(
-                            ft.Text(settlement.name, size=theme.fs(13),
-                                    color=theme.TEXT, no_wrap=True,
-                                    overflow=ft.TextOverflow.ELLIPSIS),
-                            expand=True, ink=True,
-                            tooltip="Переименовать",
-                            on_click=lambda _e, d=district, s=settlement:
-                                self._rename(d, s)),
-                        theme.icon_button(
-                            ft.Icons.CLOSE,
-                            lambda _e, d=district, s=settlement: self._delete(d, s),
-                            danger=True, tooltip="Убрать пункт", size=12),
-                    ], spacing=2),
+                    ft.Text(settlement.name, size=theme.fs(13),
+                            color=theme.TEXT, no_wrap=True,
+                            overflow=ft.TextOverflow.ELLIPSIS),
+                    ink=True,
+                    tooltip="Переименовать",
+                    on_click=lambda _e, d=district, s=settlement:
+                        self._rename(d, s),
                     width=_NAME_WIDTH),
                 *fields,
                 ft.Container(total, width=60),
@@ -316,23 +305,6 @@ class SupportView:
         self.app.support_opened = set(self.opened)
         self.app.render()
 
-    def _add(self, district) -> None:
-        from . import dialogs
-
-        def confirm(name: str) -> str | None:
-            try:
-                self.service.add_settlement(district.id, name)
-            except (ValidationError, StoreError) as error:
-                return str(error)
-            self.opened.add(district.id)
-            self.app.support_opened = set(self.opened)
-            self.app.close_dialog()
-            self.app.render()
-            return None
-
-        self.app.page.show_dialog(dialogs.settlement_dialog(
-            district, confirm, lambda _e: self.app.close_dialog()))
-
     def _rename(self, district, settlement) -> None:
         from . import dialogs
 
@@ -348,14 +320,6 @@ class SupportView:
         self.app.page.show_dialog(dialogs.settlement_dialog(
             district, confirm, lambda _e: self.app.close_dialog(),
             settlement=settlement))
-
-    def _delete(self, district, settlement) -> None:
-        try:
-            self.service.delete_settlement(district.id, settlement.id)
-        except (ValidationError, StoreError) as error:
-            self.app.toast(str(error), error=True)
-            return
-        self.app.render()
 
     def _on_points(self, event) -> None:
         """Пишет очки сразу: это данные игры, а не разовый ввод."""

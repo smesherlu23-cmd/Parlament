@@ -28,12 +28,10 @@ from parlament.district_seed import SEED_TOTAL_SEATS, is_city  # noqa: E402
 from parlament.elections import allocate_seats  # noqa: E402
 from parlament.district_geometry import (  # noqa: E402
     DISTRICT_CENTRES,
-    DISTRICT_LABEL_ROOM,
     DISTRICT_SHAPES,
     MAP_ASPECT,
 )
 from parlament.ui.map_export import render_map_png  # noqa: E402
-from parlament.ui.map_label import label_size  # noqa: E402
 from parlament.ui.seat_chart import compute_seats  # noqa: E402
 
 #: Пример раскладки: доли партий постоянные, а места считаются от размера
@@ -756,20 +754,13 @@ class TestMapAndElections(AppTestCase):
         return district
 
     def bonus(self, district_name: str, party_index: int, value: str):
-        """Вписывает бонус за дебаты так же, как это делает человек."""
+        """Вписывает модификатор так же, как это делает человек."""
         district = self.by_name[district_name]
-        field, _button = self.app.elections.cells[district.id][
+        field = self.app.elections.cells[district.id][
             self.app.parties[party_index].id]
         field.value = value
         field.on_change(ft.ControlEvent(control=field, name="change", data=value))
         return field
-
-    def agitate(self, district_name: str, party_index: int):
-        district = self.by_name[district_name]
-        _field, button = self.app.elections.cells[district.id][
-            self.app.parties[party_index].id]
-        button.on_click(ft.ControlEvent(control=button, name="click", data=""))
-        return button
 
     def test_map_is_reachable_from_parliament(self):
         button = find(self.body, lambda c: isinstance(c, ft.Button) and c.content == "Карта")
@@ -835,24 +826,14 @@ class TestMapAndElections(AppTestCase):
         chart._on_tap(_FakeTapEvent(cx * 1000.0, cy * (1000.0 / MAP_ASPECT)))
         self.assertIn("Судбригг", texts(self.page.dialog))
 
-    def test_agitation_toggles_and_reaches_the_roll(self):
-        self.app.show_elections()
-        button = self.agitate("Судбригг", 0)
-        self.assertEqual(button.icon_color, theme.ACCENT)
-
-        self.app.apply_election()
-        roll = self.app.selected.rolls[self.by_name["Судбригг"].id][
-            self.app.parties[0].id]
-        self.assertTrue(roll.agitation)
-
-    def test_negative_debate_bonus_is_allowed(self):
+    def test_negative_modifier_is_allowed(self):
         self.support("Судбригг", 0, 3)
         self.app.show_elections()
         self.bonus("Судбригг", 0, "-2")
         self.app.apply_election()
         self.assertEqual(
             self.app.selected.rolls[self.by_name["Судбригг"].id][
-                self.app.parties[0].id].debate, -2)
+                self.app.parties[0].id].modifier, -2)
 
     def test_letters_never_reach_the_bonus_field(self):
         self.app.show_elections()
@@ -884,14 +865,31 @@ class TestMapAndElections(AppTestCase):
         self.support("Судбригг", 0, 3)
         self.app.show_elections()
         self.bonus("Судбригг", 0, "2")
-        self.agitate("Судбригг", 0)
         self.app.apply_election()
 
         self.app.show_elections()
         district = self.by_name["Судбригг"].id
-        field, button = self.app.elections.cells[district][self.app.parties[0].id]
+        field = self.app.elections.cells[district][self.app.parties[0].id]
         self.assertEqual(field.value, "2")
-        self.assertEqual(button.icon_color, theme.ACCENT)
+
+    def test_clear_all_modifiers_empties_every_field(self):
+        self.support("Судбригг", 0, 3)
+        self.app.show_elections()
+        self.bonus("Судбригг", 0, "2")
+        self.bonus("Гаффинсвик центр", 1, "-1")
+
+        self.app.elections._clear_all()
+
+        district = self.by_name["Судбригг"].id
+        other = self.by_name["Гаффинсвик центр"].id
+        self.assertEqual(
+            self.app.elections.cells[district][self.app.parties[0].id].value, "")
+        self.assertEqual(
+            self.app.elections.cells[other][self.app.parties[1].id].value, "")
+        self.assertEqual(self.app.elections.collect(), {})
+        # Поддержка — не модификатор, кнопка её не трогает.
+        self.assertNotIn("никто не идёт",
+                         self.app.elections.previews[district].value)
 
     def test_district_dialog_shows_the_breakdown(self):
         self.support("Гаффинсвик центр", 0, 4)
@@ -928,15 +926,15 @@ class TestRollBreakdown(unittest.TestCase):
 
     def test_lists_every_modifier(self):
         self.assertEqual(
-            self.line(roll=4, support=2.5, debate=-1, agitation=True),
-            "4 + 2,5 − 1 + 1 = 6,5")
+            self.line(roll=4, support=2.5, modifier=-1),
+            "4 + 2,5 − 1 = 5,5")
 
     def test_bare_roll_has_nothing_to_add(self):
         self.assertEqual(self.line(roll=7), "7 = 7,0")
 
     def test_clamped_sum_says_so(self):
         # Иначе «3 − 9 = 0» выглядело бы арифметической ошибкой.
-        self.assertEqual(self.line(roll=3, debate=-9), "3 − 9 = 0,0 (не ниже нуля)")
+        self.assertEqual(self.line(roll=3, modifier=-9), "3 − 9 = 0,0 (не ниже нуля)")
 
     def test_nothing_rolled_is_a_dash(self):
         from parlament.ui.dialogs import _roll_breakdown
@@ -953,7 +951,7 @@ class TestElectionsPreview(AppTestCase):
         self.app.show_elections()
 
     def bonus(self, party_index: int, value: str):
-        field, _button = self.app.elections.cells[self.district.id][
+        field = self.app.elections.cells[self.district.id][
             self.app.parties[party_index].id]
         field.value = value
         field.on_change(ft.ControlEvent(control=field, name="change", data=value))
@@ -1128,32 +1126,6 @@ class TestArchivedConvocationIsProtected(AppTestCase):
         self.assertEqual(self.app.selected.id, self.archived)
 
 
-class TestMapLabels(unittest.TestCase):
-    """Цифра на округе должна помещаться в округ."""
-
-    def test_small_district_gets_a_smaller_label(self):
-        # Гаффинсвик центр (11) — городской пятачок, Северный мыс (6) —
-        # крупная область: одинаковая цифра на них не годится.
-        base, width = 20, 1600
-        self.assertLess(label_size(11, base, width, "10"),
-                        label_size(6, base, width, "6"))
-
-    def test_label_never_grows_past_the_base_size(self):
-        for code in DISTRICT_LABEL_ROOM:
-            self.assertLessEqual(label_size(code, 18, 1600, "4"), 18)
-
-    def test_label_fits_the_room_it_was_given(self):
-        # Ширина двузначного числа примерно в 1,1 раза больше его высоты;
-        # вместе с высотой оно должно уместиться в свободный кружок.
-        for code, room in DISTRICT_LABEL_ROOM.items():
-            size = label_size(code, 1000, 1600, "10")
-            self.assertLessEqual(size * 1.1, 2 * room * 1600 + 0.01,
-                                 f"округ {code}: подпись шире свободного места")
-
-    def test_unknown_district_keeps_the_base_size(self):
-        self.assertEqual(label_size(0, 14, 1600, "4"), 14)
-
-
 class TestSupportScreen(AppTestCase):
     """Экран поддержки: населённые пункты и очки популярности."""
 
@@ -1169,18 +1141,27 @@ class TestSupportScreen(AppTestCase):
                     and c.data[1] == settlement.id
                     and c.data[2] == self.app.parties[party_index].id)
 
-    def test_district_opens_by_a_click_and_offers_to_add_a_settlement(self):
-        # Округ раскрывается нажатием на его строку — до этого кнопки нет.
-        self.assertIsNone(find(self.app.body, lambda c: isinstance(c, ft.Button)
-                               and c.content == "+ Населённый пункт"))
+    def test_district_opens_by_a_click_and_shows_its_settlements(self):
+        # Округ раскрывается нажатием на его строку — до этого полей нет.
+        self.assertIsNone(self.field_for(self.district.settlements[0], 0))
         head = find(self.app.body, lambda c: isinstance(c, ft.Container)
                     and getattr(c, "on_click", None) and c.ink)
         self.assertIsNotNone(head)
         head.on_click(None)
 
         self.assertIn(self.district.id, self.app.support_opened)
-        self.assertIsNotNone(find(self.app.body, lambda c: isinstance(c, ft.Button)
-                                  and c.content == "+ Населённый пункт"))
+        self.assertIsNotNone(self.field_for(self.district.settlements[0], 0))
+
+    def test_settlements_cannot_be_added_or_deleted_from_the_screen(self):
+        # Список пунктов идёт с карты — здесь его только читают и правят
+        # очки, а не заводят и не убирают пункты руками.
+        self.app.support_opened.add(self.district.id)
+        self.app.render()
+
+        self.assertIsNone(find(self.app.body, lambda c: isinstance(c, ft.Button)
+                               and c.content == "+ Населённый пункт"))
+        self.assertIsNone(find(self.app.body, lambda c: isinstance(c, ft.IconButton)
+                               and c.tooltip == "Убрать пункт"))
 
     def test_points_are_saved_as_you_type(self):
         settlement = self.district.settlements[0]

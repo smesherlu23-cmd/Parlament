@@ -4,14 +4,15 @@
 1–10, к броску прибавляются модификаторы, и уже эти числа делятся между
 партиями пропорционально.
 
-Здесь выставляется то, что задаёт ведущий: бонус за дебаты (любое число,
-отрицательное — штраф) и потраченное на агитацию действие. Третий
+Здесь выставляется то, что задаёт ведущий: свободный модификатор — любое
+число, отрицательное действует как штраф. Причина не привязана к чему-то
+одному вроде дебатов — это может быть что угодно по ходу партии. Второй
 модификатор, поддержка, не вводится: он считается из очков в населённых
 пунктах и показан справочно.
 
 В розыгрыше участвуют только партии, у которых в округе есть хоть что-то —
-поддержка, дебаты или агитация. Иначе каждая партия автоматически лезла бы
-в каждый округ, включая те, где её нет.
+поддержка или модификатор. Иначе каждая партия автоматически лезла бы в
+каждый округ, включая те, где её нет.
 """
 
 from __future__ import annotations
@@ -35,12 +36,10 @@ class ElectionsView:
     def __init__(self, app):
         self.app = app
         self.service = app.service
-        #: `{district_id: {party_id: (поле бонуса, кнопка агитации)}}`.
-        self.cells: dict[str, dict[str, tuple]] = {}
+        #: `{district_id: {party_id: поле модификатора}}`.
+        self.cells: dict[str, dict[str, ft.TextField]] = {}
         #: Подписи с ожидаемым раскладом справа от строки.
         self.previews: dict[str, ft.Text] = {}
-        #: Какие агитации включены — кнопка сама состояния не хранит.
-        self.agitation: dict[tuple[str, str], bool] = {}
 
     # -- сборка -------------------------------------------------------------
 
@@ -69,15 +68,19 @@ class ElectionsView:
         return ft.Column([
             ft.Container(
                 padding=ft.Padding.only(left=28, right=28, top=18, bottom=6),
-                content=ft.Column([
-                    ft.Text(f"{len(self.service.project.districts)} округов · "
-                            f"{self.service.project.total_seats} мест · {conv.name}",
-                            size=theme.fs(15), font_family=theme.FONT_SEMIBOLD,
-                            color=theme.TEXT),
-                    ft.Text("В клетке — бонус за дебаты и кнопка агитации. "
-                            "Поддержка берётся из населённых пунктов.",
-                            size=theme.fs(12), color=theme.NEUTRAL_700),
-                ], spacing=3, tight=True),
+                content=ft.Row([
+                    ft.Column([
+                        ft.Text(f"{len(self.service.project.districts)} округов · "
+                                f"{self.service.project.total_seats} мест · {conv.name}",
+                                size=theme.fs(15), font_family=theme.FONT_SEMIBOLD,
+                                color=theme.TEXT),
+                        ft.Text("В клетке — модификатор, можно со знаком минус. "
+                                "Поддержка берётся из населённых пунктов.",
+                                size=theme.fs(12), color=theme.NEUTRAL_700),
+                    ], spacing=3, tight=True, expand=True),
+                    theme.ghost_button("Убрать все модификаторы",
+                                       lambda _e: self._clear_all()),
+                ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
             ),
             ft.Container(
                 expand=True,
@@ -99,7 +102,6 @@ class ElectionsView:
         Экран выборов — не только ввод с нуля: результат нередко хочется
         перебросить, поменяв одну-две правки.
         """
-        self.agitation.clear()
         self.previous: dict[str, dict[str, PartyRoll]] = conv.rolls
 
     def _header(self) -> ft.Control:
@@ -133,26 +135,19 @@ class ElectionsView:
                 width=46),
         ]
 
-        per_party: dict[str, tuple] = {}
+        per_party: dict[str, ft.TextField] = {}
         stored = self.previous.get(district.id, {})
         for party in self.app.parties:
             was = stored.get(party.id)
             bonus = theme.text_field(
-                self._format_bonus(was.debate) if was and was.debate else "",
+                self._format_bonus(was.modifier) if was and was.modifier else "",
                 width=_BONUS_WIDTH, text_align=ft.TextAlign.RIGHT)
             bonus.data = (district.id, party.id)
             bonus.on_change = self._on_bonus
-            bonus.tooltip = "Бонус за дебаты, можно со знаком минус"
+            bonus.tooltip = "Модификатор, можно со знаком минус"
 
-            active = bool(was and was.agitation)
-            self.agitation[(district.id, party.id)] = active
-            button = self._agitation_button(district.id, party.id, active)
-
-            per_party[party.id] = (bonus, button)
-            cells.append(ft.Container(
-                ft.Row([bonus, button], spacing=2,
-                       vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                width=_CELL_WIDTH))
+            per_party[party.id] = bonus
+            cells.append(ft.Container(bonus, width=_CELL_WIDTH))
 
         preview = ft.Text(size=theme.fs(12), color=theme.NEUTRAL_700, no_wrap=True,
                           overflow=ft.TextOverflow.ELLIPSIS)
@@ -167,16 +162,6 @@ class ElectionsView:
             content=ft.Row(cells, spacing=10,
                            vertical_alignment=ft.CrossAxisAlignment.CENTER),
         )
-
-    def _agitation_button(self, district_id: str, party_id: str,
-                          active: bool) -> ft.IconButton:
-        button = theme.icon_button(
-            ft.Icons.CAMPAIGN,
-            lambda e: self._toggle_agitation(e.control),
-            tooltip="Действие на агитацию", size=15)
-        button.data = (district_id, party_id)
-        button.icon_color = theme.ACCENT if active else theme.NEUTRAL_300
-        return button
 
     # -- ввод ---------------------------------------------------------------
 
@@ -194,13 +179,18 @@ class ElectionsView:
         district_id, _party_id = field.data
         self._refresh_preview(district_id)
 
-    def _toggle_agitation(self, button) -> None:
-        district_id, party_id = button.data
-        active = not self.agitation.get((district_id, party_id), False)
-        self.agitation[(district_id, party_id)] = active
-        button.icon_color = theme.ACCENT if active else theme.NEUTRAL_300
-        push(button)
-        self._refresh_preview(district_id)
+    def _clear_all(self) -> None:
+        """Стирает все выставленные модификаторы разом.
+
+        Само поле поддержки не трогает: оно вообще не вводится здесь, а
+        считается из очков в населённых пунктах.
+        """
+        for district_id, per_party in self.cells.items():
+            for bonus in per_party.values():
+                if bonus.value:
+                    bonus.value = ""
+                    push(bonus)
+            self._refresh_preview(district_id)
 
     def _refresh_preview(self, district_id: str, live: bool = True) -> None:
         """Показывает поддержку партий и кто вообще идёт в округе.
@@ -230,15 +220,13 @@ class ElectionsView:
         """Идёт ли партия в округе — по тому же правилу, что и `collect`.
 
         Считать «идёт» по непустому полю нельзя: вписанный ноль — это не
-        бонус, и в розыгрыш такая партия не попадёт. Предпросмотр обещал бы
-        участие, которого не будет.
+        модификатор, и в розыгрыш такая партия не попадёт. Предпросмотр
+        обещал бы участие, которого не будет.
         """
-        cell = self.cells.get(district_id, {}).get(party_id)
-        if cell is None:
+        bonus = self.cells.get(district_id, {}).get(party_id)
+        if bonus is None:
             return False
-        bonus, _button = cell
-        return bool(_to_number(bonus.value)) or self.agitation.get(
-            (district_id, party_id), False)
+        return bool(_to_number(bonus.value))
 
     # -- сбор данных --------------------------------------------------------
 
@@ -247,12 +235,10 @@ class ElectionsView:
         result: dict[str, dict[str, dict]] = {}
         for district_id, per_party in self.cells.items():
             district_setup: dict[str, dict] = {}
-            for party_id, (bonus, _button) in per_party.items():
-                debate = _to_number(bonus.value)
-                agitation = self.agitation.get((district_id, party_id), False)
-                if debate or agitation:
-                    district_setup[party_id] = {"debate": debate,
-                                                "agitation": agitation}
+            for party_id, bonus in per_party.items():
+                modifier = _to_number(bonus.value)
+                if modifier:
+                    district_setup[party_id] = {"modifier": modifier}
             if district_setup:
                 result[district_id] = district_setup
         return result

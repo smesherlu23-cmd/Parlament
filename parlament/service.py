@@ -545,14 +545,14 @@ class ParlamentService:
                       rng=None) -> Convocation:
         """Разыгрывает выборы по всем округам и пересобирает состав.
 
-        :param modifiers: `{district_id: {party_id: {"debate": число,
-                          "agitation": bool}}}` — то, что ведущий выставил
-                          руками. Поддержка сюда не передаётся: она считается
-                          из очков в населённых пунктах.
+        :param modifiers: `{district_id: {party_id: {"modifier": число}}}` —
+                          то, что ведущий выставил руками. Поддержка сюда не
+                          передаётся: она считается из очков в населённых
+                          пунктах.
 
         Участвуют только партии, у которых в округе есть хоть что-то — очки
-        поддержки, бонус за дебаты или агитация. Иначе каждая партия
-        автоматически лезла бы в каждый округ, включая те, где её нет.
+        поддержки или модификатор. Иначе каждая партия автоматически лезла
+        бы в каждый округ, включая те, где её нет.
         """
         conv = self._require_convocation(convocation_id)
         modifiers = modifiers or {}
@@ -574,16 +574,15 @@ class ParlamentService:
 
             for party in self.project.parties:
                 setup = per_district.get(party.id) or {}
-                debate = self._clean_bonus(setup.get("debate", 0))
-                agitation = bool(setup.get("agitation"))
+                modifier = self._clean_bonus(setup.get("modifier", 0))
                 support = elections.support_modifier(
                     self.project.district_support(district, party.id), settlements)
 
-                if not (support or debate or agitation):
+                if not (support or modifier):
                     continue
                 district_rolls[party.id] = elections.PartyRoll(
                     roll=elections.roll_dice(generator),
-                    support=support, debate=debate, agitation=agitation,
+                    support=support, modifier=modifier,
                 )
 
             if district_rolls:
@@ -637,17 +636,17 @@ class ParlamentService:
         return points
 
     def _clean_bonus(self, value: object) -> float:
-        """Бонус за дебаты — любое конечное число, в том числе отрицательное."""
+        """Модификатор — любое конечное число, в том числе отрицательное."""
         if isinstance(value, bool):
-            raise ValidationError("Бонус за дебаты должен быть числом.")
+            raise ValidationError("Модификатор должен быть числом.")
         try:
             number = float(value)
         except (TypeError, ValueError):
-            raise ValidationError("Бонус за дебаты должен быть числом.") from None
+            raise ValidationError("Модификатор должен быть числом.") from None
         # inf и nan проходят через float() молча, а дальше отравляют весь
         # расчёт: проценты округа становятся nan, места не раздаются.
         if number != number or number in (float("inf"), float("-inf")):
-            raise ValidationError("Бонус за дебаты должен быть обычным числом.")
+            raise ValidationError("Модификатор должен быть обычным числом.")
         return number
 
     def clear_election(self, convocation_id: str) -> Convocation:
