@@ -18,6 +18,11 @@ SCHEMA_VERSION = 2
 #: Новые проекты берут это число из самих округов, см. `Project.empty`.
 DEFAULT_TOTAL_SEATS = 147
 
+#: Запас очков популярности обычного населённого пункта. Дублируется в
+#: `elections.SETTLEMENT_SUPPORT`; здесь — чтобы модель данных не зависела
+#: от расчёта выборов.
+DEFAULT_SUPPORT = 6
+
 #: Порядковые названия созывов. Дальше двадцатого — числом («21-й состав»).
 ORDINALS = [
     "Первый", "Второй", "Третий", "Четвёртый", "Пятый",
@@ -178,17 +183,22 @@ class Settlement:
     """Населённый пункт внутри округа.
 
     Несёт очки неформальной популярности, которые игроки делят между
-    партиями (сколько всего очков на пункт — см. `elections.SETTLEMENT_SUPPORT`).
-    Из них складывается модификатор поддержки на выборах.
+    партиями. Из них складывается модификатор поддержки на выборах.
+
+    Запас очков у пунктов разный, поэтому он хранится здесь, а не берётся из
+    одной константы: в обычном селе их шесть, а городской округ сам себе
+    населённый пункт и людей в нём вдвое больше — см. `elections`.
     """
 
     id: str
     name: str
     #: `{party_id: очки}`. Партии без очков в словаре не хранятся.
     support: dict[str, int] = field(default_factory=dict)
+    #: Сколько очков всего можно раздать в этом пункте.
+    capacity: int = DEFAULT_SUPPORT
 
     def to_dict(self) -> dict:
-        return {"id": self.id, "name": self.name,
+        return {"id": self.id, "name": self.name, "capacity": self.capacity,
                 "support": {k: v for k, v in self.support.items() if v > 0}}
 
     @staticmethod
@@ -201,8 +211,12 @@ class Settlement:
                 continue
             if value > 0:
                 support[str(party_id)] = value
+        try:
+            capacity = int(raw.get("capacity") or DEFAULT_SUPPORT)
+        except (TypeError, ValueError):
+            capacity = DEFAULT_SUPPORT
         return Settlement(id=str(raw["id"]), name=str(raw.get("name", "")),
-                          support=support)
+                          support=support, capacity=max(0, capacity))
 
 
 @dataclass
@@ -368,31 +382,32 @@ class Project:
         return project
 
     def sync_with_map(self) -> None:
-        """Подтягивает названия и число мест округов из игровой карты.
+        """Подтягивает округа и их населённые пункты из игровой карты.
 
-        Округа — не пользовательские данные, а карта: их названия и места
-        задаёт игра, и переименовать округ в программе нельзя. Значит,
-        уточнение карты должно доезжать и до уже начатых проектов — иначе у
-        игрока, начавшего партию раньше, навсегда осталась бы прежняя
+        Округа — не пользовательские данные, а карта: их названия, мандаты и
+        состав сёл задаёт игра, и переименовать округ в программе нельзя.
+        Значит, уточнение карты должно доезжать и до уже начатых проектов —
+        иначе у игрока, начавшего партию раньше, навсегда осталась бы прежняя
         разметка (а по ней он ещё и раздаёт очки поддержки).
 
-        Населённые пункты и очки при этом не трогаются: они привязаны к
-        округу по идентификатору, а не по названию.
+        Розданные очки при этом не трогаются: пункт узнаётся по названию, а
+        заведённые пользователем сверх карты остаются как есть — вдруг он
+        добавил хутор, которого на карте нет.
         """
         if not self.districts:
             return          # проект начат до карты — досочинять ему нечего
 
         from .district_seed import SEED_DISTRICTS
 
-        by_code = {code: (name, seats, region)
-                   for code, name, seats, region in SEED_DISTRICTS}
+        by_code = {code: (name, seats, region, places)
+                   for code, name, seats, region, places in SEED_DISTRICTS}
         # Округа появились в программе раньше, чем номера на карте: в файлах
         # тех сборок `code` нет вовсе, а без него округ не с чем связать —
         # ни границ, ни подписи, и карта у такого проекта оставалась пустой.
         # Названия с тех пор не менялись, поэтому номер восстанавливается
         # по имени.
         by_name = {_district_key(name): code
-                   for code, name, _seats, _region in SEED_DISTRICTS}
+                   for code, name, _seats, _region, _places in SEED_DISTRICTS}
 
         for district in self.districts:
             if not district.code:
@@ -400,7 +415,8 @@ class Project:
             fresh = by_code.get(district.code)
             if fresh is None:
                 continue
-            district.name, district.seats, district.region = fresh
+            district.name, district.seats, district.region, places = fresh
+            _merge_settlements(district, places)
 
         # Размер палаты задаётся картой: разъезжаться этим числам нельзя.
         self.total_seats = sum(d.seats for d in self.districts)
@@ -463,6 +479,29 @@ class Project:
         return next(c for c in reversed(self.convocations) if not c.is_fixed)
 
 
+def _merge_settlements(district: District, places) -> None:
+    """Дописывает округу пункты с карты, не трогая уже розданные очки.
+
+    Пункт узнаётся по названию: идентификаторы у каждого проекта свои, а
+    названия — общие, они и есть карта. Городской округ получает один пункт
+    со своим именем и городским запасом очков.
+    """
+    from .elections import CITY_SUPPORT, SETTLEMENT_SUPPORT
+
+    wanted = ([(district.name, CITY_SUPPORT)] if places is None
+              else [(name, SETTLEMENT_SUPPORT) for name in places])
+    existing = {_district_key(s.name): s for s in district.settlements}
+
+    for name, capacity in wanted:
+        settlement = existing.get(_district_key(name))
+        if settlement is None:
+            district.settlements.append(
+                Settlement(id=new_id("s"), name=name, capacity=capacity))
+        else:
+            settlement.name = name
+            settlement.capacity = capacity
+
+
 def _district_key(name: str) -> str:
     """Ключ сопоставления округа по названию — без регистра и лишних пробелов."""
     return " ".join(str(name).split()).casefold()
@@ -487,7 +526,10 @@ def replace_party(party: Party, **changes) -> Party:
 
 
 def default_districts() -> list[District]:
-    """Округа с игровой карты — 27 штук на 147 мест.
+    """Округа игровой карты вместе с их населёнными пунктами.
+
+    Пункты заводятся сразу: они есть на карте, все до одного известны, и
+    вбивать их руками в двадцати семи округах — работа на пустом месте.
 
     Импорт внутри функции, а не наверху модуля: `district_seed` — это данные
     конкретной игры, а `model` описывает формат вообще, и обратной зависимости
@@ -495,5 +537,22 @@ def default_districts() -> list[District]:
     """
     from .district_seed import SEED_DISTRICTS
 
-    return [District(id=new_id("d"), name=name, seats=seats, region=region, code=code)
-            for code, name, seats, region in SEED_DISTRICTS]
+    return [
+        District(id=new_id("d"), name=name, seats=seats, region=region, code=code,
+                 settlements=seed_settlements(name, places))
+        for code, name, seats, region, places in SEED_DISTRICTS
+    ]
+
+
+def seed_settlements(district_name: str, places) -> list[Settlement]:
+    """Населённые пункты округа по карте.
+
+    Городской округ (`places is None`) отдельных сёл не имеет: он сам и есть
+    населённый пункт, поэтому пункт получает имя округа и городской запас
+    очков.
+    """
+    from .elections import CITY_SUPPORT
+
+    if places is None:
+        return [Settlement(id=new_id("s"), name=district_name, capacity=CITY_SUPPORT)]
+    return [Settlement(id=new_id("s"), name=name) for name in places]

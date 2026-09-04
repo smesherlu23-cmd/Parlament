@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import flet as ft
 
-from ..elections import SETTLEMENT_SUPPORT
+from ..elections import CITY_SUPPORT, SETTLEMENT_SUPPORT
 from ..service import ValidationError
 from ..store import StoreError
 from . import theme
@@ -57,7 +57,8 @@ class SupportView:
             ft.Container(
                 padding=ft.Padding.only(left=28, right=28, top=18, bottom=6),
                 content=ft.Text(
-                    f"{SETTLEMENT_SUPPORT} очков на населённый пункт · "
+                    f"{SETTLEMENT_SUPPORT} очков на населённый пункт, "
+                    f"{CITY_SUPPORT} на городской округ · "
                     f"модификатор — очки округа, делённые на число пунктов",
                     size=theme.fs(13), color=theme.NEUTRAL_700,
                 ),
@@ -169,8 +170,8 @@ class SupportView:
 
     def _settlement(self, district, settlement) -> ft.Control:
         used = sum(settlement.support.values())
-        total = ft.Text(f"{used} / {SETTLEMENT_SUPPORT}", size=theme.fs(12),
-                        color=theme.ACCENT_2_700 if used > SETTLEMENT_SUPPORT
+        total = ft.Text(f"{used} / {settlement.capacity}", size=theme.fs(12),
+                        color=theme.ACCENT_2_700 if used > settlement.capacity
                         else theme.NEUTRAL_700)
 
         fields: list[ft.Control] = []
@@ -285,7 +286,7 @@ class SupportView:
 
         settlement = self.service.project.district(district_id).settlement(settlement_id)
         used = sum(settlement.support.values())
-        total.value = f"{used} / {SETTLEMENT_SUPPORT}"
+        total.value = f"{used} / {settlement.capacity}"
         total.color = theme.NEUTRAL_700
         push(total)
 

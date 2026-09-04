@@ -35,6 +35,11 @@ class ValidationError(Exception):
     """Ввод пользователя не прошёл проверку. Текст показывается в интерфейсе."""
 
 
+def _same_name(left: str, right: str) -> bool:
+    """Одно и то же ли это название — без учёта регистра и лишних пробелов."""
+    return " ".join(left.split()).casefold() == " ".join(right.split()).casefold()
+
+
 class ParlamentService:
     """Держит текущий проект в памяти и синхронизирует его с файлом."""
 
@@ -300,18 +305,32 @@ class ParlamentService:
     # -- населённые пункты и поддержка ---------------------------------------
 
     def add_settlement(self, district_id: str, name: str) -> Settlement:
-        """Заводит НП в округе. В присланной карте их нет, поэтому список
-        наполняет пользователь."""
+        """Заводит в округе пункт сверх тех, что пришли с карты.
+
+        Два пункта с одним названием в округе не заводятся: таблица поддержки
+        сопоставляет их по имени, и второй «Судурей» стал бы неразличим с
+        первым — импорт молча писал бы очки не туда.
+        """
         district = self._require_district(district_id)
-        settlement = Settlement(id=new_id("s"), name=self._clean_name(name))
+        clean = self._clean_name(name)
+        if any(_same_name(s.name, clean) for s in district.settlements):
+            raise ValidationError(
+                f"В округе «{district.name}» уже есть «{clean}».")
+        settlement = Settlement(id=new_id("s"), name=clean)
         district.settlements.append(settlement)
         self._persist()
         return settlement
 
     def rename_settlement(self, district_id: str, settlement_id: str,
                           name: str) -> Settlement:
+        district = self._require_district(district_id)
         settlement = self._require_settlement(district_id, settlement_id)
-        settlement.name = self._clean_name(name)
+        clean = self._clean_name(name)
+        if any(_same_name(s.name, clean) for s in district.settlements
+               if s.id != settlement_id):
+            raise ValidationError(
+                f"В округе «{district.name}» уже есть «{clean}».")
+        settlement.name = clean
         self._persist()
         return settlement
 
@@ -325,20 +344,20 @@ class ParlamentService:
                     party_id: str, points: int) -> Settlement:
         """Ставит партии очки популярности в населённом пункте.
 
-        Сумма по пункту ограничена: очков ровно столько, сколько несёт один
-        НП, и раздать больше нельзя — иначе поддержка перестала бы быть
-        дележом общего запаса.
+        Сумма по пункту ограничена его запасом — шесть очков в обычном селе и
+        вдвое больше в городском округе. Раздать больше нельзя: иначе
+        поддержка перестала бы быть дележом общего запаса.
         """
         settlement = self._require_settlement(district_id, settlement_id)
         self._require_party(party_id)
 
         value = self._clean_support(points)
         others = sum(n for pid, n in settlement.support.items() if pid != party_id)
-        if others + value > elections.SETTLEMENT_SUPPORT:
+        if others + value > settlement.capacity:
             raise ValidationError(
-                f"В населённом пункте всего {elections.SETTLEMENT_SUPPORT} очков "
+                f"В «{settlement.name}» всего {settlement.capacity} очков "
                 f"популярности. Другим партиям уже отдано {others}, "
-                f"этой можно дать не больше {elections.SETTLEMENT_SUPPORT - others}."
+                f"этой можно дать не больше {settlement.capacity - others}."
             )
 
         if value == 0:
@@ -372,10 +391,11 @@ class ParlamentService:
                     fresh[party_id] = self._clean_support(value)
 
                 total = sum(fresh.values())
-                if total > elections.SETTLEMENT_SUPPORT:
+                capacity = self.settlement_capacity(district, cleaned_name)
+                if total > capacity:
                     raise ValidationError(
                         f"«{cleaned_name}»: роздано {total} очков, "
-                        f"а в населённом пункте их {elections.SETTLEMENT_SUPPORT}."
+                        f"а в населённом пункте их {capacity}."
                     )
                 planned.append((district, cleaned_name, fresh))
 
@@ -391,6 +411,18 @@ class ParlamentService:
 
         self._persist()
         return touched
+
+    def settlement_capacity(self, district: District, name: str) -> int:
+        """Запас очков пункта — по имени, ещё до того как он заведён.
+
+        Нужен разбору таблицы: пункт из документа может в проекте не
+        существовать, а проверить, не перебрали ли в нём очков, надо до
+        записи.
+        """
+        for settlement in district.settlements:
+            if _same_name(settlement.name, str(name)):
+                return settlement.capacity
+        return elections.SETTLEMENT_SUPPORT
 
     def support_modifier(self, district_id: str, party_id: str) -> float:
         """Модификатор поддержки партии в округе — очки, делённые на число НП."""

@@ -455,7 +455,8 @@ class TestMapCorrectionsReachOldProjects(ServiceTestCase):
 
         project = load(self.path)
         kept = next(d for d in project.districts if d.id == district.id)
-        self.assertEqual([s.name for s in kept.settlements], ["Гавань"])
+        # Пункты с карты дописались, а заведённый руками остался с очками.
+        self.assertIn("Гавань", [s.name for s in kept.settlements])
         self.assertEqual(kept.support_points(party.id), 5)
 
     def test_project_without_districts_is_left_alone(self):
@@ -532,7 +533,7 @@ class TestOldProjectWithoutDistrictCodes(ServiceTestCase):
 
         again = load(self.path)
         self.assertEqual([d.id for d in again.districts], before)
-        self.assertEqual([s.name for s in again.districts[0].settlements], ["Гавань"])
+        self.assertIn("Гавань", [s.name for s in again.districts[0].settlements])
 
 
 class TestBrokenFileIsSetAside(ServiceTestCase):

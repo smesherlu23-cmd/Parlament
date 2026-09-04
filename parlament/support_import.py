@@ -42,16 +42,22 @@ class SupportImportResult:
 
 
 def parse_support_csv(text: str, districts: dict[str, str],
-                      parties: dict[str, str]) -> SupportImportResult:
+                      parties: dict[str, str],
+                      capacity=None) -> SupportImportResult:
     """Разбирает таблицу «округ, населённый пункт, очки по партиям».
 
         Округ,Населённый пункт,Народный союз,Партия труда
-        Гаффинсвик центр,Гаффинсвик-Сити,4,2
+        Западный берег,Сандавик,4,2
 
-    Правила сопоставления те же, что у таблицы результатов: разделитель
-    определяется сам, названия сверяются без учёта регистра и лишних пробелов,
-    незнакомые округа и партии не создаются молча, а попадают в замечания.
+    Разделитель определяется сам, названия сверяются без учёта регистра и
+    лишних пробелов, незнакомые округа и партии не создаются молча, а
+    попадают в замечания.
+
+    :param capacity: `(district_id, название пункта) -> запас очков`. Запас
+                     разный: шесть в селе, вдвое больше в городском округе, —
+                     а перебор надо поймать до записи в проект.
     """
+    limit = capacity or (lambda _district_id, _name: SETTLEMENT_SUPPORT)
     result = SupportImportResult()
 
     rows = list(csv.reader(io.StringIO(text.lstrip("﻿")),
@@ -124,13 +130,14 @@ def parse_support_csv(text: str, districts: dict[str, str],
                 points[party_id] = value
 
         total = sum(points.values())
-        if total > SETTLEMENT_SUPPORT:
+        allowed = limit(district_id, settlement_name)
+        if total > allowed:
             # Ловим здесь, а не при записи в проект: так пользователь получает
             # список всех перебравших строк разом и правит документ за один
             # заход, а остальная таблица всё же загружается.
             result.warnings.append(
                 f"«{settlement_name}»: роздано {total} очков, а в населённом "
-                f"пункте их {SETTLEMENT_SUPPORT} — строка пропущена.")
+                f"пункте их {allowed} — строка пропущена.")
             continue
 
         already = result.rows.setdefault(district_id, {})

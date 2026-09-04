@@ -11,6 +11,7 @@ import csv
 import io
 from pathlib import Path
 
+from ..elections import SETTLEMENT_SUPPORT
 from ..model import Project
 from ..support_import import SupportImportResult, parse_support_csv
 
@@ -25,19 +26,29 @@ def read_support_file(picked, project: Project) -> SupportImportResult:
 
 
 def parse_support_text(data: bytes, project: Project) -> SupportImportResult:
+    def capacity(district_id: str, name: str) -> int:
+        """Запас очков пункта — у городского округа он вдвое больше."""
+        district = project.district(district_id)
+        key = " ".join(name.split()).casefold()
+        for settlement in district.settlements if district else ():
+            if " ".join(settlement.name.split()).casefold() == key:
+                return settlement.capacity
+        return SETTLEMENT_SUPPORT
+
     return parse_support_csv(
         _decode(data),
         {d.name: d.id for d in project.districts},
         {p.name: p.id for p in project.parties},
+        capacity=capacity,
     )
 
 
 def export_support_template(project: Project) -> bytes:
     """Заготовка таблицы поддержки под текущие округа, пункты и партии.
 
-    Уже заведённые пункты выгружаются со своими очками, а у округов без
-    пунктов остаётся пустая строка — чтобы было видно, что заполнить.
-    Сохраняем с BOM, иначе Excel открывает кириллицу кракозябрами.
+    Пункты выгружаются со своими очками; у округа без пунктов остаётся
+    пустая строка — чтобы было видно, что заполнить. Сохраняем с BOM, иначе
+    Excel открывает кириллицу кракозябрами.
     """
     buffer = io.StringIO()
     writer = csv.writer(buffer)
