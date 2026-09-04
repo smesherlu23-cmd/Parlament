@@ -54,26 +54,95 @@ def subpaths(d: str) -> list[list[tuple[float, float]]]:
     return [p for p in polys if len(p) >= 3]
 
 
-def centroid(polys) -> tuple[float, float]:
-    """Центр тяжести фигуры — туда ставится подпись округа."""
-    total = sx = sy = 0.0
-    for poly in polys:
-        area = cx = cy = 0.0
-        n = len(poly)
-        for i in range(n):
-            x0, y0 = poly[i]
-            x1, y1 = poly[(i + 1) % n]
-            cross = x0 * y1 - x1 * y0
-            area += cross
-            cx += (x0 + x1) * cross
-            cy += (y0 + y1) * cross
-        area *= 0.5
-        if abs(area) < 1e-9:
-            continue
-        total += area
-        sx += cx / (6 * area) * area
-        sy += cy / (6 * area) * area
-    return (sx / total, sy / total) if abs(total) > 1e-9 else polys[0][0]
+def label_point(polys, aspect: float) -> tuple[float, float, float]:
+    """Куда ставить подпись округа — точку берём внутри фигуры.
+
+    Центр тяжести для этого не годится: у вогнутых округов он оказывается за
+    их пределами. На нашей карте так выходило у шести округов из двадцати
+    семи, и пять подписей ложились поверх соседа — «4» читалась на третьем
+    округе.
+
+    Берём полюс недоступности: точку внутри, максимально удалённую от
+    границы. Ищем перебором по сетке с несколькими уточнениями — полигонов
+    три десятка, и генерация всё равно разовая.
+
+    Расстояния считаем в долях ширины карты: по вертикали доля «короче» во
+    столько раз, каково соотношение сторон, и без поправки узкий и высокий
+    округ казался бы просторнее, чем он есть.
+
+    Возвращает точку и запас вокруг неё — по нему подпись подбирает себе
+    размер, чтобы не вылезти за мелкий городской округ.
+    """
+    poly = max(polys, key=_area)
+    xs = [x for x, _y in poly]
+    ys = [y for _x, y in poly]
+    left, right = min(xs), max(xs)
+    top, bottom = min(ys), max(ys)
+
+    best = ((left + right) / 2, (top + bottom) / 2)
+    best_distance = -1.0
+    step = max(right - left, bottom - top) / 24
+
+    for _ in range(6):
+        y = top
+        while y <= bottom:
+            x = left
+            while x <= right:
+                if _inside(x, y, poly):
+                    distance = _edge_distance(x, y, poly, aspect)
+                    if distance > best_distance:
+                        best_distance, best = distance, (x, y)
+                x += step
+            y += step
+        # Сужаем область вокруг найденной точки и мельчим шаг.
+        left, right = best[0] - step, best[0] + step
+        top, bottom = best[1] - step, best[1] + step
+        step /= 4
+
+    return best[0], best[1], best_distance
+
+
+def _area(poly) -> float:
+    total = 0.0
+    n = len(poly)
+    for i in range(n):
+        x0, y0 = poly[i]
+        x1, y1 = poly[(i + 1) % n]
+        total += x0 * y1 - x1 * y0
+    return abs(total) / 2
+
+
+def _inside(x: float, y: float, poly) -> bool:
+    """Точка внутри многоугольника — трассировка луча."""
+    inside = False
+    n = len(poly)
+    j = n - 1
+    for i in range(n):
+        xi, yi = poly[i]
+        xj, yj = poly[j]
+        if (yi > y) != (yj > y):
+            if x < (xj - xi) * (y - yi) / (yj - yi) + xi:
+                inside = not inside
+        j = i
+    return inside
+
+
+def _edge_distance(x: float, y: float, poly, aspect: float) -> float:
+    """Расстояние до ближайшей стороны в долях ширины карты.
+
+    Чем оно больше, тем «глубже» точка внутри фигуры.
+    """
+    best = float("inf")
+    n = len(poly)
+    for i in range(n):
+        x0, y0 = poly[i]
+        x1, y1 = poly[(i + 1) % n]
+        dx, dy = x1 - x0, (y1 - y0) / aspect
+        length = dx * dx + dy * dy
+        px_dx, px_dy = x - x0, (y - y0) / aspect
+        t = 0.0 if length == 0 else max(0.0, min(1.0, (px_dx * dx + px_dy * dy) / length))
+        best = min(best, ((px_dx - t * dx) ** 2 + (px_dy - t * dy) ** 2) ** 0.5)
+    return best
 
 
 def main() -> None:
@@ -113,11 +182,20 @@ def main() -> None:
         lines.append("    ],")
     lines.append("}")
     lines.append("")
-    lines.append("#: Центр каждого округа — куда ставить подпись.")
+    points = {code: label_point(shapes[code], width / height) for code in sorted(shapes)}
+
+    lines.append("#: Точка подписи округа — внутри фигуры, подальше от границ.")
     lines.append("DISTRICT_CENTRES: dict[int, tuple[float, float]] = {")
-    for code in sorted(shapes):
-        cx, cy = centroid(shapes[code])
+    for code, (cx, cy, _room) in points.items():
         lines.append(f"    {code}: ({round(cx, 5)}, {round(cy, 5)}),")
+    lines.append("}")
+    lines.append("")
+    lines.append("#: Сколько места вокруг этой точки — в долях ширины карты. По нему")
+    lines.append("#: подпись выбирает размер: на городском округе в несколько пикселей")
+    lines.append("#: цифра обычного размера накрыла бы соседей.")
+    lines.append("DISTRICT_LABEL_ROOM: dict[int, float] = {")
+    for code, (_cx, _cy, room) in points.items():
+        lines.append(f"    {code}: {round(room, 5)},")
     lines.append("}")
     lines.append("")
 

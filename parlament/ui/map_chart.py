@@ -22,16 +22,14 @@ from pathlib import Path
 import flet as ft
 import flet.canvas as cv
 
-from ..district_geometry import MAP_ASPECT, DISTRICT_SHAPES
+from ..district_geometry import DISTRICT_SHAPES, MAP_ASPECT
 from . import theme
+from .map_label import MIN_LABEL_SIZE, label_size
 from .mount import push
 
 #: Куда можно положить необязательную подложку. Папка проекта пользователя —
 #: туда программа и так пишет, права администратора не нужны.
 MAP_FILE_NAMES = ("map.png", "map.jpg", "map.jpeg", "map.webp")
-
-_MIN_LABEL_RADIUS = 9
-
 
 def map_image_path(project_dir: Path | None = None) -> Path | None:
     """Необязательная подложка под границами округов."""
@@ -115,7 +113,7 @@ class MapChart(ft.Container):
             shapes.append(cv.Image(src=str(self._background), x=left, y=top,
                                    width=width, height=height))
 
-        label_size = max(10.0, width / 95)
+        base_size = max(10.0, width / 95)
         for code, name, seats, color in self._districts:
             polys = DISTRICT_SHAPES.get(code)
             if not polys:
@@ -137,18 +135,22 @@ class MapChart(ft.Container):
                                    style=ft.PaintingStyle.STROKE),
                 ))
 
-        if self._show_counts and label_size >= _MIN_LABEL_RADIUS:
+        if self._show_counts:
             for code, name, seats, color in self._districts:
                 centre = _centre_of(code)
                 if centre is None:
+                    continue
+                text = str(seats)
+                size = label_size(code, base_size, width, text)
+                if size < MIN_LABEL_SIZE:
                     continue
                 cx = left + centre[0] * width
                 cy = top + centre[1] * height
                 fill = color or theme.EMPTY_SEAT
                 shapes.append(cv.Text(
-                    cx, cy, str(seats),
+                    cx, cy, text,
                     alignment=ft.Alignment.CENTER,
-                    style=ft.TextStyle(size=label_size,
+                    style=ft.TextStyle(size=size,
                                        font_family=theme.FONT_SEMIBOLD,
                                        color=_readable_on(fill)),
                 ))

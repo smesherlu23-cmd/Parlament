@@ -201,10 +201,13 @@ class Settlement:
 
 @dataclass
 class District:
-    """Избирательный округ с карты: сколько мест разыгрывает и где нарисован.
+    """Избирательный округ с карты: сколько мест разыгрывает и как называется.
 
-    `x` и `y` — центр округа в долях от размера карты (0..1), а не в пикселях:
-    карта на разных экранах тянется, и подпись должна ехать вместе с ней.
+    Где округ нарисован, здесь не хранится: и границы, и точка подписи лежат
+    в `district_geometry` и находятся по `code`. Раньше копия центра лежала
+    ещё и тут — и после уточнения геометрии копия в старых файлах проекта
+    оставалась от прежней карты.
+
     `region` — только подпись для группировки в списке, на расчёт не влияет.
     """
 
@@ -212,11 +215,9 @@ class District:
     name: str
     seats: int
     region: str = ""
-    x: float = 0.5
-    y: float = 0.5
-    #: Номер округа на игровой карте. По нему в `district_geometry` находится
-    #: полигон; 0 — округ без нарисованных границ (такое бывает у проектов,
-    #: заведённых до появления карты).
+    #: Номер округа на игровой карте. По нему в `district_geometry` находятся
+    #: полигон и точка подписи; 0 — округ без нарисованных границ (такое
+    #: бывает у проектов, заведённых до появления карты).
     code: int = 0
     #: Населённые пункты округа. Заводятся пользователем на экране поддержки:
     #: в присланной карте их нет, а модификатор считается по ним.
@@ -232,7 +233,7 @@ class District:
     def to_dict(self) -> dict:
         return {
             "id": self.id, "name": self.name, "seats": self.seats,
-            "region": self.region, "x": self.x, "y": self.y, "code": self.code,
+            "region": self.region, "code": self.code,
             "settlements": [s.to_dict() for s in self.settlements],
         }
 
@@ -242,25 +243,16 @@ class District:
             code = int(raw.get("code") or 0)
         except (TypeError, ValueError):
             code = 0
+        # Ключи x/y в старых файлах игнорируем: точка подписи считается по
+        # геометрии, и хранившаяся копия успела от неё отстать.
         return District(
             id=str(raw["id"]),
             name=str(raw.get("name", "")),
             seats=max(0, int(raw.get("seats") or 0)),
             region=str(raw.get("region", "")),
-            x=_clamp_unit(raw.get("x", 0.5)),
-            y=_clamp_unit(raw.get("y", 0.5)),
             code=code,
             settlements=[Settlement.from_dict(s) for s in raw.get("settlements") or []],
         )
-
-
-def _clamp_unit(value: object) -> float:
-    """Доля 0..1; мусор из руками поправленного файла превращается в центр."""
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return 0.5
-    return min(1.0, max(0.0, number))
 
 
 @dataclass
@@ -450,14 +442,7 @@ def default_districts() -> list[District]:
     конкретной игры, а `model` описывает формат вообще, и обратной зависимости
     у него быть не должно.
     """
-    from .district_geometry import DISTRICT_CENTRES
     from .district_seed import SEED_DISTRICTS
 
-    districts = []
-    for code, name, seats, region in SEED_DISTRICTS:
-        # Точка подписи — центр тяжести полигона, а не отдельное число:
-        # так она не может разъехаться с нарисованными границами.
-        x, y = DISTRICT_CENTRES.get(code, (0.5, 0.5))
-        districts.append(District(id=new_id("d"), name=name, seats=seats,
-                                  region=region, x=x, y=y, code=code))
-    return districts
+    return [District(id=new_id("d"), name=name, seats=seats, region=region, code=code)
+            for code, name, seats, region in SEED_DISTRICTS]

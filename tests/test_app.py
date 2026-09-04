@@ -26,10 +26,12 @@ from parlament.ui.dialogs import normalize_hex  # noqa: E402
 from parlament.ui.export import LegendEntry, render_png, suggest_file_name  # noqa: E402
 from parlament.district_geometry import (  # noqa: E402
     DISTRICT_CENTRES,
+    DISTRICT_LABEL_ROOM,
     DISTRICT_SHAPES,
     MAP_ASPECT,
 )
 from parlament.ui.map_export import render_map_png  # noqa: E402
+from parlament.ui.map_label import label_size  # noqa: E402
 from parlament.ui.seat_chart import compute_seats  # noqa: E402
 
 #: Пример раскладки: суммой ровно на полный парламент (147 мест по карте).
@@ -975,6 +977,32 @@ class TestSeatsAfterElection(AppTestCase):
         self.assertTrue(any("Просмотр истории" in t for t in texts(self.body)))
         self.assertEqual(self.app.selected.seats, seats)
         self.assertFalse(self.app.manual_seats)
+
+
+class TestMapLabels(unittest.TestCase):
+    """Цифра на округе должна помещаться в округ."""
+
+    def test_small_district_gets_a_smaller_label(self):
+        # Гаффинсвик центр (11) — городской пятачок, Северный мыс (6) —
+        # крупная область: одинаковая цифра на них не годится.
+        base, width = 20, 1600
+        self.assertLess(label_size(11, base, width, "10"),
+                        label_size(6, base, width, "6"))
+
+    def test_label_never_grows_past_the_base_size(self):
+        for code in DISTRICT_LABEL_ROOM:
+            self.assertLessEqual(label_size(code, 18, 1600, "4"), 18)
+
+    def test_label_fits_the_room_it_was_given(self):
+        # Ширина двузначного числа примерно в 1,1 раза больше его высоты;
+        # вместе с высотой оно должно уместиться в свободный кружок.
+        for code, room in DISTRICT_LABEL_ROOM.items():
+            size = label_size(code, 1000, 1600, "10")
+            self.assertLessEqual(size * 1.1, 2 * room * 1600 + 0.01,
+                                 f"округ {code}: подпись шире свободного места")
+
+    def test_unknown_district_keeps_the_base_size(self):
+        self.assertEqual(label_size(0, 14, 1600, "4"), 14)
 
 
 class TestSupportScreen(AppTestCase):

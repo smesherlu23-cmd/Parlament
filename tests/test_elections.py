@@ -25,6 +25,10 @@ from parlament.elections import (  # noqa: E402
     totals_by_party,
     weights,
 )
+from parlament.district_geometry import (  # noqa: E402
+    DISTRICT_CENTRES,
+    DISTRICT_SHAPES,
+)
 from parlament.model import Project  # noqa: E402
 from parlament.ui.support_file import (  # noqa: E402
     export_support_template,
@@ -184,10 +188,24 @@ class TestDistrictsFromMap(ElectionTestCase):
         self.assertEqual(sum(d.seats for d in self.service.project.districts),
                          self.service.project.total_seats)
 
-    def test_markers_sit_inside_the_map_image(self):
+    def test_every_district_has_geometry(self):
         for district in self.service.project.districts:
-            self.assertTrue(0.0 <= district.x <= 1.0, district.name)
-            self.assertTrue(0.0 <= district.y <= 1.0, district.name)
+            self.assertIn(district.code, DISTRICT_SHAPES, district.name)
+            self.assertIn(district.code, DISTRICT_CENTRES, district.name)
+
+    def test_labels_sit_inside_their_own_district(self):
+        # Центр тяжести у вогнутых округов оказывался снаружи, и подпись
+        # ложилась поверх соседа — «4» читалась на третьем округе.
+        for district in self.service.project.districts:
+            x, y = DISTRICT_CENTRES[district.code]
+            own = DISTRICT_SHAPES[district.code]
+            self.assertTrue(any(_inside(x, y, poly) for poly in own),
+                            f"{district.name}: подпись вне округа")
+            for code, polys in DISTRICT_SHAPES.items():
+                if code == district.code:
+                    continue
+                self.assertFalse(any(_inside(x, y, poly) for poly in polys),
+                                 f"{district.name}: подпись легла на округ {code}")
 
     def test_old_projects_keep_their_own_size(self):
         # Проект, созданный до карты, не должен внезапно получить округа и
@@ -631,6 +649,21 @@ class TestSupportImport(ElectionTestCase):
         self.assertEqual(result.warnings, [])
         self.service.import_support(result.rows)
         self.assertEqual(district.settlements[0].support, {self.a.id: 4})
+
+
+def _inside(x: float, y: float, poly) -> bool:
+    """Точка внутри многоугольника — та же трассировка луча, что и на карте."""
+    inside = False
+    count = len(poly)
+    j = count - 1
+    for i in range(count):
+        xi, yi = poly[i]
+        xj, yj = poly[j]
+        if (yi > y) != (yj > y):
+            if x < (xj - xi) * (y - yi) / (yj - yi) + xi:
+                inside = not inside
+        j = i
+    return inside
 
 
 if __name__ == "__main__":
