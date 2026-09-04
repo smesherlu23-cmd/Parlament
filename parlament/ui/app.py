@@ -175,6 +175,15 @@ class ParlamentApp:
                         color=theme.TEXT, style=ft.TextStyle(letter_spacing=2.1)),
             ]
             has_districts = bool(self.service.project.districts)
+            # Разыграть выборы в архивном созыве — значит переписать историю,
+            # а на это в программе есть отдельный шаг «Править состав».
+            votable = has_districts and bool(self.parties) and self.is_editable
+            if not self.parties:
+                why = "Сначала создайте партии"
+            elif not self.is_editable:
+                why = "Созыв в истории — сначала «Править состав»"
+            else:
+                why = None
             right = [
                 theme.secondary_button(
                     "Экспорт карты в PNG", lambda _e: self.export_map_png(),
@@ -186,8 +195,7 @@ class ParlamentApp:
                 ),
                 theme.primary_button(
                     "Выборы", lambda _e: self.show_elections(),
-                    disabled=not (has_districts and self.parties),
-                    tooltip=None if self.parties else "Сначала создайте партии",
+                    disabled=not votable, tooltip=why,
                 ),
             ]
         elif self.view == "support":
@@ -726,6 +734,12 @@ class ParlamentApp:
         Пустой розыгрыш сервис отклоняет сам, не тронув прошлый результат:
         нажатая по ошибке кнопка не должна стирать уже сыгранные выборы.
         """
+        if not self.is_editable:
+            # Тем же розыгрышем можно было бы переписать историю в обход
+            # «Править состав» — единственного места, где это решается.
+            self.toast("Созыв лежит в истории. Чтобы переиграть выборы, "
+                       "откройте его кнопкой «Править состав».", error=True)
+            return
         modifiers = self.elections.collect()
         try:
             self.service.roll_election(self.selected.id, modifiers)
@@ -786,7 +800,7 @@ class ParlamentApp:
                                   background=map_image_path(self.service.path.parent))
             saved = await self.file_picker.save_file(
                 dialog_title="Экспорт карты в PNG",
-                file_name=f"Карта_{conv.name.replace(' ', '_')}.png",
+                file_name=suggest_file_name(conv.name, prefix="Карта"),
                 allowed_extensions=["png"],
                 src_bytes=data,
             )

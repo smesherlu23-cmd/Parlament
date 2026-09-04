@@ -667,6 +667,15 @@ class TestHelpers(unittest.TestCase):
         # Полукруг симметричен относительно центра поля 630.
         self.assertAlmostEqual(seats[0].x + seats[-1].x, 630, delta=0.5)
 
+    def test_file_name_drops_characters_windows_forbids(self):
+        # Созыв переименовывается свободно, а «/» и «:» в имени файла Windows
+        # не принимает — диалог сохранения спотыкался бы на таком названии.
+        self.assertEqual(suggest_file_name("Созыв 3/4: «весна»"),
+                         "Парламент_Созыв_34_«весна».png")
+        self.assertEqual(suggest_file_name("Третий состав", prefix="Карта"),
+                         "Карта_Третий_состав.png")
+        self.assertEqual(suggest_file_name("///"), "Парламент.png")
+
     def test_row_counts_sum_to_total(self):
         for total in (60, 120, 300):
             for rows in (3, 5, 8):
@@ -977,6 +986,45 @@ class TestSeatsAfterElection(AppTestCase):
         self.assertTrue(any("Просмотр истории" in t for t in texts(self.body)))
         self.assertEqual(self.app.selected.seats, seats)
         self.assertFalse(self.app.manual_seats)
+
+
+class TestArchivedConvocationIsProtected(AppTestCase):
+    """Историю нельзя переписать в обход «Править состав»."""
+
+    def setUp(self):
+        super().setUp()
+        self.add_parties(2)
+        district = self.service.project.districts[0]
+        settlement = self.service.add_settlement(district.id, "НП")
+        self.service.set_support(district.id, settlement.id,
+                                 self.app.parties[0].id, 4)
+        self.app.show_elections()
+        self.app.apply_election()
+
+        self.archived = self.app.selected.id
+        self.before = dict(self.app.selected.seats)
+        self.service.fix_convocation()
+        self.app.selected_convocation_id = self.archived
+        self.app.render()
+
+    def test_elections_button_is_locked(self):
+        self.app.show_map()
+        button = find(self.body, lambda c: isinstance(c, ft.Button) and c.content == "Выборы")
+        self.assertTrue(button.disabled)
+        self.assertIn("Править состав", button.tooltip)
+
+    def test_rolling_again_is_refused(self):
+        self.app.show_elections()
+        self.app.apply_election()
+        self.assertEqual(self.app.selected.seats, self.before)
+        self.assertIn("истории", self.page.last_toast)
+
+    def test_after_opening_it_for_editing_the_roll_goes_through(self):
+        self.app.edit_archived()
+        self.app.show_elections()
+        self.app.apply_election()
+        self.assertTrue(self.app.selected.has_election)
+        self.assertEqual(self.app.selected.id, self.archived)
 
 
 class TestMapLabels(unittest.TestCase):

@@ -184,9 +184,15 @@ def _draw_legend(draw: ImageDraw.ImageDraw, lines: list[list[dict]],
             cursor_x += item["percent_width"] + item["column_gap"]
 
 
-def suggest_file_name(convocation_name: str) -> str:
-    """«Парламент_Третий_состав.png» — с оглядкой на запрещённые в Windows символы."""
+def suggest_file_name(convocation_name: str, prefix: str = "Парламент") -> str:
+    """«Парламент_Третий_состав.png» — с оглядкой на запрещённые в Windows символы.
+
+    Созыв переименовывается свободно, а `\\ / : * ? " < > |` в имени файла
+    Windows не принимает: без чистки диалог сохранения споткнулся бы на
+    названии вида «Созыв 3/4».
+    """
     safe = convocation_name
     for bad in '\\/:*?"<>|':
         safe = safe.replace(bad, "")
-    return f"Парламент_{'_'.join(safe.split())}.png"
+    stem = "_".join(safe.split())
+    return f"{prefix}_{stem}.png" if stem else f"{prefix}.png"
