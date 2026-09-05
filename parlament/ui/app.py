@@ -486,7 +486,7 @@ class ParlamentApp:
             )
             for party, seats in self.distribution(conv)
         ]
-        districts = len(conv.rolls)
+        districts = len(conv.results)
 
         return ft.Container(
             width=theme.RAIL_RIGHT_WIDTH,
@@ -607,7 +607,7 @@ class ParlamentApp:
 
         if not self.manual_seats and self.selected.has_election:
             self.stage_meta.value = (
-                f"Выборы: {fmt.pluralize(len(self.selected.rolls), fmt.DISTRICTS)} "
+                f"Выборы: {fmt.pluralize(len(self.selected.results), fmt.DISTRICTS)} "
                 f"· {used} из {self.total_seats} мест")
         if self.manual_seats:
             self.stage_meta.value = f"Распределено {used} из {self.total_seats}"
@@ -736,14 +736,16 @@ class ParlamentApp:
             return
         modifiers = self.elections.collect()
         national = self.elections.collect_national()
+        island = self.elections.collect_island()
         try:
-            self.service.roll_election(self.selected.id, modifiers, national=national)
+            self.service.roll_election(self.selected.id, modifiers,
+                                       national=national, island=island)
         except (ValidationError, StoreError) as error:
             self.toast(str(error), error=True)
             return
 
         conv = self.selected
-        filled = len(conv.rolls)
+        filled = len(conv.results)
         total = len(self.service.project.districts)
         self.show_map()
         self.toast(f"Выборы разыграны: {fmt.pluralize(filled, fmt.DISTRICTS)} из {total}.")
@@ -755,14 +757,14 @@ class ParlamentApp:
             return
         conv = self.selected
         allocation = self.service.district_allocation(conv.id).get(district_id, {})
-        rolls = conv.rolls.get(district_id, {})
+        results = conv.results.get(district_id, {})
         shares = self.service.district_shares(conv.id, district_id)
         by_id = {p.id: p for p in self.parties}
 
         rows = [
-            (by_id[pid], rolls.get(pid), allocation.get(pid, 0))
+            (by_id[pid], results.get(pid), allocation.get(pid, 0))
             for pid in sorted(
-                set(rolls) | set(allocation),
+                set(results) | set(allocation),
                 key=lambda pid: (-allocation.get(pid, 0), -shares.get(pid, 0.0)),
             )
             if pid in by_id

@@ -106,6 +106,21 @@ def island_of(region: str) -> str:
     return ISLANDS.get(region, region)
 
 
+def islands() -> list[str]:
+    """Острова архипелага по порядку первого появления на карте.
+
+    Нивенсхолл и Триединсборг делят один остров Виделлиус, поэтому островов
+    меньше, чем регионов, — список для строк «сдвиг по острову» на экране
+    выборов, а не для группировки одних лишь округов.
+    """
+    seen: list[str] = []
+    for _code, _name, _seats, region, _places in SEED_DISTRICTS:
+        island = island_of(region)
+        if island not in seen:
+            seen.append(island)
+    return seen
+
+
 def city_regions() -> list[str]:
     """Метрополии, у которых есть городские округа — по первому появлению.
 

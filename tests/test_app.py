@@ -835,7 +835,7 @@ class TestMapAndElections(AppTestCase):
         self.bonus("Судбригг", 0, "-2")
         self.app.apply_election()
         self.assertEqual(
-            self.app.selected.rolls[self.by_name["Судбригг"].id][
+            self.app.selected.results[self.by_name["Судбригг"].id][
                 self.app.parties[0].id].modifier, -2)
 
     def test_letters_never_reach_the_bonus_field(self):
@@ -843,20 +843,25 @@ class TestMapAndElections(AppTestCase):
         field = self.bonus("Судбригг", 0, "-1абв2")
         self.assertEqual(field.value, "-12")
 
-    def test_preview_shows_support_not_a_promised_result(self):
-        # Обещать итог до броска нельзя: бросок случаен.
+    def test_preview_shows_the_base_not_a_promised_result(self):
+        # Обещать итог до розыгрыша нельзя: колебание случайно.
         district = self.by_name["Судбригг"]           # два пункта с карты
         self.service.set_support(district.id, district.settlements[0].id,
                                  self.app.parties[0].id, 6)
+        self.service.set_support(district.id, district.settlements[1].id,
+                                 self.app.parties[1].id, 4)
         self.app.show_elections()
         preview = self.app.elections.previews[district.id]
-        # 6 очков на два пункта.
-        self.assertIn("3,0", preview.value)
+        # 6 из 10 очков округа — 60 %, а не итог розыгрыша.
+        self.assertIn("60 %", preview.value)
+        self.assertIn("40 %", preview.value)
 
-    def test_district_with_no_support_says_so(self):
+    def test_district_with_no_support_shows_an_even_split(self):
+        # Если очков не роздано вовсе, организации нет ни у кого — все
+        # партии равны, и голоса решит колебание.
         self.app.show_elections()
         preview = self.app.elections.previews[self.by_name["Судбригг"].id]
-        self.assertEqual(preview.value, "поддержки нет — решит бросок")
+        self.assertIn("33 %", preview.value)
 
     def test_election_without_any_setup_still_fills_the_parliament(self):
         # Бросают все партии всегда — пустая настройка не «нечего
@@ -895,10 +900,38 @@ class TestMapAndElections(AppTestCase):
         field.on_change(ft.ControlEvent(control=field, name="change", data="4"))
         self.app.apply_election()
 
-        rolls = self.app.selected.rolls
+        rolls = self.app.selected.results
         self.assertTrue(rolls)
         for district_id, per_party in rolls.items():
             self.assertEqual(per_party[self.app.parties[0].id].national, 4, district_id)
+
+    def test_island_row_has_one_field_per_party(self):
+        self.app.show_elections()
+        row = self.app.elections.island_cells["Остров Нурик (юг)"]
+        self.assertEqual(set(row), {p.id for p in self.app.parties})
+
+    def test_reopening_shows_the_previous_island_swing(self):
+        self.app.show_elections()
+        field = self.app.elections.island_cells["Остров Нурик (юг)"][self.app.parties[1].id]
+        field.value = "4"
+        field.on_change(ft.ControlEvent(control=field, name="change", data="4"))
+        self.app.apply_election()
+
+        self.app.show_elections()
+        again = self.app.elections.island_cells["Остров Нурик (юг)"][self.app.parties[1].id]
+        self.assertEqual(again.value, "4")
+
+    def test_island_swing_reaches_only_its_own_island(self):
+        self.app.show_elections()
+        field = self.app.elections.island_cells["Остров Нурик (юг)"][self.app.parties[0].id]
+        field.value = "6"
+        field.on_change(ft.ControlEvent(control=field, name="change", data="6"))
+        self.app.apply_election()
+
+        district = self.app.selected.results[self.by_name["Судбригг"].id]
+        self.assertEqual(district[self.app.parties[0].id].island, 6)
+        other = self.app.selected.results[self.by_name["Херсвикский"].id]
+        self.assertEqual(other[self.app.parties[0].id].island, 0)
 
     def test_clear_all_modifiers_empties_every_field(self):
         self.support("Судбригг", 0, 3)
@@ -908,6 +941,9 @@ class TestMapAndElections(AppTestCase):
         national = self.app.elections.national_cells[self.app.parties[0].id]
         national.value = "5"
         national.on_change(ft.ControlEvent(control=national, name="change", data="5"))
+        island = self.app.elections.island_cells["Остров Нурик (юг)"][self.app.parties[0].id]
+        island.value = "6"
+        island.on_change(ft.ControlEvent(control=island, name="change", data="6"))
 
         self.app.elections._clear_all()
 
@@ -918,11 +954,13 @@ class TestMapAndElections(AppTestCase):
         self.assertEqual(
             self.app.elections.cells[other][self.app.parties[1].id].value, "")
         self.assertEqual(national.value, "")
+        self.assertEqual(island.value, "")
         self.assertEqual(self.app.elections.collect(), {})
         self.assertEqual(self.app.elections.collect_national(), {})
-        # Поддержка — не модификатор, кнопка её не трогает.
-        self.assertNotEqual(self.app.elections.previews[district].value,
-                            "поддержки нет — решит бросок")
+        self.assertEqual(self.app.elections.collect_island(), {})
+        # Поддержка — не модификатор, кнопка её не трогает: у party0 в
+        # Судбригге по-прежнему единственная база, вся ему.
+        self.assertIn("100 %", self.app.elections.previews[district].value)
 
     def test_district_dialog_shows_the_breakdown(self):
         self.support("Гаффинсвик центр", 0, 4)
@@ -990,25 +1028,26 @@ class TestMapAndElections(AppTestCase):
 
 
 class TestRollBreakdown(unittest.TestCase):
-    """Строка разбора броска в диалоге округа."""
+    """Строка разбора доли партии в диалоге округа."""
 
     def line(self, **kwargs) -> str:
-        from parlament.elections import PartyRoll
+        from parlament.elections import PartyResult
         from parlament.ui.dialogs import _roll_breakdown
 
-        return _roll_breakdown(PartyRoll(**kwargs))
+        return _roll_breakdown(PartyResult(**kwargs))
 
-    def test_lists_every_modifier(self):
+    def test_lists_every_term(self):
         self.assertEqual(
-            self.line(roll=4, support=2.5, modifier=-1, national=2),
-            "4 + 2,5 − 1 + 2 = 7,5")
+            self.line(base=60.0, national=-4.0, island=1.2, modifier=2.0, wobble=-0.8),
+            "60,0 − 4,0 + 1,2 + 2,0 − 0,8 = 58,4 %")
 
-    def test_bare_roll_has_nothing_to_add(self):
-        self.assertEqual(self.line(roll=7), "7 = 7,0")
+    def test_bare_base_has_nothing_to_add(self):
+        self.assertEqual(self.line(base=7.0), "7,0 = 7,0 %")
 
     def test_clamped_sum_says_so(self):
-        # Иначе «3 − 9 = 0» выглядело бы арифметической ошибкой.
-        self.assertEqual(self.line(roll=3, modifier=-9), "3 − 9 = 0,0 (не ниже нуля)")
+        # Иначе «3,0 − 9,0 = 0,0» выглядело бы арифметической ошибкой.
+        self.assertEqual(self.line(base=3.0, modifier=-9.0),
+                         "3,0 − 9,0 = 0,0 % (не ниже нуля)")
 
     def test_nothing_rolled_is_a_dash(self):
         from parlament.ui.dialogs import _roll_breakdown
@@ -1036,13 +1075,13 @@ class TestElectionsPreview(AppTestCase):
         self.bonus(0, "0")
         self.assertEqual(self.app.elections.collect(), {})
 
-    def test_modifier_alone_does_not_show_in_the_support_preview(self):
-        # Строка справа — про поддержку из НП, а не про модификатор: он и
-        # так виден в своей клетке рядом, а бросают тут все партии всегда.
+    def test_modifier_alone_does_not_change_the_support_preview(self):
+        # Строка справа — про базу от очков в НП, а не про модификатор: он
+        # и так виден в своей клетке рядом, а бросают тут все партии всегда.
+        before = self.app.elections.previews[self.district.id].value
         self.bonus(0, "2")
         self.assertIn(self.district.id, self.app.elections.collect())
-        self.assertEqual(self.app.elections.previews[self.district.id].value,
-                         "поддержки нет — решит бросок")
+        self.assertEqual(self.app.elections.previews[self.district.id].value, before)
 
     def test_reapplying_the_election_always_produces_a_fresh_result(self):
         # Раньше пустая настройка (после того как последнюю поддержку
@@ -1105,7 +1144,7 @@ class TestSeatsAfterElection(AppTestCase):
 
         conv = self.app.selected
         self.assertEqual(conv.seats, {})
-        self.assertEqual(conv.rolls, {})
+        self.assertEqual(conv.results, {})
         self.assertTrue(self.app.manual_seats)
         self.assertTrue(self.app.seat_fields)
 
@@ -1114,10 +1153,9 @@ class TestSeatsAfterElection(AppTestCase):
         self.app.reset_election()
         find(self.page.dialog, lambda c: isinstance(c, ft.Button)
              and c.content == "Сбросить").on_click(None)
-        district = self.service.project.district(self.district.id)
+        # Единственная партия с очками в округе — вся база достаётся ей.
         self.assertEqual(
-            self.service.support_modifier(self.district.id, self.app.parties[0].id),
-            4 / len(district.settlements))
+            self.service.base_share(self.district.id, self.app.parties[0].id), 100.0)
 
     def test_archived_convocation_keeps_its_results(self):
         seats = dict(self.app.selected.seats)
@@ -1322,12 +1360,12 @@ class TestSupportScreenCities(AppTestCase):
         field.on_change(ft.ControlEvent(control=field, name="change", data="5"))
 
         self.assertEqual(self.city.support[self.app.parties[0].id], 5)
-        # Тот же модификатор виден и на другом округе того же города.
+        # Та же база видна и на другом округе того же города.
         port = next(d for d in self.service.project.districts
                    if d.name == "Гаффинсвик порт")
         self.assertEqual(
-            self.service.support_modifier(self.gaffinsvik.id, self.app.parties[0].id),
-            self.service.support_modifier(port.id, self.app.parties[0].id))
+            self.service.base_share(self.gaffinsvik.id, self.app.parties[0].id),
+            self.service.base_share(port.id, self.app.parties[0].id))
 
 
 class TestSupportScreenWidth(AppTestCase):

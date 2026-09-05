@@ -417,10 +417,14 @@ def district_dialog(district, rows: list[tuple], shares: dict[str, float],
                     on_close: Callable) -> ft.AlertDialog:
     """Расклад одного округа — по клику на карте.
 
-    `rows` — отсортированные `(партия, PartyRoll|None, места)`. Показываем
-    слагаемые броска, а не только итог: бросок случаен и не повторится, и без
-    разбивки потом не понять, почему округ достался этой партии.
+    `rows` — отсортированные `(партия, PartyResult|None, места)`. Показываем
+    слагаемые доли, а не только итог: колебание случайно и не повторится, и
+    без разбивки потом не понять, почему округ достался этой партии.
+    Партия ниже проходного барьера мест не получает, но её доля всё равно
+    видна здесь — барьер запрещает места, а не участие.
     """
+    from ..elections import THRESHOLD_PERCENT
+
     body: list[ft.Control] = [
         ft.Row([
             ft.Text(f"{district.seats} мест", size=theme.fs(14),
@@ -438,13 +442,17 @@ def district_dialog(district, rows: list[tuple], shares: dict[str, float],
     lines: list[ft.Control] = [
         ft.Row([
             ft.Container(theme.label("Партия"), expand=True),
-            ft.Container(theme.label("Расчёт"), width=210),
-            ft.Container(theme.label("% голосов"), width=70),
+            ft.Container(theme.label("Расчёт"), width=230),
+            ft.Container(theme.label("% голосов"), width=90),
             ft.Container(theme.label("Мест"), width=48),
         ], spacing=8),
     ]
-    for party, roll, seats in rows:
+    for party, result, seats in rows:
         share = shares.get(party.id, 0.0)
+        below_threshold = 0 < share < THRESHOLD_PERCENT
+        share_text = f"{share:.1f} %".replace(".", ",")
+        if below_threshold:
+            share_text += " · ниже барьера"
         lines.append(ft.Container(
             padding=ft.Padding.symmetric(vertical=6),
             border=ft.Border.only(bottom=ft.BorderSide(1, "#14201e1d")),
@@ -456,14 +464,14 @@ def district_dialog(district, rows: list[tuple], shares: dict[str, float],
                     expand=True,
                 ),
                 ft.Container(
-                    ft.Text(_roll_breakdown(roll), size=theme.fs(12),
+                    ft.Text(_roll_breakdown(result), size=theme.fs(12),
                             color=theme.NEUTRAL_700),
-                    width=210,
+                    width=230,
                 ),
                 ft.Container(
-                    ft.Text(f"{share:.1f} %".replace(".", ","), size=theme.fs(13),
-                            color=theme.TEXT),
-                    width=70,
+                    ft.Text(share_text, size=theme.fs(13),
+                            color=theme.NEUTRAL_600 if below_threshold else theme.TEXT),
+                    width=90,
                 ),
                 ft.Container(
                     ft.Text(str(seats), size=theme.fs(15),
@@ -473,28 +481,32 @@ def district_dialog(district, rows: list[tuple], shares: dict[str, float],
             ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
         ))
     body.extend(lines)
-    return _shell(district.name, body, [_cancel_as_close(on_close)], width=640)
+    return _shell(district.name, body, [_cancel_as_close(on_close)], width=660)
 
 
-def _roll_breakdown(roll) -> str:
-    """«4 + 2,5 − 1 + 2 = 7,5» — из чего сложился вес партии."""
-    if roll is None:
+def _roll_breakdown(result) -> str:
+    """«60,0 − 4,0 + 1,2 + 2,0 − 0,8 = 58,4» — из чего сложилась доля партии.
+
+    Сумма — до нормировки на 100 % по округу, поэтому может слегка
+    расходиться с «% голосов» в соседнем столбце: тот уже нормирован.
+    """
+    if result is None:
         return "—"
-    parts = [str(roll.roll)]
-    if roll.support:
-        parts.append(f"+ {roll.support:.1f}".replace(".", ","))
-    if roll.modifier:
-        sign = "+" if roll.modifier > 0 else "−"
-        parts.append(f"{sign} {abs(roll.modifier):g}".replace(".", ","))
-    if roll.national:
-        sign = "+" if roll.national > 0 else "−"
-        parts.append(f"{sign} {abs(roll.national):g}".replace(".", ","))
-    total = f"{roll.total:.1f}".replace(".", ",")
-    line = f"{' '.join(parts)} = {total}"
-    # Штрафы могли увести сумму в минус, а вес ниже нуля не бывает: иначе
+    parts = [f"{result.base:.1f}".replace(".", ",")]
+    for value in (result.national, result.island, result.modifier):
+        if value:
+            sign = "+" if value > 0 else "−"
+            parts.append(f"{sign} {abs(value):.1f}".replace(".", ","))
+    if result.wobble:
+        sign = "+" if result.wobble > 0 else "−"
+        parts.append(f"{sign} {abs(result.wobble):.1f}".replace(".", ","))
+    raw = result.raw
+    total = f"{max(0.0, raw):.1f}".replace(".", ",")
+    line = f"{' '.join(parts)} = {total} %"
+    # Штрафы могли увести сумму в минус, а доля ниже нуля не бывает: иначе
     # партия вычитала бы голоса у остальных. Без оговорки строка выглядела
     # бы арифметической ошибкой.
-    if roll.roll + roll.support + roll.modifier + roll.national < 0:
+    if raw < 0:
         line += " (не ниже нуля)"
     return line
 

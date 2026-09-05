@@ -1,20 +1,20 @@
-"""Экран «Выборы»: модификаторы по округам и розыгрыш голосов.
+"""Экран «Выборы»: базы, поправки и розыгрыш голосов.
 
-Голоса не вводятся — они разыгрываются. Каждой партии в округе выпадает
-1–10, к броску прибавляются модификаторы, и уже эти числа делятся между
-партиями пропорционально.
-
-Здесь выставляется то, что задаёт ведущий: свободный модификатор на партию
-в округе — любое число, отрицательное действует как штраф, — и «настроение
-по стране», тот же модификатор, но один сразу на все округа партии. Причина
-не привязана к чему-то одному вроде дебатов — это может быть что угодно по
-ходу партии. Третий модификатор, поддержка, не вводится: он считается из
-очков в населённых пунктах и показан справочно.
+Голоса в округе не вводятся — они считаются. У каждой партии есть база — её
+доля от очков поддержки, розданных в округе игроками (столбец «Поддержка»
+справа), — и к ней прибавляются (в процентных пунктах) три поправки:
+свободный модификатор на конкретный округ, «настроение по стране» — тот же
+модификатор, но один сразу на все округа партии, — и сдвиг по острову —
+такой же, но на один остров архипелага, а не на всю карту и не на один
+округ. Причина поправки не привязана к чему-то одному вроде дебатов — это
+может быть что угодно по ходу партии. После всех поправок добавляется
+небольшое случайное колебание, и доли округа нормируются к 100 %.
 
 В розыгрыше участвуют все партии во всех округах — своя клетка не открывает
-партии доступ в округ, а просто прибавляет к её броску: без поддержки и без
-модификатора партия всё равно бросает кубик наравне с остальными, просто без
-прибавки.
+партии доступ в округ, а лишь прибавляет к её доле: без всякой базы и
+поправок партия всё равно получает долю на одном колебании, просто без
+форы. Партия ниже проходного барьера мест не получает, но её доля всё
+равно видна в разборе округа — это не запрет участвовать.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from __future__ import annotations
 import flet as ft
 
 from .. import district_seed
-from ..elections import PartyRoll
+from ..elections import PartyResult
 from . import theme
 from .mount import push
 
@@ -33,17 +33,20 @@ _PREVIEW_WIDTH = 210
 
 
 class ElectionsView:
-    """Таблица «округ × партия» с модификаторами."""
+    """Таблица «округ × партия» с базами и поправками."""
 
     def __init__(self, app):
         self.app = app
         self.service = app.service
-        #: `{district_id: {party_id: поле модификатора}}`.
+        #: `{district_id: {party_id: поле местного модификатора}}`.
         self.cells: dict[str, dict[str, ft.TextField]] = {}
-        #: `{party_id: поле «настроения по стране»}` — один модификатор сразу
-        #: на все округа партии, не привязан ни к одному конкретному.
+        #: `{party_id: поле «настроения по стране»}` — одна поправка сразу
+        #: на все округа партии, не привязана ни к одному конкретному.
         self.national_cells: dict[str, ft.TextField] = {}
-        #: Подписи с ожидаемым раскладом справа от строки.
+        #: `{остров: {party_id: поле сдвига по острову}}` — та же поправка,
+        #: но на один остров архипелага, а не на всю карту.
+        self.island_cells: dict[str, dict[str, ft.TextField]] = {}
+        #: Подписи с ожидаемой базой справа от строки округа.
         self.previews: dict[str, ft.Text] = {}
 
     # -- сборка -------------------------------------------------------------
@@ -68,6 +71,7 @@ class ElectionsView:
                     padding=ft.Padding.only(top=14, bottom=4),
                     content=theme.label(island or "Прочие"),
                 ))
+                rows.append(self._island_row(island))
             rows.append(self._district_row(district))
 
         return ft.Column([
@@ -79,11 +83,13 @@ class ElectionsView:
                                 f"{self.service.project.total_seats} мест · {conv.name}",
                                 size=theme.fs(15), font_family=theme.FONT_SEMIBOLD,
                                 color=theme.TEXT),
-                        ft.Text("В клетке — модификатор, можно со знаком минус. "
-                                "Поддержка берётся из населённых пунктов.",
+                        ft.Text("В клетке — поправка в процентных пунктах, можно со "
+                                "знаком минус. Поддержка берётся из населённых пунктов; "
+                                f"меньше {_threshold_label()} % голосов в округе — "
+                                "без места, но доля всё равно видна в разборе.",
                                 size=theme.fs(12), color=theme.NEUTRAL_700),
                     ], spacing=3, tight=True, expand=True),
-                    theme.ghost_button("Убрать все модификаторы",
+                    theme.ghost_button("Убрать все поправки",
                                        lambda _e: self._clear_all()),
                 ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
             ),
@@ -103,19 +109,34 @@ class ElectionsView:
         ], spacing=0, expand=True)
 
     def _preload(self, conv) -> None:
-        """Подставляет модификаторы прошлого розыгрыша, если он был.
+        """Подставляет поправки прошлых выборов, если они были.
 
         Экран выборов — не только ввод с нуля: результат нередко хочется
-        перебросить, поменяв одну-две правки.
+        пересчитать, поменяв одну-две правки.
         """
-        self.previous: dict[str, dict[str, PartyRoll]] = conv.rolls
+        self.previous: dict[str, dict[str, PartyResult]] = conv.results
+
         #: «Настроение по стране» одинаково для партии во всех округах —
         #: достаточно взять его из любого одного, чтобы подставить в поле.
         self.national_previous: dict[str, float] = {}
         first_district = next(iter(self.previous.values()), {})
-        for party_id, roll in first_district.items():
-            if roll.national:
-                self.national_previous[party_id] = roll.national
+        for party_id, result in first_district.items():
+            if result.national:
+                self.national_previous[party_id] = result.national
+
+        #: Сдвиг по острову одинаков для партии во всех округах этого
+        #: острова — берём его из первого сыгранного округа острова.
+        self.island_previous: dict[str, dict[str, float]] = {}
+        for district in self.service.project.districts:
+            island = district_seed.island_of(district.region)
+            if island in self.island_previous:
+                continue
+            per_party = self.previous.get(district.id)
+            if not per_party:
+                continue
+            for party_id, result in per_party.items():
+                if result.island:
+                    self.island_previous.setdefault(island, {})[party_id] = result.island
 
     def _header(self) -> ft.Control:
         return ft.Row([
@@ -136,7 +157,7 @@ class ElectionsView:
         ], spacing=10)
 
     def _national_row(self) -> ft.Control:
-        """Строка «настроения по стране» — один модификатор партии сразу на
+        """Строка «настроения по стране» — одна поправка партии сразу на
         все округа, а не на конкретный. Выглядит как строка округа, но
         вместо названия и мест — общая подпись."""
         cells: list[ft.Control] = [
@@ -144,9 +165,9 @@ class ElectionsView:
                 ft.Text("Настроение по стране", size=theme.fs(13),
                         font_family=theme.FONT_SEMIBOLD, color=theme.NEUTRAL_700,
                         no_wrap=True, overflow=ft.TextOverflow.ELLIPSIS,
-                        tooltip="Волна за или против партии сразу по всей "
-                                "карте — прибавляется к её броску в каждом "
-                                "округе, вдобавок к местному модификатору"),
+                        tooltip="Волна за или против партии сразу по всей карте — "
+                                "прибавляется к её доле в каждом округе, вдобавок "
+                                "к сдвигу по острову и местной поправке"),
                 width=_NAME_WIDTH),
             ft.Container(width=46),
         ]
@@ -157,7 +178,7 @@ class ElectionsView:
                 width=_BONUS_WIDTH, text_align=ft.TextAlign.RIGHT)
             field.data = party.id
             field.on_change = self._on_national
-            field.tooltip = "Модификатор партии сразу на все округа"
+            field.tooltip = "Поправка партии сразу на все округа, в п.п."
             self.national_cells[party.id] = field
             cells.append(ft.Container(field, width=_CELL_WIDTH))
         cells.append(ft.Container(width=_PREVIEW_WIDTH))
@@ -165,6 +186,40 @@ class ElectionsView:
         return ft.Container(
             padding=ft.Padding.symmetric(vertical=3),
             bgcolor=theme.NEUTRAL_100,
+            content=ft.Row(cells, spacing=10,
+                           vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        )
+
+    def _island_row(self, island: str) -> ft.Control:
+        """Строка сдвига по острову — та же идея, что и «настроение по
+        стране», но применяется только к округам одного острова."""
+        cells: list[ft.Control] = [
+            ft.Container(
+                ft.Text("Сдвиг по острову", size=theme.fs(12),
+                        color=theme.NEUTRAL_600, no_wrap=True,
+                        overflow=ft.TextOverflow.ELLIPSIS,
+                        tooltip=f"Поправка партии на все округа острова «{island}» "
+                                "сразу — соседние округа острова обычно голосуют "
+                                "похоже"),
+                width=_NAME_WIDTH),
+            ft.Container(width=46),
+        ]
+        per_party: dict[str, ft.TextField] = {}
+        for party in self.app.parties:
+            value = self.island_previous.get(island, {}).get(party.id, 0.0)
+            field = theme.text_field(
+                self._format_bonus(value) if value else "",
+                width=_BONUS_WIDTH, text_align=ft.TextAlign.RIGHT)
+            field.data = (island, party.id)
+            field.on_change = self._on_island
+            field.tooltip = "Поправка партии на округа этого острова, в п.п."
+            per_party[party.id] = field
+            cells.append(ft.Container(field, width=_CELL_WIDTH))
+        cells.append(ft.Container(width=_PREVIEW_WIDTH))
+        self.island_cells[island] = per_party
+
+        return ft.Container(
+            padding=ft.Padding.symmetric(vertical=2),
             content=ft.Row(cells, spacing=10,
                            vertical_alignment=ft.CrossAxisAlignment.CENTER),
         )
@@ -191,7 +246,7 @@ class ElectionsView:
                 width=_BONUS_WIDTH, text_align=ft.TextAlign.RIGHT)
             bonus.data = (district.id, party.id)
             bonus.on_change = self._on_bonus
-            bonus.tooltip = "Модификатор, можно со знаком минус"
+            bonus.tooltip = "Местная поправка, в п.п., можно со знаком минус"
 
             per_party[party.id] = bonus
             cells.append(ft.Container(bonus, width=_CELL_WIDTH))
@@ -212,9 +267,9 @@ class ElectionsView:
 
     # -- ввод ---------------------------------------------------------------
 
-    def _on_bonus(self, event) -> None:
+    @staticmethod
+    def _sanitize(field: ft.TextField) -> None:
         """Оставляет в поле только число со знаком минус."""
-        field = event.control
         raw = (field.value or "").replace(",", ".")
         cleaned = ""
         for index, ch in enumerate(raw):
@@ -223,23 +278,22 @@ class ElectionsView:
         if cleaned != field.value:
             field.value = cleaned
             push(field)
+
+    def _on_bonus(self, event) -> None:
+        field = event.control
+        self._sanitize(field)
         district_id, _party_id = field.data
         self._refresh_preview(district_id)
 
     def _on_national(self, event) -> None:
-        """Тот же ввод, что и у обычного модификатора, только без округа."""
-        field = event.control
-        raw = (field.value or "").replace(",", ".")
-        cleaned = ""
-        for index, ch in enumerate(raw):
-            if ch.isdigit() or (ch == "-" and index == 0) or (ch == "." and "." not in cleaned):
-                cleaned += ch
-        if cleaned != field.value:
-            field.value = cleaned
-            push(field)
+        self._sanitize(event.control)
+
+    def _on_island(self, event) -> None:
+        self._sanitize(event.control)
 
     def _clear_all(self) -> None:
-        """Стирает все выставленные модификаторы разом — местные и общий.
+        """Стирает все выставленные поправки разом — местные, по стране и
+        по островам.
 
         Само поле поддержки не трогает: оно вообще не вводится здесь, а
         считается из очков в населённых пунктах.
@@ -254,14 +308,19 @@ class ElectionsView:
             if field.value:
                 field.value = ""
                 push(field)
+        for per_party in self.island_cells.values():
+            for field in per_party.values():
+                if field.value:
+                    field.value = ""
+                    push(field)
 
     def _refresh_preview(self, district_id: str, live: bool = True) -> None:
-        """Показывает, у кого в округе есть поддержка сверх голого броска.
+        """Показывает базу партий округа — их долю от розданных очков.
 
-        Участвуют всегда все партии — этот столбец не про то, кто идёт (идут
-        все), а про то, у кого есть очковая прибавка. Именно поддержку, а не
-        итог: бросок случаен, и обещать результат до розыгрыша было бы
-        враньём.
+        Участвуют всегда все партии — этот столбец не про то, кто идёт
+        (идут все), а про то, у кого есть организованная база. Именно базу,
+        а не итог: колебание случайно, и обещать результат до розыгрыша
+        было бы враньём.
         """
         district = self.service.project.district(district_id)
         preview = self.previews.get(district_id)
@@ -270,13 +329,13 @@ class ElectionsView:
 
         parts = []
         for party in self.app.parties:
-            support = self.service.support_modifier(district_id, party.id)
-            if not support:
+            base = self.service.base_share(district_id, party.id)
+            if not base:
                 continue
             label = party.abbr or party.name
-            parts.append(f"{label} {support:.1f}".replace(".", ","))
+            parts.append(f"{label} {base:.0f} %".replace(".", ","))
 
-        preview.value = "  ".join(parts) if parts else "поддержки нет — решит бросок"
+        preview.value = "  ".join(parts) if parts else "поддержки нет — решит колебание"
         preview.color = theme.TEXT if parts else theme.NEUTRAL_600
         if live:
             push(preview)
@@ -284,7 +343,7 @@ class ElectionsView:
     # -- сбор данных --------------------------------------------------------
 
     def collect(self) -> dict[str, dict[str, dict]]:
-        """Модификаторы в виде, который принимает `roll_election`."""
+        """Местные поправки в виде, который принимает `roll_election`."""
         result: dict[str, dict[str, dict]] = {}
         for district_id, per_party in self.cells.items():
             district_setup: dict[str, dict] = {}
@@ -305,6 +364,17 @@ class ElectionsView:
                 result[party_id] = value
         return result
 
+    def collect_island(self) -> dict[str, dict[str, float]]:
+        """Сдвиги по островам в виде, который принимает `roll_election`."""
+        result: dict[str, dict[str, float]] = {}
+        for island, per_party in self.island_cells.items():
+            values = {party_id: _to_number(field.value)
+                     for party_id, field in per_party.items()}
+            values = {pid: v for pid, v in values.items() if v}
+            if values:
+                result[island] = values
+        return result
+
     @staticmethod
     def _format_bonus(value: float) -> str:
         return str(int(value)) if float(value).is_integer() else str(value)
@@ -323,6 +393,11 @@ class ElectionsView:
                 alignment=ft.MainAxisAlignment.CENTER,
                 horizontal_alignment=ft.CrossAxisAlignment.CENTER),
         )
+
+
+def _threshold_label() -> str:
+    from ..elections import THRESHOLD_PERCENT
+    return str(int(THRESHOLD_PERCENT)) if THRESHOLD_PERCENT.is_integer() else str(THRESHOLD_PERCENT)
 
 
 def _to_number(text: str | None) -> float:

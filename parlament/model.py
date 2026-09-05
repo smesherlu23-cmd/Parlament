@@ -92,10 +92,10 @@ class Convocation:
     #: сервис пересобирает `seats`. Пустой словарь означает состав, набранный
     #: руками без выборов — так работают старые проекты и ручная правка.
     votes: dict[str, dict[str, float]] = field(default_factory=dict)
-    #: Разбор розыгрыша — `{district_id: {party_id: PartyRoll}}`. Хранится
-    #: рядом с весами, потому что бросок случаен и второй раз не повторится:
-    #: без него потом не понять, из чего сложился результат.
-    rolls: dict[str, dict] = field(default_factory=dict)
+    #: Разбор выборов — `{district_id: {party_id: PartyResult}}`. Хранится
+    #: рядом с весами, потому что колебание случайно и второй раз не
+    #: повторится: без него потом не понять, из чего сложился результат.
+    results: dict[str, dict] = field(default_factory=dict)
 
     @property
     def is_fixed(self) -> bool:
@@ -108,10 +108,10 @@ class Convocation:
 
         Смотрим и на разбор: если модификаторы увели всех в ноль, голосов
         нет ни у кого, но выборы всё же состоялись — и их разбор лежит в
-        `rolls`. Считать такой созыв «без выборов» значило бы предлагать
+        `results`. Считать такой созыв «без выборов» значило бы предлагать
         набрать места руками поверх уже сыгранного розыгрыша.
         """
-        return bool(self.rolls) or any(self.votes.values())
+        return bool(self.results) or any(self.votes.values())
 
     def used_seats(self) -> int:
         return sum(self.seats.values())
@@ -125,8 +125,8 @@ class Convocation:
             "createdAt": self.created_at,
             "fixedAt": self.fixed_at,
             "votes": {d: dict(v) for d, v in self.votes.items() if v},
-            "rolls": {d: {p: r.to_dict() for p, r in per.items()}
-                      for d, per in self.rolls.items() if per},
+            "results": {d: {p: r.to_dict() for p, r in per.items()}
+                       for d, per in self.results.items() if per},
         }
 
     @staticmethod
@@ -155,16 +155,20 @@ class Convocation:
             if cleaned:
                 votes[str(district_id)] = cleaned
 
-        from .elections import PartyRoll
+        from .elections import PartyResult
 
-        rolls: dict[str, dict] = {}
-        for district_id, per_party in (raw.get("rolls") or {}).items():
+        # Старый формат (до перехода на проценты) хранил этот же разбор под
+        # именем "rolls" и с другими полями (бросок кубика, а не доля
+        # голосов) — читать его в новую форму бессмысленно, только состав
+        # (`seats`) переживает переход, разбор придётся сыграть заново.
+        results: dict[str, dict] = {}
+        for district_id, per_party in (raw.get("results") or {}).items():
             if not isinstance(per_party, dict):
                 continue
-            parsed = {str(pid): PartyRoll.from_dict(r)
-                      for pid, r in per_party.items() if isinstance(r, dict)}
+            parsed = {str(pid): PartyResult.from_dict(r)
+                     for pid, r in per_party.items() if isinstance(r, dict)}
             if parsed:
-                rolls[str(district_id)] = parsed
+                results[str(district_id)] = parsed
 
         return Convocation(
             id=str(raw["id"]),
@@ -174,7 +178,7 @@ class Convocation:
             created_at=str(raw.get("createdAt") or now_iso()),
             fixed_at=raw.get("fixedAt") or None,
             votes=votes,
-            rolls=rolls,
+            results=results,
         )
 
 
@@ -343,7 +347,7 @@ class Project:
         return next((c for c in self.cities if c.id == city_id), None)
 
     def district_support(self, district: "District", party_id: str) -> int:
-        """Очки партии, которые идут в модификатор округа.
+        """Очки партии в округе — основа для её базовой доли голосов.
 
         У городского округа своих очков нет: они общие на весь город, и
         смотреть надо в копилку его метрополии, а не в пустой `settlements`.
@@ -354,20 +358,6 @@ class Project:
             city = self.city(district.region)
             return city.support.get(party_id, 0) if city else 0
         return district.support_points(party_id)
-
-    def district_settlement_count(self, district: "District") -> int:
-        """Знаменатель модификатора округа — сколько пунктов делят его очки.
-
-        У городского округа он всегда 1 (общая копилка), даже если сам город
-        разбит на несколько избирательных округов: делить очки ещё и на
-        число районов значило бы дробить их сильнее, чем в других городах,
-        просто потому что этот оказался крупнее на карте.
-        """
-        from .district_seed import is_city
-
-        if is_city(district.code):
-            return 1 if self.city(district.region) else 0
-        return len(district.settlements)
 
     @property
     def district_seats(self) -> dict[str, int]:
@@ -416,12 +406,12 @@ class Project:
                 if did in known_districts
             }
             conv.votes = {did: v for did, v in conv.votes.items() if v}
-            conv.rolls = {
+            conv.results = {
                 did: {pid: r for pid, r in per.items() if pid in known}
-                for did, per in conv.rolls.items()
+                for did, per in conv.results.items()
                 if did in known_districts
             }
-            conv.rolls = {did: r for did, r in conv.rolls.items() if r}
+            conv.results = {did: r for did, r in conv.results.items() if r}
 
         if not convocations:
             convocations = [Convocation(id=new_id("c"), number=1, name=convocation_name(1))]

@@ -137,9 +137,9 @@ class ParlamentService:
             conv.votes = {did: {pid: n for pid, n in per.items() if pid != party.id}
                           for did, per in conv.votes.items()}
             conv.votes = {did: per for did, per in conv.votes.items() if per}
-            conv.rolls = {did: {pid: r for pid, r in per.items() if pid != party.id}
-                          for did, per in conv.rolls.items()}
-            conv.rolls = {did: per for did, per in conv.rolls.items() if per}
+            conv.results = {did: {pid: r for pid, r in per.items() if pid != party.id}
+                           for did, per in conv.results.items()}
+            conv.results = {did: per for did, per in conv.results.items() if per}
             self._recount(conv)
 
         self._persist()
@@ -173,7 +173,7 @@ class ParlamentService:
                 points += value
                 settlements += 1
         rolled = sum(1 for conv in self.project.convocations
-                     for per in conv.rolls.values() if party_id in per)
+                     for per in conv.results.values() if party_id in per)
         return {
             "convocations": self.party_usage(party_id),
             "supportPoints": points,
@@ -181,7 +181,7 @@ class ParlamentService:
             "rolledDistricts": rolled,
             "recountedConvocations": sum(
                 1 for conv in self.project.convocations
-                if conv.has_election and any(party_id in per for per in conv.rolls.values())
+                if conv.has_election and any(party_id in per for per in conv.results.values())
             ),
         }
 
@@ -525,94 +525,117 @@ class ParlamentService:
                 return settlement.capacity
         return elections.SETTLEMENT_SUPPORT
 
-    def support_modifier(self, district_id: str, party_id: str) -> float:
-        """Модификатор поддержки партии в округе — очки, делённые на число НП.
+    def base_share(self, district_id: str, party_id: str) -> float:
+        """База партии в округе — доля от розданных там очков, в процентах.
 
-        У городского округа очки не свои — общие на весь город (см.
-        `Project.district_support`), а делитель всегда 1: несколько
-        избирательных округов одного города получают один и тот же
-        модификатор, а не дробят его ещё и на число районов.
+        У городского округа очки общие на весь город (см.
+        `Project.district_support`): несколько избирательных округов одной
+        метрополии получают одну и ту же базу, а не делят её ещё раз.
         """
         district = self._require_district(district_id)
-        return elections.support_modifier(
-            self.project.district_support(district, party_id),
-            self.project.district_settlement_count(district))
+        points = {party.id: self.project.district_support(district, party.id)
+                 for party in self.project.parties}
+        return elections.base_shares(points).get(party_id, 0.0)
 
     # -- розыгрыш выборов ------------------------------------------------------
 
     def roll_election(self, convocation_id: str,
                       modifiers: dict[str, dict[str, dict]] | None = None,
                       national: dict[str, float] | None = None,
+                      island: dict[str, dict[str, float]] | None = None,
                       rng=None) -> Convocation:
         """Разыгрывает выборы по всем округам и пересобирает состав.
 
         :param modifiers: `{district_id: {party_id: {"modifier": число}}}` —
-                          то, что ведущий выставил руками. Поддержка сюда не
-                          передаётся: она считается из очков в населённых
-                          пунктах.
-        :param national: `{party_id: число}` — «настроение по стране»: тот
-                         же свободный модификатор, но один на партию сразу
-                         для всех округов, а не для одного конкретного.
+                          местная поправка, которую ведущий выставил руками
+                          на конкретный округ.
+        :param national: `{party_id: число}` — «настроение по стране»: та же
+                         поправка, но одна на партию сразу для всех округов.
+        :param island: `{остров: {party_id: число}}` — то же самое, но на
+                       один остров архипелага (см. `district_seed.islands`);
+                       остров вычисляется по региону округа.
 
-        В розыгрыше участвуют все партии во всех округах — у каждой свой
-        бросок 1–10, а поддержка и модификаторы просто прибавляются к нему.
-        Партия без поддержки и без модификаторов идёт наравне с остальными,
-        на одном голом броске: у неё просто нет прибавки.
+        У каждой партии в округе есть база — её доля от очков поддержки,
+        розданных там игроками, — к которой прибавляются (в процентных
+        пунктах) настроение по стране, сдвиг по острову, местная поправка и
+        случайное колебание; итог нормируется к 100 % на весь округ. Партия
+        без всякой базы участвует наравне с остальными — на одном колебании,
+        без всякой прибавки.
         """
         conv = self._require_convocation(convocation_id)
-        # Нечего разыгрывать не по нехватке модификаторов (их и не может не
-        # хватать — участвуют все), а только если разыгрывать физически
-        # некого или негде.
+        # Нечего разыгрывать не по нехватке поправок (участвуют все и без
+        # них), а только если разыгрывать физически некого или негде.
         if not self.project.districts:
             raise ValidationError("В проекте нет округов — разыгрывать нечего.")
         if not self.project.parties:
             raise ValidationError("В проекте нет партий — разыгрывать некого.")
         modifiers = modifiers or {}
         national = national or {}
+        island = island or {}
         generator = rng or random.Random()
 
         # Ключи проверяем заранее: дальше идёт обход округов проекта, и
-        # опечатка в имени округа или партии иначе просто потерялась бы —
-        # выборы прошли бы «успешно», молча выбросив чужие модификаторы.
+        # опечатка в имени округа, партии или острова иначе просто
+        # потерялась бы — выборы прошли бы «успешно», молча выбросив чужую
+        # поправку.
         for district_id, per_district in modifiers.items():
             self._require_district(district_id)
             for party_id in (per_district or {}):
                 self._require_party(party_id)
         for party_id in national:
             self._require_party(party_id)
+        known_islands = set(district_seed.islands())
+        for island_name, per_party in island.items():
+            if island_name not in known_islands:
+                raise ValidationError(f"«{island_name}» — не остров архипелага.")
+            for party_id in (per_party or {}):
+                self._require_party(party_id)
 
-        rolls: dict[str, dict[str, elections.PartyRoll]] = {}
+        results: dict[str, dict[str, elections.PartyResult]] = {}
+        votes: dict[str, dict[str, float]] = {}
         for district in self.project.districts:
             per_district = modifiers.get(district.id, {})
-            settlements = self.project.district_settlement_count(district)
-            district_rolls: dict[str, elections.PartyRoll] = {}
+            per_island = island.get(district_seed.island_of(district.region), {})
+            points = {party.id: self.project.district_support(district, party.id)
+                     for party in self.project.parties}
+            base = elections.base_shares(points)
 
+            raw: dict[str, float] = {}
+            parts: dict[str, tuple[float, float, float, float]] = {}
             for party in self.project.parties:
                 setup = per_district.get(party.id) or {}
                 modifier = self._clean_bonus(setup.get("modifier", 0))
                 mood = self._clean_bonus(national.get(party.id, 0))
-                support = elections.support_modifier(
-                    self.project.district_support(district, party.id), settlements)
+                swing = self._clean_bonus(per_island.get(party.id, 0))
+                wobble = elections.roll_wobble(generator)
+                parts[party.id] = (mood, swing, modifier, wobble)
+                raw[party.id] = base[party.id] + mood + swing + modifier + wobble
 
-                district_rolls[party.id] = elections.PartyRoll(
-                    roll=elections.roll_dice(generator),
-                    support=support, modifier=modifier, national=mood,
+            share = elections.normalize_shares(raw)
+            district_results: dict[str, elections.PartyResult] = {}
+            for party in self.project.parties:
+                mood, swing, modifier, wobble = parts[party.id]
+                district_results[party.id] = elections.PartyResult(
+                    base=base[party.id], national=mood, island=swing,
+                    modifier=modifier, wobble=wobble, share=share[party.id],
                 )
+            results[district.id] = district_results
+            votes[district.id] = elections.weights(district_results)
 
-            rolls[district.id] = district_rolls
-
-        conv.rolls = rolls
-        conv.votes = {district_id: elections.weights(per_party)
-                      for district_id, per_party in rolls.items()}
-        conv.votes = {d: v for d, v in conv.votes.items() if v}
+        conv.results = results
+        conv.votes = {d: v for d, v in votes.items() if v}
         self._recount(conv)
         self._persist()
         return conv
 
     def district_shares(self, convocation_id: str, district_id: str) -> dict[str, float]:
-        """Проценты голосов по округу — как их показывает разбор."""
+        """Проценты голосов по округу — как их показывает разбор.
+
+        Включая тех, кто не прошёл проходной барьер: места им не достаются,
+        но сам процент по-прежнему виден.
+        """
         conv = self._require_convocation(convocation_id)
-        return elections.shares(conv.rolls.get(district_id, {}))
+        return elections.shares(conv.results.get(district_id, {}))
 
     def _require_settlement(self, district_id: str, settlement_id: str) -> Settlement:
         district = self._require_district(district_id)
@@ -656,7 +679,7 @@ class ParlamentService:
         """Убирает результаты выборов созыва — состав снова набирается руками."""
         conv = self._require_convocation(convocation_id)
         conv.votes = {}
-        conv.rolls = {}
+        conv.results = {}
         conv.seats = {}
         self._persist()
         return conv
