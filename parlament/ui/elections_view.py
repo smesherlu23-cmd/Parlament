@@ -4,11 +4,12 @@
 1–10, к броску прибавляются модификаторы, и уже эти числа делятся между
 партиями пропорционально.
 
-Здесь выставляется то, что задаёт ведущий: свободный модификатор — любое
-число, отрицательное действует как штраф. Причина не привязана к чему-то
-одному вроде дебатов — это может быть что угодно по ходу партии. Второй
-модификатор, поддержка, не вводится: он считается из очков в населённых
-пунктах и показан справочно.
+Здесь выставляется то, что задаёт ведущий: свободный модификатор на партию
+в округе — любое число, отрицательное действует как штраф, — и «настроение
+по стране», тот же модификатор, но один сразу на все округа партии. Причина
+не привязана к чему-то одному вроде дебатов — это может быть что угодно по
+ходу партии. Третий модификатор, поддержка, не вводится: он считается из
+очков в населённых пунктах и показан справочно.
 
 В розыгрыше участвуют все партии во всех округах — своя клетка не открывает
 партии доступ в округ, а просто прибавляет к её броску: без поддержки и без
@@ -39,6 +40,9 @@ class ElectionsView:
         self.service = app.service
         #: `{district_id: {party_id: поле модификатора}}`.
         self.cells: dict[str, dict[str, ft.TextField]] = {}
+        #: `{party_id: поле «настроения по стране»}` — один модификатор сразу
+        #: на все округа партии, не привязан ни к одному конкретному.
+        self.national_cells: dict[str, ft.TextField] = {}
         #: Подписи с ожидаемым раскладом справа от строки.
         self.previews: dict[str, ft.Text] = {}
 
@@ -89,7 +93,8 @@ class ElectionsView:
                 # Две прокрутки: вниз по округам и вбок — таблица с десятком
                 # партий шире окна, и без этого правые столбцы недостижимы.
                 content=ft.Row([
-                    ft.Column([self._header(), ft.Divider(height=1, color=theme.DIVIDER),
+                    ft.Column([self._header(), self._national_row(),
+                               ft.Divider(height=1, color=theme.DIVIDER),
                                *rows],
                               spacing=4, scroll=ft.ScrollMode.AUTO, expand=True),
                 ], scroll=ft.ScrollMode.AUTO, expand=True,
@@ -104,6 +109,13 @@ class ElectionsView:
         перебросить, поменяв одну-две правки.
         """
         self.previous: dict[str, dict[str, PartyRoll]] = conv.rolls
+        #: «Настроение по стране» одинаково для партии во всех округах —
+        #: достаточно взять его из любого одного, чтобы подставить в поле.
+        self.national_previous: dict[str, float] = {}
+        first_district = next(iter(self.previous.values()), {})
+        for party_id, roll in first_district.items():
+            if roll.national:
+                self.national_previous[party_id] = roll.national
 
     def _header(self) -> ft.Control:
         return ft.Row([
@@ -122,6 +134,40 @@ class ElectionsView:
               for party in self.app.parties],
             ft.Container(theme.label("Поддержка"), width=_PREVIEW_WIDTH),
         ], spacing=10)
+
+    def _national_row(self) -> ft.Control:
+        """Строка «настроения по стране» — один модификатор партии сразу на
+        все округа, а не на конкретный. Выглядит как строка округа, но
+        вместо названия и мест — общая подпись."""
+        cells: list[ft.Control] = [
+            ft.Container(
+                ft.Text("Настроение по стране", size=theme.fs(13),
+                        font_family=theme.FONT_SEMIBOLD, color=theme.NEUTRAL_700,
+                        no_wrap=True, overflow=ft.TextOverflow.ELLIPSIS,
+                        tooltip="Волна за или против партии сразу по всей "
+                                "карте — прибавляется к её броску в каждом "
+                                "округе, вдобавок к местному модификатору"),
+                width=_NAME_WIDTH),
+            ft.Container(width=46),
+        ]
+        for party in self.app.parties:
+            value = self.national_previous.get(party.id, 0.0)
+            field = theme.text_field(
+                self._format_bonus(value) if value else "",
+                width=_BONUS_WIDTH, text_align=ft.TextAlign.RIGHT)
+            field.data = party.id
+            field.on_change = self._on_national
+            field.tooltip = "Модификатор партии сразу на все округа"
+            self.national_cells[party.id] = field
+            cells.append(ft.Container(field, width=_CELL_WIDTH))
+        cells.append(ft.Container(width=_PREVIEW_WIDTH))
+
+        return ft.Container(
+            padding=ft.Padding.symmetric(vertical=3),
+            bgcolor=theme.NEUTRAL_100,
+            content=ft.Row(cells, spacing=10,
+                           vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        )
 
     def _district_row(self, district) -> ft.Control:
         cells: list[ft.Control] = [
@@ -180,8 +226,20 @@ class ElectionsView:
         district_id, _party_id = field.data
         self._refresh_preview(district_id)
 
+    def _on_national(self, event) -> None:
+        """Тот же ввод, что и у обычного модификатора, только без округа."""
+        field = event.control
+        raw = (field.value or "").replace(",", ".")
+        cleaned = ""
+        for index, ch in enumerate(raw):
+            if ch.isdigit() or (ch == "-" and index == 0) or (ch == "." and "." not in cleaned):
+                cleaned += ch
+        if cleaned != field.value:
+            field.value = cleaned
+            push(field)
+
     def _clear_all(self) -> None:
-        """Стирает все выставленные модификаторы разом.
+        """Стирает все выставленные модификаторы разом — местные и общий.
 
         Само поле поддержки не трогает: оно вообще не вводится здесь, а
         считается из очков в населённых пунктах.
@@ -192,6 +250,10 @@ class ElectionsView:
                     bonus.value = ""
                     push(bonus)
             self._refresh_preview(district_id)
+        for field in self.national_cells.values():
+            if field.value:
+                field.value = ""
+                push(field)
 
     def _refresh_preview(self, district_id: str, live: bool = True) -> None:
         """Показывает, у кого в округе есть поддержка сверх голого броска.
@@ -232,6 +294,15 @@ class ElectionsView:
                     district_setup[party_id] = {"modifier": modifier}
             if district_setup:
                 result[district_id] = district_setup
+        return result
+
+    def collect_national(self) -> dict[str, float]:
+        """«Настроение по стране» в виде, который принимает `roll_election`."""
+        result: dict[str, float] = {}
+        for party_id, field in self.national_cells.items():
+            value = _to_number(field.value)
+            if value:
+                result[party_id] = value
         return result
 
     @staticmethod

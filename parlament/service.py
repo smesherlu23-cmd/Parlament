@@ -542,6 +542,7 @@ class ParlamentService:
 
     def roll_election(self, convocation_id: str,
                       modifiers: dict[str, dict[str, dict]] | None = None,
+                      national: dict[str, float] | None = None,
                       rng=None) -> Convocation:
         """Разыгрывает выборы по всем округам и пересобирает состав.
 
@@ -549,10 +550,13 @@ class ParlamentService:
                           то, что ведущий выставил руками. Поддержка сюда не
                           передаётся: она считается из очков в населённых
                           пунктах.
+        :param national: `{party_id: число}` — «настроение по стране»: тот
+                         же свободный модификатор, но один на партию сразу
+                         для всех округов, а не для одного конкретного.
 
         В розыгрыше участвуют все партии во всех округах — у каждой свой
-        бросок 1–10, а поддержка и модификатор просто прибавляются к нему.
-        Партия без поддержки и без модификатора идёт наравне с остальными,
+        бросок 1–10, а поддержка и модификаторы просто прибавляются к нему.
+        Партия без поддержки и без модификаторов идёт наравне с остальными,
         на одном голом броске: у неё просто нет прибавки.
         """
         conv = self._require_convocation(convocation_id)
@@ -564,6 +568,7 @@ class ParlamentService:
         if not self.project.parties:
             raise ValidationError("В проекте нет партий — разыгрывать некого.")
         modifiers = modifiers or {}
+        national = national or {}
         generator = rng or random.Random()
 
         # Ключи проверяем заранее: дальше идёт обход округов проекта, и
@@ -573,6 +578,8 @@ class ParlamentService:
             self._require_district(district_id)
             for party_id in (per_district or {}):
                 self._require_party(party_id)
+        for party_id in national:
+            self._require_party(party_id)
 
         rolls: dict[str, dict[str, elections.PartyRoll]] = {}
         for district in self.project.districts:
@@ -583,12 +590,13 @@ class ParlamentService:
             for party in self.project.parties:
                 setup = per_district.get(party.id) or {}
                 modifier = self._clean_bonus(setup.get("modifier", 0))
+                mood = self._clean_bonus(national.get(party.id, 0))
                 support = elections.support_modifier(
                     self.project.district_support(district, party.id), settlements)
 
                 district_rolls[party.id] = elections.PartyRoll(
                     roll=elections.roll_dice(generator),
-                    support=support, modifier=modifier,
+                    support=support, modifier=modifier, national=mood,
                 )
 
             rolls[district.id] = district_rolls

@@ -97,6 +97,20 @@ class TestRollMechanic(unittest.TestCase):
         self.assertEqual(min(values), MIN_ROLL)
         self.assertEqual(max(values), MAX_ROLL)
 
+    def test_dice_are_not_uniform(self):
+        # Реальные выборы редко оборачиваются разгромом: середина диапазона
+        # должна выпадать заметно чаще краёв, а не с равной вероятностью.
+        rng = random.Random(2)
+        values = [roll_dice(rng) for _ in range(5000)]
+        middle = sum(1 for v in values if v in (5, 6))
+        edges = sum(1 for v in values if v in (1, 10))
+        self.assertGreater(middle, edges * 3)
+
+    def test_dice_stay_reproducible_for_the_same_seed(self):
+        first = [roll_dice(random.Random(9)) for _ in range(50)]
+        second = [roll_dice(random.Random(9)) for _ in range(50)]
+        self.assertEqual(first, second)
+
     def test_support_is_points_per_settlement(self):
         self.assertEqual(support_modifier(9, 3), 3.0)
         self.assertAlmostEqual(support_modifier(7, 3), 2.3333, places=3)
@@ -146,7 +160,7 @@ class TestRollMechanic(unittest.TestCase):
         self.assertEqual(sum(seats.values()), 9)
 
     def test_roll_survives_a_round_trip(self):
-        original = PartyRoll(roll=6, support=2.5, modifier=-1)
+        original = PartyRoll(roll=6, support=2.5, modifier=-1, national=3)
         self.assertEqual(PartyRoll.from_dict(original.to_dict()), original)
 
     def test_old_files_still_load_the_modifier_under_its_old_name(self):
@@ -155,6 +169,18 @@ class TestRollMechanic(unittest.TestCase):
         self.assertEqual(
             PartyRoll.from_dict({"roll": 5, "support": 0, "debate": 3}),
             PartyRoll(roll=5, support=0, modifier=3))
+
+    def test_old_files_without_national_default_to_zero(self):
+        # Поля «настроение по стране» раньше не было вовсе — старый файл
+        # не должен падать, просто прибавки не будет.
+        self.assertEqual(
+            PartyRoll.from_dict({"roll": 5, "support": 0, "modifier": 1}),
+            PartyRoll(roll=5, support=0, modifier=1, national=0))
+
+    def test_national_mood_stacks_with_everything_else(self):
+        self.assertEqual(
+            PartyRoll(roll=4, support=1.5, modifier=-2, national=3).total,
+            4 + 1.5 - 2 + 3)
 
     def test_broken_stored_roll_does_not_crash(self):
         # Файл проекта правится руками — мусор в полях не должен ронять загрузку.
@@ -557,6 +583,32 @@ class TestRollElection(ElectionTestCase):
             rng=random.Random(5))
         roll = self.conv.rolls[self.district.id][self.a.id]
         self.assertEqual(roll.modifier, -3)
+
+    def test_national_mood_reaches_every_district(self):
+        # Один и тот же модификатор партии должен прибавиться в каждом
+        # округе — это и есть смысл «настроения по стране».
+        self.service.roll_election(
+            self.conv.id, {}, national={self.a.id: 4}, rng=random.Random(23))
+        for district_id, per_party in self.conv.rolls.items():
+            self.assertEqual(per_party[self.a.id].national, 4, district_id)
+            self.assertEqual(per_party[self.b.id].national, 0, district_id)
+
+    def test_national_mood_stacks_with_a_local_modifier(self):
+        self.service.roll_election(
+            self.conv.id,
+            {self.district.id: {self.a.id: {"modifier": 2}}},
+            national={self.a.id: 3}, rng=random.Random(24))
+        roll = self.conv.rolls[self.district.id][self.a.id]
+        self.assertEqual(roll.modifier, 2)
+        self.assertEqual(roll.national, 3)
+
+    def test_bad_national_mood_is_rejected(self):
+        with self.assertRaises(ValidationError):
+            self.service.roll_election(self.conv.id, {}, national={self.a.id: "ой"})
+
+    def test_national_mood_for_an_unknown_party_is_rejected(self):
+        with self.assertRaises(ValidationError):
+            self.service.roll_election(self.conv.id, {}, national={"нет-такой": 1})
 
     def test_seats_come_from_the_rolled_weights(self):
         self.give_support(self.a, 6)

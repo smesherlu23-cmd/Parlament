@@ -119,7 +119,8 @@ def totals_by_party(allocation: dict[str, dict[str, int]]) -> dict[str, int]:
 # Голоса в округе не вводятся руками, а разыгрываются: каждой партии выпадает
 # число 1–10, к нему прибавляются модификаторы, и уже эти итоговые числа
 # разносятся по партиям пропорционально. То есть «3, 5, 7» при сумме 15 дают
-# 20 %, 33,3 % и 46,7 % голосов.
+# 20 %, 33,3 % и 46,7 % голосов. Сам бросок не равновероятный — среднее
+# случается куда чаще краёв, см. `roll_dice`.
 
 #: Границы броска.
 MIN_ROLL = 1
@@ -151,6 +152,10 @@ class PartyRoll:
     #: число, отрицательное действует как штраф. Причина не задана нарочно:
     #: это может быть что угодно по ходу партии, не только дебаты.
     modifier: float = 0.0
+    #: «Настроение по стране» — тот же свободный модификатор, но один на
+    #: партию сразу для всех округов: волна за или против неё по всей карте,
+    #: а не точечная правка в одном округе.
+    national: float = 0.0
 
     @property
     def total(self) -> float:
@@ -160,11 +165,11 @@ class PartyRoll:
         модификаторы способны увести сумму в минус, но отрицательный «вес»
         сломал бы пропорцию — он вычитал бы голоса у остальных.
         """
-        return max(0.0, self.roll + self.support + self.modifier)
+        return max(0.0, self.roll + self.support + self.modifier + self.national)
 
     def to_dict(self) -> dict:
         return {"roll": self.roll, "support": self.support,
-                "modifier": self.modifier}
+                "modifier": self.modifier, "national": self.national}
 
     @staticmethod
     def from_dict(raw: dict) -> "PartyRoll":
@@ -180,6 +185,7 @@ class PartyRoll:
             # оно было привязано конкретно к дебатам) — читаем его как
             # запасной вариант, чтобы прежние сохранения не потеряли данные.
             modifier=number(raw.get("modifier", raw.get("debate")), 0.0),
+            national=number(raw.get("national"), 0.0),
         )
 
 
@@ -195,8 +201,20 @@ def support_modifier(points: float, settlements: int) -> float:
 
 
 def roll_dice(rng) -> int:
-    """Бросок 1–10. `rng` передаётся снаружи, чтобы тесты были повторяемы."""
-    return rng.randint(MIN_ROLL, MAX_ROLL)
+    """Бросок 1–10 — не равновероятный: среднее из двух обычных бросков.
+
+    Настоящие выборы редко оборачиваются разгромом: большинство исходов
+    близко к середине, а самые крайние значения — редкость. Среднее двух
+    d10 даёт ровно такую форму — треугольное распределение вместо
+    равномерного, — не трогая ни диапазон 1–10, ни остальной расчёт.
+    Половинки округляются вверх, а не банковски: 5,5 станет 6, а не то 4,
+    то 6 через раз.
+
+    `rng` передаётся снаружи, чтобы тесты были повторяемы.
+    """
+    first = rng.randint(MIN_ROLL, MAX_ROLL)
+    second = rng.randint(MIN_ROLL, MAX_ROLL)
+    return (first + second + 1) // 2
 
 
 def weights(rolls: dict[str, PartyRoll]) -> dict[str, float]:

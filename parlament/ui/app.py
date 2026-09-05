@@ -727,8 +727,6 @@ class ParlamentApp:
         """Разыгрывает выборы и уводит на раскрашенную карту.
 
         Созыв из истории не переигрывается: для этого есть «Править состав».
-        Пустой розыгрыш сервис отклоняет сам, не тронув прошлый результат:
-        нажатая по ошибке кнопка не должна стирать уже сыгранные выборы.
         """
         if not self.is_editable:
             # Тем же розыгрышем можно было бы переписать историю в обход
@@ -737,8 +735,9 @@ class ParlamentApp:
                        "откройте его кнопкой «Править состав».", error=True)
             return
         modifiers = self.elections.collect()
+        national = self.elections.collect_national()
         try:
-            self.service.roll_election(self.selected.id, modifiers)
+            self.service.roll_election(self.selected.id, modifiers, national=national)
         except (ValidationError, StoreError) as error:
             self.toast(str(error), error=True)
             return

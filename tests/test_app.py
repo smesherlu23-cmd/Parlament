@@ -877,11 +877,37 @@ class TestMapAndElections(AppTestCase):
         field = self.app.elections.cells[district][self.app.parties[0].id]
         self.assertEqual(field.value, "2")
 
+    def test_reopening_shows_the_previous_national_mood(self):
+        self.app.show_elections()
+        field = self.app.elections.national_cells[self.app.parties[1].id]
+        field.value = "3"
+        field.on_change(ft.ControlEvent(control=field, name="change", data="3"))
+        self.app.apply_election()
+
+        self.app.show_elections()
+        again = self.app.elections.national_cells[self.app.parties[1].id]
+        self.assertEqual(again.value, "3")
+
+    def test_national_mood_reaches_every_district(self):
+        self.app.show_elections()
+        field = self.app.elections.national_cells[self.app.parties[0].id]
+        field.value = "4"
+        field.on_change(ft.ControlEvent(control=field, name="change", data="4"))
+        self.app.apply_election()
+
+        rolls = self.app.selected.rolls
+        self.assertTrue(rolls)
+        for district_id, per_party in rolls.items():
+            self.assertEqual(per_party[self.app.parties[0].id].national, 4, district_id)
+
     def test_clear_all_modifiers_empties_every_field(self):
         self.support("Судбригг", 0, 3)
         self.app.show_elections()
         self.bonus("Судбригг", 0, "2")
         self.bonus("Гаффинсвик центр", 1, "-1")
+        national = self.app.elections.national_cells[self.app.parties[0].id]
+        national.value = "5"
+        national.on_change(ft.ControlEvent(control=national, name="change", data="5"))
 
         self.app.elections._clear_all()
 
@@ -891,10 +917,12 @@ class TestMapAndElections(AppTestCase):
             self.app.elections.cells[district][self.app.parties[0].id].value, "")
         self.assertEqual(
             self.app.elections.cells[other][self.app.parties[1].id].value, "")
+        self.assertEqual(national.value, "")
         self.assertEqual(self.app.elections.collect(), {})
+        self.assertEqual(self.app.elections.collect_national(), {})
         # Поддержка — не модификатор, кнопка её не трогает.
-        self.assertNotIn("никто не идёт",
-                         self.app.elections.previews[district].value)
+        self.assertNotEqual(self.app.elections.previews[district].value,
+                            "поддержки нет — решит бросок")
 
     def test_district_dialog_shows_the_breakdown(self):
         self.support("Гаффинсвик центр", 0, 4)
@@ -972,8 +1000,8 @@ class TestRollBreakdown(unittest.TestCase):
 
     def test_lists_every_modifier(self):
         self.assertEqual(
-            self.line(roll=4, support=2.5, modifier=-1),
-            "4 + 2,5 − 1 = 5,5")
+            self.line(roll=4, support=2.5, modifier=-1, national=2),
+            "4 + 2,5 − 1 + 2 = 7,5")
 
     def test_bare_roll_has_nothing_to_add(self):
         self.assertEqual(self.line(roll=7), "7 = 7,0")
