@@ -1385,6 +1385,14 @@ class TestVotePercentages(AppTestCase):
         self.assertEqual(sum(1 for t in shown if "%" in t), len(self.app.parties))
         self.assertNotIn("мест", " ".join(shown))
 
+    def test_the_district_dialog_shows_its_population(self):
+        # Вес округа в общих процентах голосов — это его люди, и по числу
+        # рядом с мандатами видно, почему округ весит столько.
+        district = next(d for d in self.service.project.districts
+                        if d.name == "Судбригг")
+        self.app.show_district(district.id)
+        self.assertIn("· 20 тыс. жителей", texts(self.page.dialog))
+
     def test_the_rail_shows_votes_for_every_party(self):
         rail = self.app.parliament._build_election_rail(self.app.selected)
         shown = texts(rail)

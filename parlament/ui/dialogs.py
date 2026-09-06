@@ -565,7 +565,7 @@ def delete_convocation_dialog(convocation: Convocation, on_confirm: Callable,
 
 
 def district_dialog(district, rows: list[tuple], shares: dict[str, float],
-                    on_close: Callable) -> ft.AlertDialog:
+                    on_close: Callable, population: float = 0.0) -> ft.AlertDialog:
     """Расклад одного округа — по клику на карте.
 
     `rows` — отсортированные `(партия, PartyResult|None, места)`. Показываем
@@ -573,17 +573,26 @@ def district_dialog(district, rows: list[tuple], shares: dict[str, float],
     без разбивки потом не понять, почему округ достался этой партии.
     Партия ниже проходного барьера мест не получает, но её доля всё равно
     видна здесь — барьер запрещает места, а не участие.
+
+    `population` — сколько человек в округе. Стоит рядом с мандатами не для
+    красоты: с этим весом доля округа входит в общий процент голосов по
+    стране, и по нему видно, почему четыре мандата Северного мыса весят в
+    итогах меньше трёх мандатов Киркьюнивенского.
     """
     from ..elections import THRESHOLD_PERCENT
 
-    body: list[ft.Control] = [
-        ft.Row([
-            ft.Text(f"{district.seats} мест", size=theme.fs(14),
-                    font_family=theme.FONT_SEMIBOLD, color=theme.TEXT),
-            ft.Container(expand=True),
-            ft.Text(district.region, size=theme.fs(13), color=theme.NEUTRAL_600),
-        ]),
+    head: list[ft.Control] = [
+        ft.Text(f"{district.seats} мест", size=theme.fs(14),
+                font_family=theme.FONT_SEMIBOLD, color=theme.TEXT),
     ]
+    if population > 0:
+        head.append(ft.Text(f"· {round(population / 1000):d} тыс. жителей",
+                            size=theme.fs(13), color=theme.NEUTRAL_600))
+    head.extend([
+        ft.Container(expand=True),
+        ft.Text(district.region, size=theme.fs(13), color=theme.NEUTRAL_600),
+    ])
+    body: list[ft.Control] = [ft.Row(head, spacing=8)]
 
     if not rows:
         body.append(ft.Text("По этому округу результатов ещё нет.",

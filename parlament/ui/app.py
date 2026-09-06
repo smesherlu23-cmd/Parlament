@@ -366,7 +366,8 @@ class ParlamentApp:
             if pid in by_id
         ]
         self.page.show_dialog(dialogs.district_dialog(
-            district, rows, shares, lambda _e: self.close_dialog()))
+            district, rows, shares, lambda _e: self.close_dialog(),
+            population=self.service.district_population(district_id)))
 
     def export_map_png(self) -> None:
         """Открывает диалог экспорта карты — тот же, что и у схемы зала."""

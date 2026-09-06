@@ -12,10 +12,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from parlament import ParlamentService, ValidationError  # noqa: E402
 from parlament.district_seed import (  # noqa: E402
+    CITY_POPULATION,
+    ISLAND_POPULATION,
     SEED_DISTRICTS,
     SEED_TOTAL_SEATS,
+    TOTAL_POPULATION,
+    district_population,
     is_city,
     island_of,
+    islands,
+    village_population,
 )
 from parlament.elections import (  # noqa: E402
     CITY_SUPPORT,
@@ -902,6 +908,65 @@ class TestRollElection(ElectionTestCase):
                 self.conv.id, {self.district.id: {self.a.id: {"modifier": "ой"}}})
 
 
+class TestPopulation(unittest.TestCase):
+    """Население Конфедерации — то, что задал заказчик, и что из этого выведено."""
+
+    def test_the_islands_add_up_to_the_whole_country(self):
+        self.assertEqual(sum(ISLAND_POPULATION.values()), TOTAL_POPULATION)
+        self.assertEqual(TOTAL_POPULATION, 1_000_000)
+
+    def test_every_island_of_the_map_has_a_number(self):
+        for island in islands():
+            self.assertIn(island, ISLAND_POPULATION, island)
+
+    def test_the_districts_add_up_to_the_whole_country(self):
+        # Округа делят страну целиком: ни человека мимо, ни человека дважды.
+        total = sum(district_population(code)
+                    for code, _n, _s, _r, _p in SEED_DISTRICTS)
+        self.assertAlmostEqual(total, TOTAL_POPULATION, places=6)
+
+    def test_the_districts_of_one_island_add_up_to_that_island(self):
+        for island, people in ISLAND_POPULATION.items():
+            here = sum(district_population(code)
+                       for code, _n, _s, region, _p in SEED_DISTRICTS
+                       if island_of(region) == island)
+            self.assertAlmostEqual(here, people, places=6, msg=island)
+
+    def test_the_districts_of_a_city_add_up_to_that_city(self):
+        # Как разделено население метрополии между её районами, заказчик не
+        # уточнял — делим по мандатам, но в сумме должен выйти сам город.
+        for region, people in CITY_POPULATION.items():
+            here = sum(district_population(code)
+                       for code, _n, _s, r, places in SEED_DISTRICTS
+                       if r == region and places is None)
+            self.assertAlmostEqual(here, people, places=6, msg=region)
+
+    def test_no_village_is_bigger_than_the_stated_limit(self):
+        # Заказчик задал малым пунктам планку: не более пятнадцати тысяч.
+        for island in ISLAND_POPULATION:
+            self.assertLessEqual(village_population(island), 15_000, island)
+            self.assertGreater(village_population(island), 0, island)
+
+    def test_mandates_and_people_disagree_across_islands(self):
+        # Ради этого голоса и считаются по людям: на Вакуле человек на
+        # мандат заметно меньше, чем на Каспиане, и по мандатам западный
+        # избиратель весил бы больше центрального.
+        def per_mandate(island: str) -> float:
+            seats = sum(s for _c, _n, s, region, _p in SEED_DISTRICTS
+                        if island_of(region) == island)
+            return ISLAND_POPULATION[island] / seats
+
+        west = per_mandate("Остров Вакула (запад)")
+        centre = per_mandate("Остров Каспиан (центр)")
+        self.assertLess(west, centre)
+        self.assertGreater(centre / west, 1.4)
+
+    def test_a_district_off_the_map_falls_back_to_its_mandates(self):
+        # У проектов, начатых до появления карты, номеров нет вовсе — такой
+        # округ не должен выпасть из подсчёта голосов.
+        self.assertEqual(district_population(0), 0.0)
+
+
 class TestVoteShares(ElectionTestCase):
     """Доля голосов по стране — рядом с местами её и показывают."""
 
@@ -919,23 +984,40 @@ class TestVoteShares(ElectionTestCase):
         self.assertAlmostEqual(sum(votes.values()), 100.0, places=6)
         self.assertEqual(set(votes), {self.a.id, self.b.id, self.c.id})
 
-    def test_a_bigger_district_pulls_harder(self):
-        # Округа взвешены по мандатам: округ на десять мест представляет
-        # больше людей, чем округ на два, и считать их наравне значило бы
-        # приравнять хутор к столице.
-        big = max(self.service.project.districts, key=lambda d: d.seats)
-        small = min((d for d in self.service.project.districts
-                     if d.settlements and d.id != big.id),
-                    key=lambda d: d.seats)
-        self.assertGreater(big.seats, small.seats)
+    def test_a_more_populous_district_pulls_harder(self):
+        # За долей в округе на сорок тысяч человек стоит вчетверо больше
+        # избирателей, чем за такой же долей в округе на десять.
+        big = max(self.service.project.districts,
+                  key=lambda d: self.service.district_population(d.id))
+        small = min(self.service.project.districts,
+                    key=lambda d: self.service.district_population(d.id))
 
-        # Одна и та же поправка, но в разных по весу округах.
         self.service.roll_election(self.conv.id, {
             big.id: {self.a.id: {"modifier": 1000}},
             small.id: {self.b.id: {"modifier": 1000}},
         }, rng=random.Random(3))
         votes = self.service.vote_shares(self.conv.id)
         self.assertGreater(votes[self.a.id], votes[self.b.id])
+
+    def test_people_outweigh_mandates(self):
+        # Мандаты по островам разложены неровно, и там, где они спорят с
+        # населением, считать надо по людям. Скьяльдарстадирский — три
+        # мандата на 27 тысяч человек, Северный мыс — четыре на десять
+        # тысяч: мандатов меньше, а избирателей почти втрое больше.
+        crowded = self.by_name["Скьяльдарстадирский"]
+        empty = self.by_name["Северный мыс"]
+        self.assertLess(crowded.seats, empty.seats)
+        self.assertGreater(self.service.district_population(crowded.id),
+                           self.service.district_population(empty.id))
+
+        self.service.roll_election(self.conv.id, {
+            crowded.id: {self.a.id: {"modifier": 1000}},
+            empty.id: {self.b.id: {"modifier": 1000}},
+        }, rng=random.Random(3))
+        votes = self.service.vote_shares(self.conv.id)
+        self.assertGreater(
+            votes[self.a.id], votes[self.b.id],
+            "голоса посчитаны по мандатам, а не по людям")
 
     def test_votes_and_seats_are_allowed_to_disagree(self):
         # Ради этого их и показывают рядом: округа делятся по большинству,
@@ -964,6 +1046,19 @@ class TestVoteShares(ElectionTestCase):
         votes = self.service.vote_shares(self.conv.id)
         self.assertGreater(votes[self.b.id], 0)
         self.assertEqual(self.conv.seats.get(self.b.id, 0), 0)
+
+    def test_a_district_without_a_map_number_still_counts(self):
+        # Проекты, начатые до появления карты, номеров округов не имели.
+        # Населения у такого округа не узнать, но выпасть из подсчёта
+        # голосов он не должен: считаем его по мандатам, по средней стране.
+        orphan = self.by_name["Судбригг"]
+        orphan.code = 0
+        average = TOTAL_POPULATION / SEED_TOTAL_SEATS
+        self.assertAlmostEqual(self.service.district_population(orphan.id),
+                               orphan.seats * average)
+
+        votes = self.roll()
+        self.assertAlmostEqual(sum(votes.values()), 100.0, places=6)
 
     def test_clearing_the_election_takes_the_votes_with_it(self):
         self.roll()
