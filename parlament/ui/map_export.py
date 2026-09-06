@@ -16,13 +16,7 @@ from PIL import Image, ImageDraw
 from ..district_geometry import DISTRICT_SHAPES
 from . import theme
 from .export import _font  # общий подбор шрифта: тот же Source Serif, что в окне
-from .map_frame import (
-    CONTENT_ASPECT,
-    NAME_MARGIN,
-    label_spot,
-    place,
-    text_color,
-)
+from .map_frame import CONTENT_ASPECT, place
 
 _REGULAR = "SourceSerif4-Regular.ttf"
 _SEMIBOLD = "SourceSerif4-SemiBold.ttf"
@@ -86,9 +80,6 @@ def _render_map(districts, width: int, height: int) -> Image.Image:
     отрисовке выходит ступеньками, и на 27 островах это бросается в глаза.
     Рисуем втрое крупнее и ужимаем с усреднением — тот же результат, что
     дало бы сглаживание, и без сторонних библиотек.
-
-    Подписи наносим уже после уменьшения: буквы Pillow и так сглаживает, а
-    ужатый текст вышел бы мылом.
     """
     big = (width * _SUPERSAMPLE, height * _SUPERSAMPLE)
     layer = Image.new("RGBA", big, (0, 0, 0, 0))
@@ -101,43 +92,7 @@ def _render_map(districts, width: int, height: int) -> Image.Image:
             points = [place(x, y, 0, 0, big[0], big[1]) for x, y in poly]
             pen.polygon(points, fill=fill, outline=_BORDER, width=stroke)
 
-    small = layer.resize((width, height), Image.LANCZOS)
-    _draw_labels(ImageDraw.Draw(small), districts, width, height)
-    return small
-
-
-def _draw_labels(draw: ImageDraw.ImageDraw, districts, width: int,
-                 height: int) -> None:
-    """Подписывает округа названиями поверх заливки.
-
-    Только названиями: цифры — номер округа и число мандатов — карту
-    засоряли, а читать по ним было нечего. Номер и так подписан на игровой
-    карте, мандаты видны в разборе по клику, а здесь важно, чей округ и
-    какого он цвета.
-
-    Точки подписей лежат в самой геометрии и гарантированно попадают внутрь
-    своего округа. Где название не помещается никаким кеглем — округ
-    остаётся без подписи: лучше пусто, чем поверх соседа. Цвет буквы
-    выбирается по яркости заливки, поэтому подпись читается на любой
-    партийной краске.
-    """
-    base = max(9, round(width * 0.0112))
-    # Названия у округов разной длины, а места под них — разное. Пробуем
-    # несколько кеглей от крупного к мелкому, пока подпись ещё читается.
-    steps = [base, round(base * 0.88), round(base * 0.78), round(base * 0.7)]
-    fonts = [_font(_SEMIBOLD, size) for size in dict.fromkeys(steps) if size >= 8]
-
-    for code, name, _seats, color in districts:
-        spot = label_spot(code, 0, 0, width, height)
-        if spot is None:
-            continue
-        x, y, room = spot
-        room *= NAME_MARGIN
-        ink = text_color(color or theme.EMPTY_SEAT, theme.TEXT, "#ffffff")
-
-        chosen = next((f for f in fonts if f.getlength(name) <= room), None)
-        if chosen is not None:
-            draw.text((x, y), name, font=chosen, fill=ink, anchor="mm")
+    return layer.resize((width, height), Image.LANCZOS)
 
 
 def _load_background(path: Path | None) -> Image.Image | None:

@@ -1,4 +1,4 @@
-"""Как карта вписывается в кадр: плотная рамка, подписи, цвет текста.
+"""Как карта вписывается в кадр: плотная рамка вокруг архипелага.
 
 Полигоны в `district_geometry` заданы долями от исходного холста 16:9, но сам
 архипелаг занимает в нём не всё: сверху и снизу оставалась четверть пустоты,
@@ -7,14 +7,14 @@
 ней. Считается на лету, потому что `district_geometry` генерируется
 инструментом и руками не правится.
 
-Общий модуль на оба рисовальщика ещё и держит их в согласии: рамка, подписи и
-выбор цвета текста должны совпадать, иначе выгруженная картинка отличалась бы
-от того, что человек видел на экране.
+Общий модуль на оба рисовальщика ещё и держит их в согласии: рамка должна
+совпадать, иначе выгруженная картинка отличалась бы от того, что человек
+видел на экране.
 """
 
 from __future__ import annotations
 
-from ..district_geometry import DISTRICT_CENTRES, DISTRICT_SHAPES, MAP_ASPECT
+from ..district_geometry import DISTRICT_SHAPES, MAP_ASPECT
 
 #: Поле вокруг архипелага, в долях его размера. Немного воздуха нужно: без
 #: него береговая линия упирается в самый край кадра.
@@ -61,97 +61,3 @@ def unplace(px: float, py: float, left: float, top: float,
     box_left, box_top, box_right, box_bottom = CONTENT_BOX
     return (box_left + (px - left) / max(1e-9, width) * (box_right - box_left),
             box_top + (py - top) / max(1e-9, height) * (box_bottom - box_top))
-
-
-def label_point(code: int, left: float, top: float,
-                width: float, height: float) -> tuple[float, float] | None:
-    """Куда ставить подпись округа — точка из геометрии, уже в пикселях."""
-    centre = DISTRICT_CENTRES.get(code)
-    if centre is None:
-        return None
-    return place(centre[0], centre[1], left, top, width, height)
-
-
-def _spans(code: int, y: float, left: float, top: float,
-           width: float, height: float) -> list[tuple[float, float]]:
-    """Куски округа на горизонтали `y` — трассировка луча по его контурам."""
-    crossings: list[float] = []
-    for poly in DISTRICT_SHAPES.get(code, ()):
-        pixels = [place(px, py, left, top, width, height) for px, py in poly]
-        count = len(pixels)
-        for i in range(count):
-            x1, y1 = pixels[i]
-            x2, y2 = pixels[(i + 1) % count]
-            if (y1 > y) != (y2 > y):
-                crossings.append(x1 + (x2 - x1) * (y - y1) / (y2 - y1))
-    crossings.sort()
-    return list(zip(crossings[::2], crossings[1::2]))
-
-
-#: Сколько горизонталей просмотреть вокруг точки подписи и как далеко от неё
-#: отходить (в долях высоты кадра). Точка из геометрии гарантированно внутри
-#: округа, но не обязательно в самом широком его месте — а подписи нужно
-#: именно широкое.
-_PROBE_STEPS = 9
-_PROBE_REACH = 0.02
-
-
-def room_at(code: int, x: float, y: float, left: float, top: float,
-            width: float, height: float) -> float:
-    """Сколько места вширь у точки `(x, y)` внутри округа, в пикселях.
-
-    Нужна отдельно от `label_spot`, потому что строки подписи стоят выше и
-    ниже найденной точки, а округ там уже другой ширины: меряем ровно ту
-    строку, куда ляжет текст.
-    """
-    for begin, finish in _spans(code, y, left, top, width, height):
-        if begin <= x <= finish:
-            return 2 * min(x - begin, finish - x)
-    return 0.0
-
-
-def label_spot(code: int, left: float, top: float, width: float,
-               height: float) -> tuple[float, float, float] | None:
-    """Где подписать округ и сколько там места: `(x, y, ширина)` в пикселях.
-
-    Точка подписи из геометрии лежит внутри округа, но нередко в узком его
-    месте, и название вылезало бы в море. Поэтому смотрим несколько
-    горизонталей вокруг неё и берём ту, где кусок округа под точкой шире
-    всего; подпись съезжает на пару пикселей, зато остаётся на суше.
-
-    Место меряем честной трассировкой, а не габаритами: у длинного изогнутого
-    острова габаритный прямоугольник широкий, а под подписью может быть узко.
-    """
-    point = label_point(code, left, top, width, height)
-    if point is None:
-        return None
-    x, y = point
-
-    best: tuple[float, float, float] | None = None
-    for step in range(_PROBE_STEPS):
-        offset = (step / (_PROBE_STEPS - 1) - 0.5) * 2 * _PROBE_REACH * height
-        probe_y = y + offset
-        room = room_at(code, x, probe_y, left, top, width, height)
-        if best is None or room > best[2]:
-            best = (x, probe_y, room)
-    return best
-
-
-#: Запас между подписью и берегом, в долях доступной ширины: впритык
-#: название читается плохо, да и соседний округ начинается сразу за линией.
-NAME_MARGIN = 0.86
-
-
-def text_color(fill: str, dark: str, light: str) -> str:
-    """Цвет подписи под заливкой округа: тёмный на светлой, светлый на тёмной.
-
-    Обводку рисовать не приходится, а подпись остаётся читаемой на любой
-    партийной краске — в том числе на не выбранных ещё пользователем.
-    """
-    value = fill.lstrip("#")
-    if len(value) != 6:
-        return dark
-    red, green, blue = (int(value[i:i + 2], 16) / 255 for i in (0, 2, 4))
-    # Относительная яркость по восприятию: зелёный весит больше синего.
-    luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue
-    return dark if luminance > 0.55 else light

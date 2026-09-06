@@ -1,4 +1,4 @@
-"""Карта: как она вписывается в кадр, где стоят подписи и что попадает в PNG."""
+"""Карта: как она вписывается в кадр и что попадает в PNG."""
 
 from __future__ import annotations
 
@@ -11,26 +11,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from PIL import Image  # noqa: E402
 
-from parlament.district_geometry import (  # noqa: E402
-    DISTRICT_CENTRES,
-    DISTRICT_SHAPES,
-    MAP_ASPECT,
-)
+from parlament.district_geometry import DISTRICT_SHAPES, MAP_ASPECT  # noqa: E402
 from parlament.district_seed import SEED_DISTRICTS  # noqa: E402
 from parlament.ui import theme  # noqa: E402
 import flet.canvas as cv  # noqa: E402
 
-from parlament.ui.map_chart import MapChart, _inside  # noqa: E402
+from parlament.ui.map_chart import MapChart  # noqa: E402
 from parlament.ui.map_export import render_map_png  # noqa: E402
-from parlament.ui.map_frame import (  # noqa: E402
-    CONTENT_ASPECT,
-    CONTENT_BOX,
-    label_spot,
-    place,
-    room_at,
-    text_color,
-    unplace,
-)
+from parlament.ui.map_frame import CONTENT_ASPECT, CONTENT_BOX, place, unplace  # noqa: E402
 
 _COLORS = ["#0088b0", "#d6006c", "#4c7a34", "#c8621a", "#3b4a8c"]
 
@@ -97,75 +85,19 @@ class TestFrame(unittest.TestCase):
         self.assertGreater(bottom, 500.0 * 0.95)
 
 
-class TestLabels(unittest.TestCase):
-    """Подписи округов: точки для них считаны, но раньше не рисовались вовсе."""
+class TestNoLabelsOnTheMap(unittest.TestCase):
+    """Карта — только заливка и границы, без единой буквы или цифры поверх.
 
-    def test_every_district_gets_a_spot(self):
-        for code, _name, _seats, _region, _places in SEED_DISTRICTS:
-            self.assertIsNotNone(label_spot(code, 0.0, 0.0, 1600.0, 700.0),
-                                 f"округ {code} без места под подпись")
-
-    def test_the_spot_stays_inside_its_own_district(self):
-        # Подпись съезжает с точки из геометрии в поисках широкого места —
-        # но съехать за берег она не должна.
-        for code, name, _seats, _region, _places in SEED_DISTRICTS:
-            x, y, _room = label_spot(code, 0.0, 0.0, 1600.0, 700.0)
-            geo = unplace(x, y, 0.0, 0.0, 1600.0, 700.0)
-            self.assertTrue(
-                any(_inside(geo[0], geo[1], poly) for poly in DISTRICT_SHAPES[code]),
-                f"подпись «{name}» уехала за пределы округа")
-
-    def test_the_spot_is_at_least_as_wide_as_the_original_point(self):
-        # Смысл поиска: место под подпись не должно стать хуже того, что
-        # даёт точка из геометрии.
-        for code, _name, _seats, _region, _places in SEED_DISTRICTS:
-            _x, _y, room = label_spot(code, 0.0, 0.0, 1600.0, 700.0)
-            cx, cy = DISTRICT_CENTRES[code]
-            px, py = place(cx, cy, 0.0, 0.0, 1600.0, 700.0)
-            self.assertGreaterEqual(room + 1e-6,
-                                    room_at(code, px, py, 0.0, 0.0, 1600.0, 700.0))
-
-    def test_room_outside_the_district_is_nothing(self):
-        code = SEED_DISTRICTS[0][0]
-        self.assertEqual(room_at(code, -500.0, 100.0, 0.0, 0.0, 1600.0, 700.0), 0.0)
-
-    def test_ink_flips_with_the_fill(self):
-        # Обводку не рисуем — вместо неё цвет буквы по яркости заливки, и
-        # подпись читается на любой партийной краске.
-        self.assertEqual(text_color("#f2e9c8", "#201e1d", "#ffffff"), "#201e1d")
-        self.assertEqual(text_color("#1f3a93", "#201e1d", "#ffffff"), "#ffffff")
-        self.assertEqual(text_color("не цвет", "#201e1d", "#ffffff"), "#201e1d")
-
-
-class TestNoDigitsOnTheMap(unittest.TestCase):
-    """На карте только названия округов.
-
-    Номер округа и число мандатов её засоряли: читать по ним нечего — номер
-    и так подписан на игровой карте, а мандаты видны в разборе по клику.
+    Названия округов, номера, число мандатов — всё это карту засоряло, а
+    читать по надписям было особо нечего: округ и так виден по клику, а
+    список партий — в легенде. Осталась чистая заливка.
     """
 
-    def labels(self) -> list[str]:
+    def test_the_window_chart_draws_no_text(self):
         chart = MapChart(districts=sample_districts())
         chart._width_px, chart._height_px = 1400.0, 620.0
         chart._redraw()
-        return [s.value for s in chart._canvas.shapes if isinstance(s, cv.Text)]
-
-    def test_not_a_single_label_is_a_number(self):
-        for value in self.labels():
-            self.assertFalse(value.strip().isdigit(),
-                             f"на карте осталась цифра «{value}»")
-
-    def test_every_label_is_a_district_name(self):
-        names = {name for _c, name, _s, _r, _p in SEED_DISTRICTS}
-        shown = self.labels()
-        self.assertTrue(shown, "карта осталась без подписей вовсе")
-        for value in shown:
-            self.assertIn(value, names)
-
-    def test_a_district_gets_at_most_one_label(self):
-        # Раньше под названием стояла вторая строка с мандатами.
-        shown = self.labels()
-        self.assertEqual(len(shown), len(set(shown)))
+        self.assertFalse(any(isinstance(s, cv.Text) for s in chart._canvas.shapes))
 
 
 class TestMapPng(unittest.TestCase):
@@ -193,18 +125,16 @@ class TestMapPng(unittest.TestCase):
         for value in _COLORS:
             self.assertIn(_rgb(value), colors, f"цвет {value} на карте не встретился")
 
-    def test_labels_reach_the_picture(self):
-        # Точки подписей лежали в геометрии, были покрыты тестом — и не
-        # рисовались нигде: карта была немой.
-        #
-        # Красим все округа светлым: тогда подпись выходит тёмной (см.
-        # `text_color`), а тёмных пикселей на такой карте больше взяться
-        # неоткуда — ни море, ни заливка, ни белые границы их не дают.
+    def test_no_dark_text_appears_over_a_light_fill(self):
+        # Обратная сторона предыдущей правки: на светлой заливке не должно
+        # остаться ни одной тёмной буквы или цифры. Ни море, ни заливка, ни
+        # белые границы тёмных пикселей не дают — если они появились, значит
+        # что-то подписалось поверх.
         light = [(code, name, seats, "#f0e6c8")
                  for code, name, seats, _region, _places in SEED_DISTRICTS]
         image = Image.open(io.BytesIO(render_map_png(light, width=900)))
         dark = [p for p in _pixels(image.convert("RGB")) if max(p) < 90]
-        self.assertTrue(dark, "на карте нет ни одной подписи")
+        self.assertFalse(dark, "на карте нашёлся текст поверх заливки")
 
     def test_title_and_legend_add_their_bands(self):
         bare = self.png().height
