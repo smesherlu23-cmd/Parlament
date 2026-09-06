@@ -22,7 +22,7 @@ from __future__ import annotations
 import flet as ft
 
 from .. import district_seed
-from ..elections import PartyResult
+from ..elections import PartyResult, base_shares
 from . import theme
 from .mount import push
 
@@ -321,22 +321,30 @@ class ElectionsView:
         (идут все), а про то, у кого есть организованная база. Именно базу,
         а не итог: колебание случайно, и обещать результат до розыгрыша
         было бы враньём.
+
+        Округ, где очков не раздали вовсе, показывается словами, а не
+        равными долями: «33 %» у каждого выглядит как настоящая поддержка,
+        хотя на деле её нет ни у кого и решать будут поправки с колебанием.
         """
         district = self.service.project.district(district_id)
         preview = self.previews.get(district_id)
         if district is None or preview is None:
             return
 
-        parts = []
-        for party in self.app.parties:
-            base = self.service.base_share(district_id, party.id)
-            if not base:
-                continue
-            label = party.abbr or party.name
-            parts.append(f"{label} {base:.0f} %".replace(".", ","))
+        points = self.service.district_points(district_id)
+        if not any(points.values()):
+            preview.value = "очков никто не раздал — доли равные"
+            preview.color = theme.NEUTRAL_600
+            if live:
+                push(preview)
+            return
 
-        preview.value = "  ".join(parts) if parts else "поддержки нет — решит колебание"
-        preview.color = theme.TEXT if parts else theme.NEUTRAL_600
+        base = base_shares(points)
+        parts = [f"{party.abbr or party.name} {base[party.id]:.0f} %".replace(".", ",")
+                 for party in self.app.parties if base.get(party.id)]
+
+        preview.value = "  ".join(parts)
+        preview.color = theme.TEXT
         if live:
             push(preview)
 

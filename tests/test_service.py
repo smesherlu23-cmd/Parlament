@@ -142,7 +142,7 @@ class TestSeatValidation(ServiceTestCase):
 
     def test_sum_cannot_exceed_total(self):
         # Числа считаются от размера парламента, а не зашиты: он задаётся
-        # картой округов и уже однажды менялся со 120 на 147.
+        # картой округов и уже однажды менялся со 120 на 124.
         total = self.service.project.total_seats
         first, second = self.party(), self.party(name="Партия труда", color="#d6006c")
         self.service.set_seats(self.active_id, first.id, total - 20)

@@ -15,7 +15,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 #: Ничьи (одинаковые остатки, одинаковые голоса) разрешаются по порядку
 #: партий во входном словаре — то есть по порядку справочника, раз вызывающая
@@ -245,6 +245,24 @@ def normalize_shares(raw: dict[str, float]) -> dict[str, float]:
     if total <= 0:
         return {pid: 0.0 for pid in clamped}
     return {pid: v / total * 100.0 for pid, v in clamped.items()}
+
+
+def renormalize(results: dict[str, PartyResult]) -> dict[str, PartyResult]:
+    """Пересчитывает доли округа после того, как из него убрали партию.
+
+    Слагаемые (база, поправки, колебание) — то, что было разыграно, и их не
+    трогаем: переписывать бросок задним числом нельзя. Меняются только доли:
+    голоса ушедшей партии расходятся между оставшимися пропорционально их
+    собственным весам, и округ снова даёт в сумме 100 %.
+
+    Без этого разбор округа показывал бы доли, не сходящиеся к сотне («16,9 %
+    и все пять мест»), а барьер остался бы посчитанным по старому раскладу —
+    партия, которую соперник держал ниже пяти процентов, так и не получила бы
+    мест после его исчезновения.
+    """
+    share = normalize_shares({party_id: r.raw for party_id, r in results.items()})
+    return {party_id: replace(r, share=share[party_id])
+            for party_id, r in results.items()}
 
 
 def weights(results: dict[str, PartyResult]) -> dict[str, float]:

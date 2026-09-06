@@ -1,0 +1,35 @@
+name: Тесты
+
+# Прогон всего набора тестов на каждый push и pull request. Тесты не трогают
+# ни окна, ни файлов пользователя: интерфейс проверяется через подставную
+# страницу (tests/fake_page.py), поэтому обычного ubuntu-раннера достаточно —
+# ни Flutter, ни дисплея не нужно.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Нижняя граница из requires-python и версия, на которой собирается
+        # Windows-приложение: ломаться не должно ни там, ни там.
+        python-version: ["3.10", "3.11"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Установить зависимости
+        run: pip install -r requirements.txt
+
+      - name: Прогнать тесты
+        run: python -m unittest discover -s tests -v

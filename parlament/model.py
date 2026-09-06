@@ -13,10 +13,13 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 
 SCHEMA_VERSION = 2
-#: Размер парламента по игровой карте — сумма мест всех округов. Раньше было
-#: жёстко 120 (из первой редакции ТЗ), но карта задаёт 147, и она главнее.
-#: Новые проекты берут это число из самих округов, см. `Project.empty`.
-DEFAULT_TOTAL_SEATS = 147
+#: Размер парламента по игровой карте — сумма мест всех округов (27 округов,
+#: 124 мандата). Раньше было жёстко 120 из первой редакции ТЗ, но карта
+#: главнее. Это только запасное значение: и новый проект, и открытый файл
+#: берут число из самих округов — см. `Project.empty` и `sync_with_map`.
+#: Пригождается лишь проектам, начатым до появления карты, у которых своих
+#: округов нет вовсе.
+DEFAULT_TOTAL_SEATS = 124
 
 #: Запас очков популярности обычного населённого пункта. Дублируется в
 #: `elections.SETTLEMENT_SUPPORT`; здесь — чтобы модель данных не зависела
@@ -88,13 +91,13 @@ class Convocation:
     seats: dict[str, int] = field(default_factory=dict)
     created_at: str = field(default_factory=now_iso)
     fixed_at: str | None = None
-    #: Вес партий по округам — `{district_id: {party_id: число}}`. Из них
-    #: сервис пересобирает `seats`. Пустой словарь означает состав, набранный
-    #: руками без выборов — так работают старые проекты и ручная правка.
-    votes: dict[str, dict[str, float]] = field(default_factory=dict)
-    #: Разбор выборов — `{district_id: {party_id: PartyResult}}`. Хранится
-    #: рядом с весами, потому что колебание случайно и второй раз не
-    #: повторится: без него потом не понять, из чего сложился результат.
+    #: Разбор выборов — `{district_id: {party_id: PartyResult}}`. Единственный
+    #: источник итогов округа: и веса для дележа мест, и проценты в разборе
+    #: считаются из него (см. `service._weights`). Хранится целиком, потому
+    #: что колебание случайно и второй раз не повторится — без него потом не
+    #: понять, из чего сложился результат.
+    #:
+    #: Пустой словарь означает состав, набранный руками без выборов.
     results: dict[str, dict] = field(default_factory=dict)
 
     @property
@@ -106,12 +109,12 @@ class Convocation:
         """Проводились ли по созыву выборы — от этого зависит, красится ли
         карта и набираются ли места руками.
 
-        Смотрим и на разбор: если модификаторы увели всех в ноль, голосов
-        нет ни у кого, но выборы всё же состоялись — и их разбор лежит в
-        `results`. Считать такой созыв «без выборов» значило бы предлагать
-        набрать места руками поверх уже сыгранного розыгрыша.
+        Смотрим на разбор, а не на розданные места: если поправки увели всех
+        в ноль, мест не досталось никому, но выборы всё же состоялись.
+        Считать такой созыв «без выборов» значило бы предлагать набрать места
+        руками поверх уже сыгранного розыгрыша.
         """
-        return bool(self.results) or any(self.votes.values())
+        return bool(self.results)
 
     def used_seats(self) -> int:
         return sum(self.seats.values())
@@ -124,7 +127,6 @@ class Convocation:
             "seats": dict(self.seats),
             "createdAt": self.created_at,
             "fixedAt": self.fixed_at,
-            "votes": {d: dict(v) for d, v in self.votes.items() if v},
             "results": {d: {p: r.to_dict() for p, r in per.items()}
                        for d, per in self.results.items() if per},
         }
@@ -140,27 +142,14 @@ class Convocation:
             if value > 0:
                 seats[str(party_id)] = value
 
-        votes: dict[str, dict[str, float]] = {}
-        for district_id, per_party in (raw.get("votes") or {}).items():
-            if not isinstance(per_party, dict):
-                continue
-            cleaned: dict[str, float] = {}
-            for party_id, count in per_party.items():
-                try:
-                    value = float(count)
-                except (TypeError, ValueError):
-                    continue
-                if value > 0:
-                    cleaned[str(party_id)] = value
-            if cleaned:
-                votes[str(district_id)] = cleaned
-
         from .elections import PartyResult
 
         # Старый формат (до перехода на проценты) хранил этот же разбор под
         # именем "rolls" и с другими полями (бросок кубика, а не доля
-        # голосов) — читать его в новую форму бессмысленно, только состав
-        # (`seats`) переживает переход, разбор придётся сыграть заново.
+        # голосов), а веса для дележа мест — отдельным ключом "votes".
+        # Читать их в новую форму бессмысленно: только состав (`seats`)
+        # переживает переход, а выборы придётся сыграть заново — созыв
+        # откроется как набранный руками, с уже проставленными местами.
         results: dict[str, dict] = {}
         for district_id, per_party in (raw.get("results") or {}).items():
             if not isinstance(per_party, dict):
@@ -177,7 +166,6 @@ class Convocation:
             seats=seats,
             created_at=str(raw.get("createdAt") or now_iso()),
             fixed_at=raw.get("fixedAt") or None,
-            votes=votes,
             results=results,
         )
 
@@ -396,22 +384,20 @@ class Project:
         known_districts = {d.id for d in districts}
         cities = [Settlement.from_dict(c) for c in raw.get("cities") or []]
 
-        # Места и голоса, ссылающиеся на несуществующую партию или округ,
-        # отбрасываются: файл мог быть отредактирован вручную.
+        # Места и итоги, ссылающиеся на несуществующую партию или округ,
+        # отбрасываются: файл мог быть отредактирован вручную. Округ, из
+        # которого кто-то выпал, пересчитывается — иначе его доли перестали
+        # бы давать в сумме сотню, см. `elections.renormalize`.
+        from .elections import renormalize
+
         for conv in convocations:
             conv.seats = {pid: n for pid, n in conv.seats.items() if pid in known}
-            conv.votes = {
-                did: {pid: n for pid, n in per_party.items() if pid in known}
-                for did, per_party in conv.votes.items()
-                if did in known_districts
-            }
-            conv.votes = {did: v for did, v in conv.votes.items() if v}
-            conv.results = {
+            trimmed = {
                 did: {pid: r for pid, r in per.items() if pid in known}
                 for did, per in conv.results.items()
                 if did in known_districts
             }
-            conv.results = {did: r for did, r in conv.results.items() if r}
+            conv.results = {did: renormalize(per) for did, per in trimmed.items() if per}
 
         if not convocations:
             convocations = [Convocation(id=new_id("c"), number=1, name=convocation_name(1))]

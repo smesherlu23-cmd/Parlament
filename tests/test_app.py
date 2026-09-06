@@ -81,9 +81,9 @@ class AppTestCase(unittest.TestCase):
 
     def type_seats(self, party_id: str, value: str) -> ft.TextField:
         """Имитирует ввод в поле мест: ставит значение и зовёт обработчик."""
-        field = self.app.seat_fields[party_id]
+        field = self.app.parliament.seat_fields[party_id]
         field.value = value
-        self.app._on_seat_change(ft.ControlEvent(control=field, name="change", data=value))
+        self.app.parliament._on_seat_change(ft.ControlEvent(control=field, name="change", data=value))
         return field
 
     @property
@@ -161,19 +161,19 @@ class TestSeatDistribution(AppTestCase):
         conv = self.app.selected
         self.assertEqual(self.app.used_seats(conv), SEED_TOTAL_SEATS)
         self.assertEqual(conv.seats[self.app.parties[0].id], SAMPLE[0][3])
-        self.assertEqual(self.app.used_text.value,
+        self.assertEqual(self.app.parliament.used_text.value,
                          f"{SEED_TOTAL_SEATS} / {SEED_TOTAL_SEATS}")
-        self.assertEqual(self.app.remaining_text.value, "0")
-        self.assertEqual(self.app.remaining_note.value, "Все места распределены.")
-        self.assertEqual(self.app.progress.value, 1.0)
+        self.assertEqual(self.app.parliament.remaining_text.value, "0")
+        self.assertEqual(self.app.parliament.remaining_note.value, "Все места распределены.")
+        self.assertEqual(self.app.parliament.progress.value, 1.0)
 
     def test_remainder_is_reported(self):
         self.add_parties(2)
         self.type_seats(self.app.parties[0].id, "50")
         left = SEED_TOTAL_SEATS - 50
-        self.assertEqual(self.app.remaining_text.value, str(left))
-        self.assertEqual(self.app.remaining_text.color, theme.ACCENT_2_700)
-        self.assertIn(f"Осталось распределить {left} мест", self.app.remaining_note.value)
+        self.assertEqual(self.app.parliament.remaining_text.value, str(left))
+        self.assertEqual(self.app.parliament.remaining_text.color, theme.ACCENT_2_700)
+        self.assertIn(f"Осталось распределить {left} мест", self.app.parliament.remaining_note.value)
 
     def test_input_is_clamped_to_total(self):
         self.distribute()
@@ -200,15 +200,15 @@ class TestSeatDistribution(AppTestCase):
         self.add_parties(2)
         party_id = self.app.parties[0].id
         self.type_seats(party_id, "40")
-        field = self.app.seat_fields[party_id]
+        field = self.app.parliament.seat_fields[party_id]
         field.value = ""
-        self.app._on_seat_blur(ft.ControlEvent(control=field, name="blur", data=""))
+        self.app.parliament._on_seat_blur(ft.ControlEvent(control=field, name="blur", data=""))
         self.assertEqual(field.value, "0")
         self.assertEqual(self.app.used_seats(self.app.selected), 0)
 
     def test_legend_and_percentages(self):
         self.distribute()
-        shown = texts(self.app.legend_row)
+        shown = texts(self.app.parliament.legend_row)
         self.assertIn("Народный союз", shown)
         self.assertIn(fmt.percent(SAMPLE[0][3], SEED_TOTAL_SEATS), shown)
         self.assertIn("4,8 %", shown)
@@ -223,13 +223,13 @@ class TestSeatDistribution(AppTestCase):
         self.add_parties(2)
         majority = self.app.majority_seats          # половина палаты плюс одно
         self.type_seats(self.app.parties[0].id, str(majority - 1))
-        self.assertIn("большинства нет", self.app.majority_text.value)
-        self.assertEqual(self.app.majority_text.color, theme.NEUTRAL_700)
+        self.assertIn("большинства нет", self.app.parliament.majority_text.value)
+        self.assertEqual(self.app.parliament.majority_text.color, theme.NEUTRAL_700)
 
         self.type_seats(self.app.parties[0].id, str(majority))
-        self.assertEqual(self.app.majority_text.value,
+        self.assertEqual(self.app.parliament.majority_text.value,
                          "Народный союз — абсолютное большинство")
-        self.assertEqual(self.app.majority_text.color, theme.ACCENT_2_700)
+        self.assertEqual(self.app.parliament.majority_text.color, theme.ACCENT_2_700)
 
     def test_reset_clears_everything(self):
         self.distribute()
@@ -294,7 +294,7 @@ class TestParties(AppTestCase):
         self.assertEqual(updated.color, "#5b4b8a")
         # Места остались за той же партией.
         self.assertEqual(self.app.selected.seats[party.id], SAMPLE[0][3])
-        self.assertIn("Новый союз", texts(self.app.legend_row))
+        self.assertIn("Новый союз", texts(self.app.parliament.legend_row))
 
     def test_delete_dialog_lists_affected_convocations(self):
         self.distribute()
@@ -492,7 +492,7 @@ class TestConvocations(AppTestCase):
     def test_convocation_cards(self):
         self.distribute()
         self.fix_current()
-        shown = texts(self.app.conv_list)
+        shown = texts(self.app.parliament.conv_list)
         self.assertIn("Второй состав", shown)
         self.assertIn("Первый состав", shown)
         self.assertIn("Редактируется", shown)
@@ -510,12 +510,12 @@ class TestConvocations(AppTestCase):
     def test_no_delete_button_with_a_single_convocation(self):
         # Единственный созыв удалить нельзя — история не может опустеть,
         # и кнопке тогда просто нечего делать.
-        self.assertIsNone(find(self.app.conv_list, lambda c: isinstance(c, ft.IconButton)))
+        self.assertIsNone(find(self.app.parliament.conv_list, lambda c: isinstance(c, ft.IconButton)))
 
     def test_delete_button_appears_with_more_than_one(self):
         self.distribute()
         self.fix_current()
-        buttons = find_all(self.app.conv_list, lambda c: isinstance(c, ft.IconButton))
+        buttons = find_all(self.app.parliament.conv_list, lambda c: isinstance(c, ft.IconButton))
         self.assertEqual(len(buttons), 2)
 
     def test_delete_archived_convocation(self):
@@ -700,7 +700,7 @@ class TestHelpers(unittest.TestCase):
         self.assertEqual(suggest_file_name("///"), "Парламент.png")
 
     def test_seats_never_overlap(self):
-        # Размер кружка был подобран под палату на 120 мест; на 147 соседи по
+        # Размер кружка был подобран под палату на 120 мест; на 124 соседи по
         # дуге стоят ближе, и места наезжали друг на друга.
         import math
 
@@ -856,16 +856,18 @@ class TestMapAndElections(AppTestCase):
         self.assertIn("60 %", preview.value)
         self.assertIn("40 %", preview.value)
 
-    def test_district_with_no_support_shows_an_even_split(self):
-        # Если очков не роздано вовсе, организации нет ни у кого — все
-        # партии равны, и голоса решит колебание.
+    def test_district_with_no_support_says_so_instead_of_showing_equal_shares(self):
+        # Доли в таком округе и правда равные, но показывать «33 %» у
+        # каждого нельзя: это выглядит как настоящая поддержка, хотя её нет
+        # ни у кого — решать будут поправки с колебанием.
         self.app.show_elections()
         preview = self.app.elections.previews[self.by_name["Судбригг"].id]
-        self.assertIn("33 %", preview.value)
+        self.assertNotIn("%", preview.value)
+        self.assertIn("никто не раздал", preview.value)
 
     def test_election_without_any_setup_still_fills_the_parliament(self):
-        # Бросают все партии всегда — пустая настройка не «нечего
-        # разыгрывать», а голый кубик без единой прибавки.
+        # Долю получают все партии всегда — пустая настройка не «нечего
+        # разыгрывать», а расклад на одних базах и колебании.
         self.app.show_elections()
         self.app.apply_election()
         self.assertEqual(self.app.view, "map")
@@ -1146,7 +1148,7 @@ class TestSeatsAfterElection(AppTestCase):
         self.assertEqual(conv.seats, {})
         self.assertEqual(conv.results, {})
         self.assertTrue(self.app.manual_seats)
-        self.assertTrue(self.app.seat_fields)
+        self.assertTrue(self.app.parliament.seat_fields)
 
     def test_support_survives_the_reset(self):
         # Сбрасывается розыгрыш, а не игра: очки популярности копились долго.

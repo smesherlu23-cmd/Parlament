@@ -131,15 +131,14 @@ class ParlamentService:
             conv.seats.pop(party.id, None)
             if not conv.has_election:
                 continue
-            # Разбор чистим наравне с голосами: округ, где все ушли в ноль,
-            # голосов не имеет, но разбор по нему хранится — и партия
-            # осталась бы в нём призраком.
-            conv.votes = {did: {pid: n for pid, n in per.items() if pid != party.id}
-                          for did, per in conv.votes.items()}
-            conv.votes = {did: per for did, per in conv.votes.items() if per}
-            conv.results = {did: {pid: r for pid, r in per.items() if pid != party.id}
-                           for did, per in conv.results.items()}
-            conv.results = {did: per for did, per in conv.results.items() if per}
+            # Округ, из которого убрали партию, пересчитывается целиком: её
+            # голоса расходятся между оставшимися, и доли снова дают сотню.
+            # Без этого разбор показывал бы «16,9 % и все пять мест», а
+            # барьер остался бы посчитанным по раскладу с ней.
+            trimmed = {did: {pid: r for pid, r in per.items() if pid != party.id}
+                       for did, per in conv.results.items()}
+            conv.results = {did: elections.renormalize(per)
+                            for did, per in trimmed.items() if per}
             self._recount(conv)
 
         self._persist()
@@ -525,17 +524,24 @@ class ParlamentService:
                 return settlement.capacity
         return elections.SETTLEMENT_SUPPORT
 
-    def base_share(self, district_id: str, party_id: str) -> float:
-        """База партии в округе — доля от розданных там очков, в процентах.
+    def district_points(self, district_id: str) -> dict[str, int]:
+        """Очки поддержки партий в округе — `{party_id: очки}`.
 
         У городского округа очки общие на весь город (см.
         `Project.district_support`): несколько избирательных округов одной
-        метрополии получают одну и ту же базу, а не делят её ещё раз.
+        метрополии видят одну и ту же копилку, а не делят её ещё раз.
+
+        Сумма, равная нулю, — это не «база у всех нулевая», а «очков здесь
+        никто не раздавал»: доли тогда равные (см. `elections.base_shares`),
+        и отличить одно от другого можно только по этим числам.
         """
         district = self._require_district(district_id)
-        points = {party.id: self.project.district_support(district, party.id)
-                 for party in self.project.parties}
-        return elections.base_shares(points).get(party_id, 0.0)
+        return {party.id: self.project.district_support(district, party.id)
+                for party in self.project.parties}
+
+    def base_share(self, district_id: str, party_id: str) -> float:
+        """База партии в округе — доля от розданных там очков, в процентах."""
+        return elections.base_shares(self.district_points(district_id)).get(party_id, 0.0)
 
     # -- розыгрыш выборов ------------------------------------------------------
 
@@ -592,7 +598,6 @@ class ParlamentService:
                 self._require_party(party_id)
 
         results: dict[str, dict[str, elections.PartyResult]] = {}
-        votes: dict[str, dict[str, float]] = {}
         for district in self.project.districts:
             per_district = modifiers.get(district.id, {})
             per_island = island.get(district_seed.island_of(district.region), {})
@@ -620,10 +625,8 @@ class ParlamentService:
                     modifier=modifier, wobble=wobble, share=share[party.id],
                 )
             results[district.id] = district_results
-            votes[district.id] = elections.weights(district_results)
 
         conv.results = results
-        conv.votes = {d: v for d, v in votes.items() if v}
         self._recount(conv)
         self._persist()
         return conv
@@ -678,31 +681,44 @@ class ParlamentService:
     def clear_election(self, convocation_id: str) -> Convocation:
         """Убирает результаты выборов созыва — состав снова набирается руками."""
         conv = self._require_convocation(convocation_id)
-        conv.votes = {}
         conv.results = {}
         conv.seats = {}
         self._persist()
         return conv
 
+    @staticmethod
+    def _weights(conv: Convocation) -> dict[str, dict[str, float]]:
+        """Веса для дележа мест по округам — `{district_id: {party_id: доля}}`.
+
+        Считаются из разбора, а не хранятся рядом с ним: это одни и те же
+        числа, и вторая копия рано или поздно отстаёт от первой. Барьер —
+        часть правила (см. `elections.weights`), поэтому партии ниже него
+        сюда не попадают, хотя их доля в разборе видна.
+        """
+        weights = {district_id: elections.weights(per)
+                   for district_id, per in conv.results.items()}
+        return {district_id: w for district_id, w in weights.items() if w}
+
     def district_allocation(self, convocation_id: str) -> dict[str, dict[str, int]]:
         """Места по округам: `{district_id: {party_id: места}}`."""
         conv = self._require_convocation(convocation_id)
-        return elections.allocate_all(conv.votes, self.project.district_seats)
+        return elections.allocate_all(self._weights(conv), self.project.district_seats)
 
     def district_winners(self, convocation_id: str) -> dict[str, str]:
         """Победитель каждого округа — в его цвет карта красит округ."""
         conv = self._require_convocation(convocation_id)
         seats = self.project.district_seats
         winners = {}
-        for district_id, votes in conv.votes.items():
+        for district_id, votes in self._weights(conv).items():
             winner = elections.district_winner(votes, seats.get(district_id, 0))
             if winner:
                 winners[district_id] = winner
         return winners
 
     def _recount(self, conv: Convocation) -> None:
-        """Пересобирает состав созыва из голосов по округам."""
-        allocation = elections.allocate_all(conv.votes, self.project.district_seats)
+        """Пересобирает состав созыва из долей по округам."""
+        allocation = elections.allocate_all(self._weights(conv),
+                                            self.project.district_seats)
         conv.seats = elections.totals_by_party(allocation)
 
     def _require_district(self, district_id: str) -> District:

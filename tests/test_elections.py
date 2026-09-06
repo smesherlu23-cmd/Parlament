@@ -27,6 +27,7 @@ from parlament.elections import (  # noqa: E402
     base_shares,
     district_winner,
     normalize_shares,
+    renormalize,
     roll_wobble,
     shares,
     totals_by_party,
@@ -199,6 +200,37 @@ class TestRollMechanic(unittest.TestCase):
         result = PartyResult(base=50.0, national=-2.0, island=1.0, modifier=3.0, wobble=0.5)
         self.assertAlmostEqual(result.raw, 52.5)
 
+    def test_renormalize_shares_out_the_votes_of_whoever_left(self):
+        # Ушедшая партия забрала половину округа; её голоса расходятся между
+        # оставшимися пропорционально, а не пропадают.
+        left = {"b": PartyResult(base=30.0, share=30.0),
+                "c": PartyResult(base=20.0, share=20.0)}
+        fresh = renormalize(left)
+        self.assertAlmostEqual(fresh["b"].share, 60.0)
+        self.assertAlmostEqual(fresh["c"].share, 40.0)
+        self.assertAlmostEqual(sum(r.share for r in fresh.values()), 100.0)
+
+    def test_renormalize_keeps_the_roll_itself_untouched(self):
+        # Пересчитывается только доля: переписывать разыгранные слагаемые
+        # задним числом нельзя — разбор перестал бы быть записью о том, что
+        # выпало на самом деле.
+        before = PartyResult(base=30.0, national=2.0, island=-1.0,
+                             modifier=4.0, wobble=0.5, share=12.0)
+        after = renormalize({"b": before})["b"]
+        self.assertEqual(
+            (after.base, after.national, after.island, after.modifier, after.wobble),
+            (before.base, before.national, before.island, before.modifier, before.wobble),
+        )
+        self.assertAlmostEqual(after.share, 100.0)
+
+    def test_renormalize_of_an_all_negative_district_stays_at_zero(self):
+        # Поправки увели в минус всех, кто остался: делить нечего, и
+        # выдумывать сотню из ничего не нужно.
+        left = {"b": PartyResult(base=0.0, modifier=-10.0),
+                "c": PartyResult(base=0.0, modifier=-4.0)}
+        self.assertEqual({pid: r.share for pid, r in renormalize(left).items()},
+                         {"b": 0.0, "c": 0.0})
+
 
 class ElectionTestCase(unittest.TestCase):
     """Сервис на временном файле с партиями и округами с карты."""
@@ -287,11 +319,11 @@ class TestElectionResults(ElectionTestCase):
         гарантированно, а не по случайности броска.
 
         Раньше единственная поддержка была гарантией сама по себе: соперники
-        вообще не участвовали в розыгрыше. Теперь бросают все, и обычной
-        поддержки (до 6 очков на сельский пункт) мало, чтобы обыграть чужой
-        бросок 1–10 в худшем случае — поэтому рядом с реальной поддержкой
-        регистрируется огромный модификатор в `self.dominance`, который
-        соперники не могут перекрыть уже никаким броском.
+        вообще не участвовали в розыгрыше. Теперь долю получают все, и одной
+        поддержки мало — колебание в ±3 п.п. способно перевернуть близкий
+        округ. Поэтому рядом с реальной поддержкой регистрируется огромная
+        поправка в `self.dominance`: после нормировки она даёт партии почти
+        всю сотню, и никакое колебание этого не отыграет.
         """
         district = self.by_name[district_name]
         if is_city(district.code):
@@ -576,6 +608,45 @@ class TestRollElection(ElectionTestCase):
         self.service.set_support(self.district.id, settlement.id, party.id, points)
         return settlement
 
+    def test_the_file_keeps_one_copy_of_the_result(self):
+        # Веса для дележа мест выводятся из разбора и рядом с ним не
+        # хранятся: вторая копия тех же чисел рано или поздно отстаёт от
+        # первой — ровно так доли переставали давать сотню после удаления
+        # партии.
+        import json
+
+        self.give_support(self.a, 4)
+        self.service.roll_election(self.conv.id, {}, rng=random.Random(5))
+        raw = json.loads(self.path.read_text(encoding="utf-8"))
+        stored = raw["convocations"][0]
+        self.assertIn("results", stored)
+        self.assertNotIn("votes", stored)
+
+    def test_an_old_file_opens_as_a_manual_composition(self):
+        # До перехода на проценты итоги лежали в "rolls" и "votes" — там
+        # броски кубика, а не доли, и прочесть их в новую форму нельзя.
+        # Состав при этом не теряется: места остаются проставленными, просто
+        # набранными как будто руками, и выборы можно сыграть заново.
+        import json
+
+        from parlament import store
+
+        self.give_support(self.a, 4)
+        self.service.roll_election(self.conv.id, {}, rng=random.Random(5))
+        seats_before = dict(self.conv.seats)
+
+        raw = json.loads(self.path.read_text(encoding="utf-8"))
+        stored = raw["convocations"][0]
+        stored["rolls"] = stored.pop("results")
+        stored["votes"] = {self.district.id: {self.a.id: 7}}
+        self.path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+
+        reopened = store.load(self.path)
+        conv = reopened.active_convocation
+        self.assertEqual(conv.seats, seats_before)
+        self.assertEqual(conv.results, {})
+        self.assertFalse(conv.has_election)
+
     def test_every_party_takes_part_regardless_of_support(self):
         # Раньше в округ лезли только партии с поддержкой или модификатором —
         # это и была ошибка: бросают все, а поддержка лишь прибавляется.
@@ -740,7 +811,7 @@ class TestRollElection(ElectionTestCase):
         self.service.roll_election(self.conv.id, {}, rng=random.Random(19))
         self.service.clear_election(self.conv.id)
         self.assertEqual(self.conv.results, {})
-        self.assertEqual(self.conv.votes, {})
+        self.assertEqual(self.service.district_allocation(self.conv.id), {})
 
     def test_bad_modifier_is_rejected(self):
         with self.assertRaises(ValidationError):
@@ -799,7 +870,8 @@ class TestEveryoneRolledZero(ElectionTestCase):
 
     def test_the_result_is_kept_for_the_record(self):
         self.assertEqual(self.conv.results[self.district.id][self.a.id].share, 0.0)
-        self.assertNotIn(self.district.id, self.conv.votes)
+        # Разбор остался, но делить в округе нечего: доли нулевые у всех.
+        self.assertEqual(self.service.district_shares(self.conv.id, self.district.id), {})
         self.assertEqual(self.service.district_allocation(self.conv.id)
                          .get(self.district.id, {}), {})
 
@@ -833,6 +905,31 @@ class TestDeletingAParty(ElectionTestCase):
                                  self.b.id, SETTLEMENT_SUPPORT)
         self.assertEqual(self.settlement.support, {self.b.id: SETTLEMENT_SUPPORT})
 
+    def test_a_party_held_under_the_threshold_gets_seats_once_its_rival_is_gone(self):
+        # Барьер посчитан по раскладу с соперником: пока он был, мелкая
+        # партия оставалась под пятью процентами и мест не получала. Если
+        # доли не пересчитать, она так и осталась бы ни с чем — при том что
+        # в округе, кроме неё, уже никого.
+        # Соперник забирает округ почти целиком, мелкой партии остаётся
+        # положительная, но крохотная доля: +5 п.п. против колебания в ±3
+        # никогда не уходят в минус, так что расклад не зависит от зерна.
+        self.service.roll_election(self.conv.id, {
+            self.district.id: {self.a.id: {"modifier": 1000},
+                               self.b.id: {"modifier": 5}},
+        }, rng=random.Random(11))
+        small = self.conv.results[self.district.id][self.b.id].share
+        self.assertGreater(small, 0)
+        self.assertLess(small, THRESHOLD_PERCENT)
+        self.assertEqual(self.service.district_allocation(self.conv.id)
+                         .get(self.district.id, {}).get(self.b.id, 0), 0)
+
+        self.service.delete_party(self.a.id)
+        self.service.delete_party(self.c.id)
+        shares_now = self.service.district_shares(self.conv.id, self.district.id)
+        self.assertAlmostEqual(shares_now[self.b.id], 100.0, places=6)
+        self.assertEqual(self.service.district_allocation(self.conv.id)[self.district.id],
+                         {self.b.id: self.district.seats})
+
     def test_it_leaves_the_rolled_districts(self):
         # Бросают все партии, включая ту, что без ставок (self.c) — она
         # остаётся в разборе округа и после удаления соседей.
@@ -844,7 +941,11 @@ class TestDeletingAParty(ElectionTestCase):
 
         self.service.delete_party(self.a.id)
         self.assertEqual(set(self.conv.results[self.district.id]), {self.b.id, self.c.id})
-        self.assertNotIn(self.a.id, self.conv.votes.get(self.district.id, {}))
+        # Голоса ушедшей партии расходятся между оставшимися: округ снова
+        # даёт сотню, а не «16,9 % и все пять мест».
+        shares = self.service.district_shares(self.conv.id, self.district.id)
+        self.assertNotIn(self.a.id, shares)
+        self.assertAlmostEqual(sum(shares.values()), 100.0, places=6)
 
     def test_the_district_is_shared_out_again(self):
         # Иначе места ушедшей партии просто пропали бы, а округ остался бы
@@ -887,8 +988,8 @@ class TestDeletingAParty(ElectionTestCase):
 
         self.service.delete_party(self.c.id)
         self.assertEqual(self.conv.seats, {})
-        self.assertEqual(self.conv.votes, {})
         self.assertEqual(self.conv.results, {})
+        self.assertEqual(self.service.district_allocation(self.conv.id), {})
         self.assertFalse(self.conv.has_election)
 
     def test_survives_restart(self):
