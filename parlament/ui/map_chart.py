@@ -22,8 +22,17 @@ from pathlib import Path
 import flet as ft
 import flet.canvas as cv
 
-from ..district_geometry import DISTRICT_SHAPES, MAP_ASPECT
+from ..district_geometry import DISTRICT_SHAPES
 from . import theme
+from .map_frame import (
+    CONTENT_ASPECT,
+    NAME_MARGIN,
+    label_spot,
+    place,
+    room_at,
+    text_color,
+    unplace,
+)
 from .mount import push
 
 #: Куда можно положить необязательную подложку. Папка проекта пользователя —
@@ -92,15 +101,15 @@ class MapChart(ft.Container):
         if self._width_px <= 0 or self._height_px <= 0:
             return (0.0, 0.0, 0.0, 0.0)
         width = self._width_px
-        height = width / MAP_ASPECT
+        height = width / CONTENT_ASPECT
         if height > self._height_px:
             height = self._height_px
-            width = height * MAP_ASPECT
+            width = height * CONTENT_ASPECT
         return ((self._width_px - width) / 2, (self._height_px - height) / 2,
                 width, height)
 
     def _points(self, poly, left, top, width, height):
-        return [(left + x * width, top + y * height) for x, y in poly]
+        return [place(x, y, left, top, width, height) for x, y in poly]
 
     # -- отрисовка ----------------------------------------------------------
 
@@ -116,6 +125,10 @@ class MapChart(ft.Container):
         if self._background is not None:
             shapes.append(cv.Image(src=str(self._background), x=left, y=top,
                                    width=width, height=height))
+        else:
+            # Море: без него острова висят на том же цвете, что и поля вокруг.
+            shapes.append(cv.Rect(left, top, width, height,
+                                  paint=ft.Paint(color=theme.MAP_SEA)))
 
         for code, name, seats, color in self._districts:
             polys = DISTRICT_SHAPES.get(code)
@@ -138,8 +151,44 @@ class MapChart(ft.Container):
                                    style=ft.PaintingStyle.STROKE),
                 ))
 
+        shapes.extend(self._labels(left, top, width, height))
         self._canvas.shapes = shapes
         push(self._canvas)
+
+    def _labels(self, left: float, top: float, width: float,
+                height: float) -> list[cv.Shape]:
+        """Подписи округов — те же, что и в выгруженной картинке.
+
+        В округ, где название помещается, идёт имя и число мандатов; в
+        мелкий — только номер, он и так подписан на игровой карте. Цвет
+        буквы выбирается по яркости заливки, поэтому подпись читается на
+        любой партийной краске и обводку рисовать не нужно.
+        """
+        shapes: list[cv.Shape] = []
+        base = max(7.0, height * 0.026)
+
+        for code, name, seats, color in self._districts:
+            spot = label_spot(code, left, top, width, height)
+            if spot is None:
+                continue
+            x, y, room = spot
+            room *= NAME_MARGIN
+            ink = text_color(color or theme.EMPTY_SEAT, theme.TEXT, "#ffffff")
+
+            # Ширину строки на холсте точно не измерить, поэтому считаем по
+            # средней ширине знака: для подбора «влезает или нет» этого
+            # довольно, а промах вправляется запасом в NAME_MARGIN.
+            size = next((s for s in (base, base * 0.88, base * 0.78, base * 0.7)
+                         if len(name) * s * _GLYPH_WIDTH <= min(room, room_at(
+                             code, x, y - s * 0.6, left, top, width, height))),
+                        None)
+            if size is not None:
+                shapes.append(_text(x, y - size * 0.6, name, size, ink, bold=True))
+                shapes.append(_text(x, y + size * 0.75, str(seats),
+                                    size * 0.82, ink))
+            elif len(str(code)) * base * _GLYPH_WIDTH <= room:
+                shapes.append(_text(x, y, str(code), base, ink, bold=True))
+        return shapes
 
     # -- клик ---------------------------------------------------------------
 
@@ -157,16 +206,31 @@ class MapChart(ft.Container):
             return
 
         px, py = event.local_position.x, event.local_position.y
-        x = (px - left) / width
-        y = (py - top) / height
-        if not (0 <= x <= 1 and 0 <= y <= 1):
+        if not (left <= px <= left + width and top <= py <= top + height):
             return
+        x, y = unplace(px, py, left, top, width, height)
 
         for code, _name, _seats, _color in self._districts:
             for poly in DISTRICT_SHAPES.get(code, ()):
                 if _inside(x, y, poly):
                     self._on_pick(code)
                     return
+
+
+#: Средняя ширина знака в долях кегля — грубая мерка для подбора размера
+#: подписи: измерить строку на холсте Flet нельзя, а Pillow здесь нет.
+_GLYPH_WIDTH = 0.5
+
+
+def _text(x: float, y: float, value: str, size: float, color: str,
+          bold: bool = False) -> cv.Text:
+    """Подпись по центру точки — Canvas ставит текст от угла, а не от середины."""
+    return cv.Text(
+        x, y, value,
+        style=ft.TextStyle(size=size, color=color,
+                           font_family=theme.FONT_SEMIBOLD if bold else None),
+        alignment=ft.Alignment.CENTER,
+    )
 
 
 def _inside(x: float, y: float, poly) -> bool:

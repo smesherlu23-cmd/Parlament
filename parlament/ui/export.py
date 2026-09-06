@@ -52,6 +52,11 @@ class LegendEntry:
     seats: int
     film: str | None = None
     parts: tuple[tuple[str, str, int], ...] = ()
+    #: Доля голосов по стране, в процентах. `None` — выборов не было, и
+    #: голосов не существует: писать вместо них ноль значило бы соврать.
+    votes: float | None = None
+    #: Голоса участников блока, в том же порядке, что и `parts`.
+    part_votes: tuple[float | None, ...] = ()
 
     def chart_parts(self) -> list[tuple[str, int, str | None]]:
         """Места блока для схемы: цвет партии, сколько мест, чем накрыты."""
@@ -69,8 +74,9 @@ class LegendEntry:
         """
         if not self.parts:
             return [self]
-        return [self] + [LegendEntry(name, color, seats)
-                         for name, color, seats in self.parts]
+        return [self] + [LegendEntry(name, color, seats, votes=votes)
+                         for (name, color, seats), votes in
+                         zip(self.parts, self.part_votes or [None] * len(self.parts))]
 
 
 def _font(name: str, size: int) -> ImageFont.FreeTypeFont:
@@ -208,7 +214,12 @@ def _layout_legend(distribution: list[LegendEntry], total_seats: int,
     items = []
     for entry in distribution:
         label = f"{entry.name} {entry.seats}"
-        percent = f" ({entry.seats / total_seats * 100:.1f}".replace(".", ",") + " %)"
+        percent = f" ({entry.seats / total_seats * 100:.1f}".replace(".", ",") + " %"
+        # Голоса рядом с местами: округа делятся по большинству, и эти два
+        # числа расходятся — ровно за этим на них и смотрят.
+        if entry.votes is not None:
+            percent += f", голосов {entry.votes:.1f}".replace(".", ",") + " %"
+        percent += ")"
         items.append({
             "entry": entry,
             "label": label,

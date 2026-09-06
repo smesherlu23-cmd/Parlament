@@ -147,7 +147,8 @@ class ParlamentApp:
         `distribution`: партия, вошедшая в блок, не должна стоять на дуге
         отдельно от союзников — иначе плёнка накрыла бы чужие места.
         """
-        return coalitions.blocs(self.parties, conv.seats, conv.coalitions)
+        return coalitions.blocs(self.parties, conv.seats, conv.coalitions,
+                                self.service.vote_shares(conv.id))
 
     # -- отрисовка ----------------------------------------------------------
 
@@ -741,6 +742,9 @@ class ParlamentApp:
                 bloc.name, bloc.color, bloc.seats,
                 film=bloc.film,
                 parts=tuple((m.name, m.color, m.seats) for m in bloc.members)
+                if bloc.is_coalition else (),
+                votes=bloc.votes,
+                part_votes=tuple(m.votes for m in bloc.members)
                 if bloc.is_coalition else (),
             )
             for bloc in blocs

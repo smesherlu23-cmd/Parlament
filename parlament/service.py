@@ -548,9 +548,20 @@ class ParlamentService:
         return {party.id: self.project.district_support(district, party.id)
                 for party in self.project.parties}
 
+    def district_capacity(self, district_id: str) -> int:
+        """Сколько очков поддержки в округе можно раздать всего."""
+        return self.project.district_capacity(self._require_district(district_id))
+
     def base_share(self, district_id: str, party_id: str) -> float:
-        """База партии в округе — доля от розданных там очков, в процентах."""
-        return elections.base_shares(self.district_points(district_id)).get(party_id, 0.0)
+        """База партии в округе — её доля голосов до поправок, в процентах.
+
+        Считается от всего запаса очков, а не от розданных: неразобранные
+        очки — неопределившиеся, и делятся поровну (см. `base_shares`).
+        """
+        return elections.base_shares(
+            self.district_points(district_id),
+            self.district_capacity(district_id),
+        ).get(party_id, 0.0)
 
     # -- розыгрыш выборов ------------------------------------------------------
 
@@ -570,12 +581,14 @@ class ParlamentService:
                        один остров архипелага (см. `district_seed.islands`);
                        остров вычисляется по региону округа.
 
-        У каждой партии в округе есть база — её доля от очков поддержки,
-        розданных там игроками, — к которой прибавляются (в процентных
-        пунктах) настроение по стране, сдвиг по острову, местная поправка и
-        случайное колебание; итог нормируется к 100 % на весь округ. Партия
-        без всякой базы участвует наравне с остальными — на одном колебании,
-        без всякой прибавки.
+        У каждой партии в округе есть база — её доля от всего запаса очков
+        округа, — к которой прибавляются (в процентных пунктах) настроение по
+        стране, сдвиг по острову, местная поправка и случайное колебание;
+        итог нормируется к 100 % на весь округ.
+
+        Неразобранные очки — неопределившиеся: они делятся поровну между
+        всеми, поэтому партия, не работавшая в округе, идёт не с нуля, а
+        одно очко из шести даёт перевес, но не разгром (см. `base_shares`).
         """
         conv = self._require_convocation(convocation_id)
         # Нечего разыгрывать не по нехватке поправок (участвуют все и без
@@ -612,7 +625,8 @@ class ParlamentService:
             per_island = island.get(district_seed.island_of(district.region), {})
             points = {party.id: self.project.district_support(district, party.id)
                      for party in self.project.parties}
-            base = elections.base_shares(points)
+            base = elections.base_shares(points,
+                                         self.project.district_capacity(district))
 
             raw: dict[str, float] = {}
             parts: dict[str, tuple[float, float, float, float]] = {}
@@ -639,6 +653,39 @@ class ParlamentService:
         self._recount(conv)
         self._persist()
         return conv
+
+    def vote_shares(self, convocation_id: str) -> dict[str, float]:
+        """Доля голосов партии по всей стране, в процентах: `{party_id: %}`.
+
+        Округа взвешиваются по числу мандатов: округ на десять мест
+        представляет больше людей, чем округ на два, и считать их наравне
+        значило бы приравнять хутор к столице. Численности избирателей в
+        игре нет, а мандаты — ближайшее, что её заменяет: их и раздавали по
+        населению, когда рисовали карту.
+
+        Считается по всем партиям округа, включая не прошедших барьер: это
+        доля голосов, а не мест. Расхождение между этими двумя числами —
+        как раз то, ради чего проценты голосов и показывают.
+
+        Пустой словарь, если выборов не было.
+        """
+        conv = self._require_convocation(convocation_id)
+        if not conv.results:
+            return {}
+        seats = self.project.district_seats
+
+        weighted: dict[str, float] = {}
+        total = 0.0
+        for district_id, per_party in conv.results.items():
+            weight = seats.get(district_id, 0)
+            if weight <= 0:
+                continue
+            total += weight
+            for party_id, result in per_party.items():
+                weighted[party_id] = weighted.get(party_id, 0.0) + result.share * weight
+        if total <= 0:
+            return {}
+        return {party_id: value / total for party_id, value in weighted.items()}
 
     def district_shares(self, convocation_id: str, district_id: str) -> dict[str, float]:
         """Проценты голосов по округу — как их показывает разбор.

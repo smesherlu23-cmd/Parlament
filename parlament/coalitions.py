@@ -27,6 +27,9 @@ class Member:
     name: str
     color: str
     seats: int
+    #: Доля голосов по стране, в процентах. `None` — выборов не было и
+    #: голосов не существует: места набраны руками.
+    votes: float | None = None
 
 
 @dataclass(frozen=True)
@@ -52,13 +55,26 @@ class Bloc:
     def is_coalition(self) -> bool:
         return self.coalition_id is not None
 
+    @property
+    def votes(self) -> float | None:
+        """Доля голосов блока — сумма долей участников.
 
-def blocs(parties, seats: dict[str, int], coalitions=()) -> list[Bloc]:
+        `None`, если выборов не было: голосов тогда не существует вовсе, и
+        показывать вместо них ноль значило бы соврать.
+        """
+        known = [m.votes for m in self.members if m.votes is not None]
+        return sum(known) if known else None
+
+
+def blocs(parties, seats: dict[str, int], coalitions=(),
+          votes: dict[str, float] | None = None) -> list[Bloc]:
     """Состав зала блоками, крупнейший слева.
 
     :param parties: партии справочника — их порядок решает ничьи.
     :param seats: `{party_id: мест}` текущего созыва.
     :param coalitions: блоки созыва (`model.Coalition`).
+    :param votes: `{party_id: % голосов}`, если выборы были. Места и голоса
+                  расходятся — на то и показывают оба числа.
 
     Партии и блоки без мест выпадают: показывать в зале нечего, а в легенде
     они заняли бы строку ради нуля. Партия, попавшая в коалицию, отдельной
@@ -69,7 +85,8 @@ def blocs(parties, seats: dict[str, int], coalitions=()) -> list[Bloc]:
 
     def member(party_id: str) -> Member:
         party = by_id[party_id]
-        return Member(party.id, party.name, party.color, seats.get(party.id, 0))
+        return Member(party.id, party.name, party.color, seats.get(party.id, 0),
+                      (votes or {}).get(party.id) if votes else None)
 
     result: list[Bloc] = []
     taken: set[str] = set()

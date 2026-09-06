@@ -100,24 +100,63 @@ class TestRollMechanic(unittest.TestCase):
         self.assertEqual(percent, {"a": 20.0, "b": 33.3, "c": 46.7})
 
     def test_base_share_is_share_of_total_points_in_the_district(self):
-        self.assertEqual(base_shares({"a": 6, "b": 4}), {"a": 60.0, "b": 40.0})
-        self.assertAlmostEqual(base_shares({"a": 1, "b": 2})["a"], 33.333, places=2)
+        # Запас разобран целиком — доли ровно по очкам.
+        self.assertEqual(base_shares({"a": 6, "b": 4}, 10), {"a": 60.0, "b": 40.0})
+        self.assertAlmostEqual(base_shares({"a": 1, "b": 2}, 3)["a"], 33.333, places=2)
+
+    def test_undistributed_points_are_shared_out_evenly(self):
+        # Одно очко из шести на трёх партиях: перевес есть, разгрома нет.
+        # Раньше это давало ровно те же 100 %, что и все шесть очков.
+        result = base_shares({"a": 1, "b": 0, "c": 0}, 6)
+        self.assertAlmostEqual(result["a"], (1 + 5 / 3) / 6 * 100)
+        self.assertAlmostEqual(result["b"], (5 / 3) / 6 * 100)
+        self.assertEqual(result["b"], result["c"])
+        self.assertAlmostEqual(sum(result.values()), 100.0)
+
+    def test_one_point_is_worth_less_than_the_whole_pool(self):
+        # Главное свойство: чем больше разобрано, тем крупнее перевес.
+        rising = [base_shares({"a": n, "b": 0, "c": 0}, 6)["a"] for n in range(7)]
+        self.assertEqual(rising, sorted(rising))
+        self.assertAlmostEqual(rising[0], 100 / 3)     # не раздали ничего
+        self.assertAlmostEqual(rising[6], 100.0)       # разобрали целиком
+        self.assertLess(rising[1], 50.0)               # одно очко — не разгром
+
+    def test_a_full_pool_leaves_nobody_undecided(self):
+        self.assertEqual(base_shares({"a": 6, "b": 0}, 6), {"a": 100.0, "b": 0.0})
+
+    def test_more_points_given_out_beats_the_same_split_of_fewer(self):
+        # Две партии поделили пункт поровну — но в одном случае разобрали
+        # весь запас, в другом только треть. Доли выходят одинаковые: делить
+        # между собой поровну и там и там, а неопределившиеся тоже поровну.
+        self.assertEqual(base_shares({"a": 3, "b": 3}, 6),
+                         base_shares({"a": 1, "b": 1}, 6))
+
+    def test_capacity_smaller_than_what_was_given_falls_back(self):
+        # Файл правили руками и раздали больше запаса: считаем от розданного,
+        # чтобы доли не ушли за сотню.
+        result = base_shares({"a": 8, "b": 2}, 6)
+        self.assertEqual(result, {"a": 80.0, "b": 20.0})
+
+    def test_without_a_known_capacity_it_counts_from_what_was_given(self):
+        # Округ без пунктов — такое бывает у проектов, начатых до карты:
+        # считать от запаса там не от чего.
+        self.assertEqual(base_shares({"a": 3, "b": 1}, 0), {"a": 75.0, "b": 25.0})
 
     def test_base_share_ignores_negative_points(self):
         # Отрицательных очков не бывает по вводу, но на всякий случай не
         # даём им превратиться в отрицательную долю.
-        self.assertEqual(base_shares({"a": -3, "b": 6}), {"a": 0.0, "b": 100.0})
+        self.assertEqual(base_shares({"a": -3, "b": 6}, 6), {"a": 0.0, "b": 100.0})
 
     def test_nobody_organized_means_everyone_is_equal(self):
         # Если очков не роздано вовсе, у организации нет ни у кого — все
         # партии равны, и голоса решит колебание, а не выдуманный перевес.
-        equal = base_shares({"a": 0, "b": 0, "c": 0})
+        equal = base_shares({"a": 0, "b": 0, "c": 0}, 6)
         self.assertEqual(set(equal), {"a", "b", "c"})
         for value in equal.values():
             self.assertAlmostEqual(value, 100 / 3)
 
     def test_base_shares_of_an_empty_district_is_empty(self):
-        self.assertEqual(base_shares({}), {})
+        self.assertEqual(base_shares({}, 6), {})
 
     def test_wobble_stays_within_its_range(self):
         rng = random.Random(1)
@@ -171,7 +210,7 @@ class TestRollMechanic(unittest.TestCase):
         rng = random.Random(7)
         for _ in range(200):
             points = {f"p{i}": rng.randint(0, 12) for i in range(rng.randint(2, 6))}
-            base = base_shares(points)
+            base = base_shares(points, sum(points.values()) + rng.randint(0, 8))
             raw = {pid: b + rng.randint(-3, 3) + roll_wobble(rng) for pid, b in base.items()}
             share = normalize_shares(raw)
             total = sum(share.values())
@@ -455,13 +494,43 @@ class TestSettlementsAndSupport(ElectionTestCase):
         self.service.set_support(self.village.id, second.id, self.a.id, 1)
         self.assertEqual(self.village.support_points(self.a.id), 5)
 
-    def test_base_share_reflects_the_split_of_points(self):
+    def test_base_share_counts_from_the_whole_pool_not_from_what_was_given(self):
+        # В округе четыре пункта, запас 24 очка. Роздано 8: шесть у a, два у
+        # b. Остальные 16 никто не разобрал — это неопределившиеся, они
+        # делятся поровну на три партии.
         first, second = self.village.settlements[:2]
         self.service.set_support(self.village.id, first.id, self.a.id, 6)
         self.service.set_support(self.village.id, second.id, self.b.id, 2)
-        # 6 из 8 очков округа — доля партии a 75 %, число пунктов ни при чём.
-        self.assertEqual(self.service.base_share(self.village.id, self.a.id), 75.0)
-        self.assertEqual(self.service.base_share(self.village.id, self.b.id), 25.0)
+        self.assertEqual(self.service.district_capacity(self.village.id), 24)
+        share = lambda p: self.service.base_share(self.village.id, p.id)
+        self.assertAlmostEqual(share(self.a), (6 + 16 / 3) / 24 * 100)
+        self.assertAlmostEqual(share(self.b), (2 + 16 / 3) / 24 * 100)
+        self.assertAlmostEqual(share(self.c), (16 / 3) / 24 * 100)
+        self.assertAlmostEqual(share(self.a) + share(self.b) + share(self.c), 100.0)
+
+    def test_a_single_point_gives_an_edge_not_a_landslide(self):
+        # Ровно та жалоба, ради которой это и переделано: деревня, где
+        # единственная партия завела одного сторонника, доставалась ей
+        # целиком — при том что пятерых из шести там не убедил никто.
+        lone = self.by_name["Северный мыс"]           # один пункт, запас 6
+        self.assertEqual(self.service.district_capacity(lone.id), SETTLEMENT_SUPPORT)
+        self.service.set_support(lone.id, lone.settlements[0].id, self.a.id, 1)
+
+        winner = self.service.base_share(lone.id, self.a.id)
+        rival = self.service.base_share(lone.id, self.b.id)
+        self.assertGreater(winner, rival)             # перевес есть
+        self.assertLess(winner, 50.0)                 # но не разгром
+        self.assertAlmostEqual(winner, (1 + 5 / 3) / 6 * 100)
+        self.assertAlmostEqual(rival, (5 / 3) / 6 * 100)
+
+    def test_taking_the_whole_pool_still_takes_everything(self):
+        # Другой край: партия, разобравшая пункт целиком, забирает его весь —
+        # неопределившихся там не осталось.
+        lone = self.by_name["Северный мыс"]
+        self.service.set_support(lone.id, lone.settlements[0].id, self.a.id,
+                                 SETTLEMENT_SUPPORT)
+        self.assertEqual(self.service.base_share(lone.id, self.a.id), 100.0)
+        self.assertEqual(self.service.base_share(lone.id, self.b.id), 0.0)
 
     def test_settlement_pool_cannot_be_overspent(self):
         settlement = self.village.settlements[0]
@@ -485,11 +554,14 @@ class TestSettlementsAndSupport(ElectionTestCase):
         self.assertEqual(port.region, centre.region)
         city = self.service.project.city(port.region)
 
-        self.service.set_city_support(city.id, self.a.id, 6)
+        self.service.set_city_support(city.id, self.a.id, CITY_SUPPORT)
         self.assertEqual(
             self.service.base_share(port.id, self.a.id),
             self.service.base_share(centre.id, self.a.id))
+        # Копилка разобрана целиком — город уходит партии полностью, и оба
+        # его округа видят это одинаково.
         self.assertEqual(self.service.base_share(port.id, self.a.id), 100.0)
+        self.assertEqual(self.service.district_capacity(port.id), CITY_SUPPORT)
 
     def test_zero_points_remove_the_party(self):
         settlement = self.village.settlements[0]
@@ -498,14 +570,21 @@ class TestSettlementsAndSupport(ElectionTestCase):
         self.assertEqual(settlement.support, {})
 
     def test_deleting_a_settlement_with_points_lowers_a_rivals_share(self):
-        # База — доля от очков округа, а не среднее на пункт: убрать пункт
-        # без очков ничего бы не изменило. Убираем пункт с очками соперника.
+        # Убираем пункт вместе с очками соперника: и его очки, и его запас
+        # уходят из округа разом, поэтому доля оставшейся партии растёт.
         first, second = self.village.settlements[:2]
         self.service.set_support(self.village.id, first.id, self.a.id, 4)
         self.service.set_support(self.village.id, second.id, self.b.id, 4)
-        self.assertEqual(self.service.base_share(self.village.id, self.a.id), 50.0)
+        before = self.service.base_share(self.village.id, self.a.id)
+        self.assertEqual(before, self.service.base_share(self.village.id, self.b.id))
+
         self.service.delete_settlement(self.village.id, second.id)
-        self.assertEqual(self.service.base_share(self.village.id, self.a.id), 100.0)
+        after = self.service.base_share(self.village.id, self.a.id)
+        self.assertGreater(after, before)
+        self.assertGreater(before, self.service.base_share(self.village.id, self.b.id))
+        # Запас округа тоже стал меньше — пункт унёс с собой свои шесть очков.
+        self.assertEqual(self.service.district_capacity(self.village.id),
+                         3 * SETTLEMENT_SUPPORT)
 
     def test_an_extra_settlement_can_be_added(self):
         # Хутора, которого нет на карте, программа не запрещает.
@@ -657,13 +736,18 @@ class TestRollElection(ElectionTestCase):
         self.assertEqual(taking_part, {self.a.id, self.b.id, self.c.id})
 
     def test_base_reaches_the_result(self):
-        # Пять очков партии a и пять партии b на разные пункты — доля
-        # пополам, база не зависит от числа пунктов, только от их суммы.
+        # Поровну розданные очки дают равную базу, сколько бы пунктов ни
+        # было: важна сумма, а не то, в каком пункте они лежат.
         self.give_support(self.a, 5)
         self.give_support(self.b, 5, where=1)
         self.service.roll_election(self.conv.id, {}, rng=random.Random(2))
-        self.assertEqual(self.conv.results[self.district.id][self.a.id].base, 50.0)
-        self.assertEqual(self.conv.results[self.district.id][self.b.id].base, 50.0)
+        per_party = self.conv.results[self.district.id]
+        self.assertEqual(per_party[self.a.id].base, per_party[self.b.id].base)
+        # Партия без очков идёт не с нуля: неразобранные очки — это
+        # неопределившиеся, они делятся поровну на всех.
+        self.assertGreater(per_party[self.c.id].base, 0)
+        self.assertGreater(per_party[self.a.id].base, per_party[self.c.id].base)
+        self.assertAlmostEqual(sum(r.base for r in per_party.values()), 100.0)
 
     def test_modifier_reaches_the_result(self):
         self.service.roll_election(
@@ -816,6 +900,75 @@ class TestRollElection(ElectionTestCase):
         with self.assertRaises(ValidationError):
             self.service.roll_election(
                 self.conv.id, {self.district.id: {self.a.id: {"modifier": "ой"}}})
+
+
+class TestVoteShares(ElectionTestCase):
+    """Доля голосов по стране — рядом с местами её и показывают."""
+
+    def roll(self, seed: int = 5):
+        self.service.roll_election(self.conv.id, {}, rng=random.Random(seed))
+        return self.service.vote_shares(self.conv.id)
+
+    def test_without_an_election_there_are_no_votes(self):
+        # Не нули, а именно пусто: мест могли набрать руками, и голосов за
+        # ними не стоит никаких.
+        self.assertEqual(self.service.vote_shares(self.conv.id), {})
+
+    def test_shares_add_up_to_a_hundred(self):
+        votes = self.roll()
+        self.assertAlmostEqual(sum(votes.values()), 100.0, places=6)
+        self.assertEqual(set(votes), {self.a.id, self.b.id, self.c.id})
+
+    def test_a_bigger_district_pulls_harder(self):
+        # Округа взвешены по мандатам: округ на десять мест представляет
+        # больше людей, чем округ на два, и считать их наравне значило бы
+        # приравнять хутор к столице.
+        big = max(self.service.project.districts, key=lambda d: d.seats)
+        small = min((d for d in self.service.project.districts
+                     if d.settlements and d.id != big.id),
+                    key=lambda d: d.seats)
+        self.assertGreater(big.seats, small.seats)
+
+        # Одна и та же поправка, но в разных по весу округах.
+        self.service.roll_election(self.conv.id, {
+            big.id: {self.a.id: {"modifier": 1000}},
+            small.id: {self.b.id: {"modifier": 1000}},
+        }, rng=random.Random(3))
+        votes = self.service.vote_shares(self.conv.id)
+        self.assertGreater(votes[self.a.id], votes[self.b.id])
+
+    def test_votes_and_seats_are_allowed_to_disagree(self):
+        # Ради этого их и показывают рядом: округа делятся по большинству,
+        # и доля мест партии не обязана совпадать с долей голосов.
+        # Уверенно берём половину округов: там уходят все мандаты, а в
+        # остальных партия идёт наравне со всеми — мест выходит больше, чем
+        # голосов. Это и есть перекос, который эти два числа показывают.
+        half = self.service.project.districts[::2]
+        self.service.roll_election(self.conv.id, {
+            d.id: {self.a.id: {"modifier": 1000}} for d in half
+        }, rng=random.Random(8))
+        votes = self.service.vote_shares(self.conv.id)
+        seats = self.conv.seats
+        share_of_seats = seats[self.a.id] / sum(seats.values()) * 100
+        self.assertGreater(
+            share_of_seats, votes[self.a.id] + 1,
+            "перевес в округах должен давать мест заметно больше, чем голосов")
+
+    def test_a_party_below_the_threshold_still_has_votes(self):
+        # Барьер запрещает места, а не голоса: доля у партии есть, а мандатов
+        # может не быть вовсе.
+        self.service.roll_election(self.conv.id, {
+            d.id: {self.a.id: {"modifier": 1000}}
+            for d in self.service.project.districts
+        }, rng=random.Random(12))
+        votes = self.service.vote_shares(self.conv.id)
+        self.assertGreater(votes[self.b.id], 0)
+        self.assertEqual(self.conv.seats.get(self.b.id, 0), 0)
+
+    def test_clearing_the_election_takes_the_votes_with_it(self):
+        self.roll()
+        self.service.clear_election(self.conv.id)
+        self.assertEqual(self.service.vote_shares(self.conv.id), {})
 
 
 class TestElectionAndManualSeatsDoNotMix(ElectionTestCase):
@@ -1025,12 +1178,18 @@ class TestSupportImport(ElectionTestCase):
         self.assertEqual(district.support_points(self.b.id), 8)
 
     def test_base_share_follows_the_imported_table(self):
+        district = self.by_name["Судбригг"]
         result = self.parse(self.table("Судбригг,Судурей,4,,\n"
                                        "Судбригг,Фьярей,2,,\n"))
         self.service.import_support(result.rows)
-        # Единственная партия с очками в округе — вся база достаётся ей.
-        self.assertEqual(self.service.base_share(self.by_name["Судбригг"].id,
-                                                  self.a.id), 100.0)
+        # Шесть очков из двенадцати достались единственной партии: перевес
+        # заметный, но остальные шесть никто не разобрал, и они делятся
+        # поровну — разгрома не выходит.
+        self.assertEqual(self.service.district_capacity(district.id), 12)
+        share = self.service.base_share(district.id, self.a.id)
+        self.assertAlmostEqual(share, (6 + 6 / 3) / 12 * 100)
+        self.assertGreater(share, self.service.base_share(district.id, self.b.id))
+        self.assertLess(share, 100.0)
 
     def test_existing_settlement_is_replaced_not_doubled(self):
         district = self.by_name["Судбригг"]

@@ -397,6 +397,23 @@ class Project:
             return city.support.get(party_id, 0) if city else 0
         return district.support_points(party_id)
 
+    def district_capacity(self, district: "District") -> int:
+        """Сколько очков поддержки в округе можно раздать всего.
+
+        Из этого запаса, а не из розданного, считается база на выборах:
+        неразобранные очки — это неопределившиеся, см. `elections.base_shares`.
+
+        У городского округа запас не свой, а всего города: несколько
+        избирательных округов метрополии смотрят в одну копилку — так же,
+        как и с очками (см. `district_support`).
+        """
+        from .district_seed import is_city
+
+        if is_city(district.code):
+            city = self.city(district.region)
+            return city.capacity if city else 0
+        return sum(s.capacity for s in district.settlements)
+
     @property
     def district_seats(self) -> dict[str, int]:
         """`{district_id: мест}` — в таком виде это ждёт расчёт выборов."""

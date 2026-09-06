@@ -314,22 +314,32 @@ class ParliamentView:
         можно, сбросив выборы.
         """
         app = self.app
+        # Панель показывает партии, а не блоки: коалиции живут под схемой,
+        # а здесь нужен состав по мандатам.
         rows = [
             ft.Container(
                 padding=ft.Padding.symmetric(vertical=7),
                 border=ft.Border.only(bottom=ft.BorderSide(1, "#14201e1d")),
                 content=ft.Row([
-                    theme.swatch(party.color, 12),
+                    theme.swatch(member.color, 12),
                     ft.Container(
-                        ft.Text(party.name, size=theme.fs(14), color=theme.TEXT,
-                                no_wrap=True, overflow=ft.TextOverflow.ELLIPSIS,
-                                tooltip=party.name),
+                        ft.Column([
+                            ft.Text(member.name, size=theme.fs(14), color=theme.TEXT,
+                                    no_wrap=True, overflow=ft.TextOverflow.ELLIPSIS,
+                                    tooltip=member.name),
+                            # Голоса рядом с местами: округа делятся по
+                            # большинству, и эти два числа расходятся — как
+                            # раз это и интересно посмотреть.
+                            ft.Text(f"{fmt.share(member.votes)} голосов",
+                                    size=theme.fs(11), color=theme.NEUTRAL_600),
+                        ], spacing=1, tight=True),
                         expand=True),
-                    ft.Text(str(seats), size=theme.fs(15),
+                    ft.Text(str(member.seats), size=theme.fs(15),
                             font_family=theme.FONT_SEMIBOLD, color=theme.TEXT),
                 ], spacing=10),
             )
-            for party, seats in app.distribution(conv)
+            for bloc in app.blocs(conv) for member in bloc.members
+            if member.votes is not None
         ]
         districts = len(conv.results)
 
@@ -483,21 +493,28 @@ class ParliamentView:
         сумме дают больше сотни: коалиция и её партии занимают одни и те же
         места, а не разные.
         """
-        app = self.app
         rows: list[ft.Control] = []
         for bloc in blocs:
             if bloc.is_coalition:
                 rows.append(self._legend_row(
-                    bloc.name, bloc.seats,
+                    bloc.name, bloc.seats, bloc.votes,
                     self._film_swatch(bloc), bold=True))
             for member in bloc.members:
                 rows.append(self._legend_row(
-                    member.name, member.seats, theme.swatch(member.color, 11)))
+                    member.name, member.seats, member.votes,
+                    theme.swatch(member.color, 11)))
         self.legend_row.controls = rows
 
-    def _legend_row(self, name: str, seats: int, mark: ft.Control,
-                    bold: bool = False) -> ft.Control:
-        return ft.Row([
+    def _legend_row(self, name: str, seats: int, votes: float | None,
+                    mark: ft.Control, bold: bool = False) -> ft.Control:
+        """Строка легенды: сколько мест, какая это доля палаты и — если
+        выборы были — сколько голосов за этим стоит.
+
+        Проценты мест и голосов расходятся: округа делятся по большинству,
+        и партия набирает мест то больше своей доли, то меньше. Показывать
+        одни места значило бы скрывать ровно эту разницу.
+        """
+        line: list[ft.Control] = [
             mark,
             ft.Text(name, size=theme.fs(13), color=theme.TEXT,
                     font_family=theme.FONT_SEMIBOLD if bold else None),
@@ -505,7 +522,11 @@ class ParliamentView:
                     font_family=theme.FONT_SEMIBOLD, color=theme.TEXT),
             ft.Text(fmt.percent(seats, self.app.total_seats), size=theme.fs(13),
                     color=theme.NEUTRAL_600),
-        ], spacing=8, tight=True)
+        ]
+        if votes is not None:
+            line.append(ft.Text(f"· {fmt.share(votes)} голосов", size=theme.fs(12),
+                                color=theme.NEUTRAL_600))
+        return ft.Row(line, spacing=8, tight=True)
 
     def _film_swatch(self, bloc, size: int = 11) -> ft.Control:
         """Квадратик коалиции — тот же приём, что и на схеме: полоски

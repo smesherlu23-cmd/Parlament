@@ -29,9 +29,9 @@ from parlament.elections import allocate_seats  # noqa: E402
 from parlament.district_geometry import (  # noqa: E402
     DISTRICT_CENTRES,
     DISTRICT_SHAPES,
-    MAP_ASPECT,
 )
 from parlament.ui.map_export import render_map_png  # noqa: E402
+from parlament.ui.map_frame import CONTENT_ASPECT, place  # noqa: E402
 from parlament.ui.seat_chart import compute_seats  # noqa: E402
 
 #: Пример раскладки: доли партий постоянные, а места считаются от размера
@@ -858,13 +858,27 @@ class TestMapAndElections(AppTestCase):
     def test_click_inside_a_district_opens_it(self):
         self.app.show_map()
         chart = self.app.map_chart
-        chart._rect = (0.0, 0.0, 1000.0, 1000.0 / MAP_ASPECT)
-        chart._width_px, chart._height_px = 1000.0, 1000.0 / MAP_ASPECT
+        height = 1000.0 / CONTENT_ASPECT
+        chart._rect = (0.0, 0.0, 1000.0, height)
+        chart._width_px, chart._height_px = 1000.0, height
 
+        # Кадр обрезан по самому архипелагу, поэтому доли геометрии в пиксели
+        # переводит `place` — тем же путём, что и отрисовка.
         target = self.by_name["Судбригг"]
         cx, cy = DISTRICT_CENTRES[target.code]
-        chart._on_tap(_FakeTapEvent(cx * 1000.0, cy * (1000.0 / MAP_ASPECT)))
+        px, py = place(cx, cy, 0.0, 0.0, 1000.0, height)
+        chart._on_tap(_FakeTapEvent(px, py))
         self.assertIn("Судбригг", texts(self.page.dialog))
+
+    def test_a_click_in_the_sea_opens_nothing(self):
+        self.app.show_map()
+        chart = self.app.map_chart
+        height = 1000.0 / CONTENT_ASPECT
+        chart._rect = (0.0, 0.0, 1000.0, height)
+        chart._width_px, chart._height_px = 1000.0, height
+        # Левый нижний угол кадра — открытое море: там островов нет.
+        chart._on_tap(_FakeTapEvent(20.0, height - 20.0))
+        self.assertIsNone(self.page.dialog)
 
     def test_negative_modifier_is_allowed(self):
         self.support("Судбригг", 0, 3)
@@ -889,9 +903,12 @@ class TestMapAndElections(AppTestCase):
                                  self.app.parties[1].id, 4)
         self.app.show_elections()
         preview = self.app.elections.previews[district.id]
-        # 6 из 10 очков округа — 60 %, а не итог розыгрыша.
-        self.assertIn("60 %", preview.value)
-        self.assertIn("40 %", preview.value)
+        # Запас округа — 12 очков, роздано 10: шесть у первой партии, четыре
+        # у второй, два не разобрал никто. Показана база от всего запаса, а
+        # не итог розыгрыша: колебание случайно, и обещать его нельзя.
+        self.assertIn("56 %", preview.value)          # (6 + 2/3) / 12
+        self.assertIn("39 %", preview.value)          # (4 + 2/3) / 12
+        self.assertIn("разобрано 10 из 12", preview.value)
 
     def test_district_with_no_support_says_so_instead_of_showing_equal_shares(self):
         # Доли в таком округе и правда равные, но показывать «33 %» у
@@ -998,8 +1015,10 @@ class TestMapAndElections(AppTestCase):
         self.assertEqual(self.app.elections.collect_national(), {})
         self.assertEqual(self.app.elections.collect_island(), {})
         # Поддержка — не модификатор, кнопка её не трогает: у party0 в
-        # Судбригге по-прежнему единственная база, вся ему.
-        self.assertIn("100 %", self.app.elections.previews[district].value)
+        # Судбригге по-прежнему самая крупная база.
+        shown = self.app.elections.previews[district].value
+        self.assertIn("44 %", shown)
+        self.assertIn("разобрано", shown)
 
     def test_district_dialog_shows_the_breakdown(self):
         self.support("Гаффинсвик центр", 0, 4)
@@ -1192,9 +1211,11 @@ class TestSeatsAfterElection(AppTestCase):
         self.app.reset_election()
         find(self.page.dialog, lambda c: isinstance(c, ft.Button)
              and c.content == "Сбросить").on_click(None)
-        # Единственная партия с очками в округе — вся база достаётся ей.
-        self.assertEqual(
-            self.service.base_share(self.district.id, self.app.parties[0].id), 100.0)
+        # Очки на месте: у партии, которая их раздала, база по-прежнему
+        # выше, чем у соперников без единого очка.
+        first, second = self.app.parties[0], self.app.parties[1]
+        self.assertGreater(self.service.base_share(self.district.id, first.id),
+                           self.service.base_share(self.district.id, second.id))
 
     def test_archived_convocation_keeps_its_results(self):
         seats = dict(self.app.selected.seats)
@@ -1329,6 +1350,49 @@ class TestCoalitions(AppTestCase):
         # И вход через действие тоже закрыт, а не только кнопка спрятана.
         self.app.new_coalition()
         self.assertIsNone(self.page.dialog)
+
+
+class TestVotePercentages(AppTestCase):
+    """Проценты голосов рядом с местами — в легенде и в правой панели."""
+
+    def setUp(self):
+        super().setUp()
+        self.add_parties(3)
+        by_name = {d.name: d for d in self.service.project.districts}
+        district = by_name["Судбригг"]
+        self.service.set_support(district.id, district.settlements[0].id,
+                                 self.app.parties[0].id, 4)
+        self.app.show_elections()
+        self.app.apply_election()
+        self.app.show_parliament()
+
+    def test_the_legend_shows_votes_next_to_seats(self):
+        shown = " ".join(texts(self.app.parliament.legend_row))
+        self.assertIn("голосов", shown)
+        # Доля мест и доля голосов — разные числа, и обе на месте.
+        self.assertGreaterEqual(shown.count("%"), 6)
+
+    def test_the_rail_shows_votes_for_every_party(self):
+        rail = self.app.parliament._build_election_rail(self.app.selected)
+        shown = texts(rail)
+        self.assertEqual(sum(1 for t in shown if "голосов" in t),
+                         len(self.app.parties))
+
+    def test_hand_picked_seats_show_no_votes(self):
+        # Голосов за ручным набором не стоит никаких: писать вместо них ноль
+        # значило бы соврать.
+        self.app.reset_election()
+        find(self.page.dialog, lambda c: isinstance(c, ft.Button)
+             and c.content == "Сбросить").on_click(None)
+        self.type_seats(self.app.parties[0].id, "10")
+        self.assertNotIn("голосов", " ".join(texts(self.app.parliament.legend_row)))
+
+    def test_votes_reach_the_exported_picture(self):
+        self.app.export_png()
+        legend = find_all(self.page.dialog, lambda c: isinstance(c, ft.Radio))
+        self.assertTrue(legend)          # диалог собрался
+        blocs = self.app.blocs(self.app.selected)
+        self.assertTrue(all(b.votes is not None for b in blocs))
 
 
 class TestDeletePartyWarning(AppTestCase):

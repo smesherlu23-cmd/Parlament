@@ -29,6 +29,16 @@ def pluralize(count: int, forms: list[str]) -> str:
     return f"{count} {plural(count, forms)}"
 
 
+def share(value: float) -> str:
+    """«28,3 %» — из готовой доли, а не из отношения двух чисел.
+
+    Отличается от `percent` тем, что доля уже посчитана: голоса по стране
+    сводятся из округов со своими весами, и делением одного числа на другое
+    их не получить.
+    """
+    return f"{value:.1f}".replace(".", ",") + " %"
+
+
 def percent(value: int, total: int) -> str:
     """«28,3 %» — с запятой, как принято в русской типографике."""
     if not total:

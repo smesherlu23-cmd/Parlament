@@ -325,6 +325,11 @@ class ElectionsView:
         Округ, где очков не раздали вовсе, показывается словами, а не
         равными долями: «33 %» у каждого выглядит как настоящая поддержка,
         хотя на деле её нет ни у кого и решать будут поправки с колебанием.
+
+        База считается от всего запаса округа: партия, разобравшая одно очко
+        из шести, не должна выглядеть хозяйкой деревни (см. `base_shares`).
+        Поэтому рядом показано и то, сколько очков вообще разобрано, — иначе
+        непонятно, почему у всех есть проценты.
         """
         district = self.service.project.district(district_id)
         preview = self.previews.get(district_id)
@@ -332,6 +337,7 @@ class ElectionsView:
             return
 
         points = self.service.district_points(district_id)
+        capacity = self.service.district_capacity(district_id)
         if not any(points.values()):
             preview.value = "очков никто не раздал — доли равные"
             preview.color = theme.NEUTRAL_600
@@ -339,9 +345,12 @@ class ElectionsView:
                 push(preview)
             return
 
-        base = base_shares(points)
+        base = base_shares(points, capacity)
         parts = [f"{party.abbr or party.name} {base[party.id]:.0f} %".replace(".", ",")
                  for party in self.app.parties if base.get(party.id)]
+        given = sum(points.values())
+        if capacity and given < capacity:
+            parts.append(f"· разобрано {given} из {capacity}")
 
         preview.value = "  ".join(parts)
         preview.color = theme.TEXT
