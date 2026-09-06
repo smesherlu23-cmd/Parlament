@@ -15,7 +15,19 @@ from PIL import Image, ImageDraw, ImageFont
 
 from ..model import DEFAULT_TOTAL_SEATS
 from . import theme
-from .seat_chart import VIEWBOX_HEIGHT, VIEWBOX_WIDTH, compute_seats
+from .seat_chart import (
+    FILM_ALPHA,
+    FILM_EDGE_ALPHA,
+    VIEWBOX_HEIGHT,
+    VIEWBOX_WIDTH,
+    compute_seats,
+    film_sectors,
+    sector_polygon,
+)
+
+#: На столько полосы рядов заходят друг на друга, в единицах макета схемы:
+#: иначе между ними остаётся щель в пиксель от округления координат.
+_FILM_OVERLAP = 1.0
 
 #: Разрешения из диалога экспорта.
 RESOLUTIONS = [
@@ -27,9 +39,38 @@ RESOLUTIONS = [
 
 @dataclass
 class LegendEntry:
+    """Блок зала: партия сама по себе или коалиция.
+
+    У коалиции заполнены `film` — цвет плёнки — и `parts`: партии, из которых
+    она собрана, как «имя, цвет, места». Схема разворачивает блок в места
+    участников (каждый своим цветом, все под общей плёнкой), а легенда рисует
+    квадратик так же, как выглядит блок на схеме, — полосками под плёнкой.
+    """
+
     name: str
     color: str
     seats: int
+    film: str | None = None
+    parts: tuple[tuple[str, str, int], ...] = ()
+
+    def chart_parts(self) -> list[tuple[str, int, str | None]]:
+        """Места блока для схемы: цвет партии, сколько мест, чем накрыты."""
+        if not self.parts:
+            return [(self.color, self.seats, None)]
+        return [(color, seats, self.film) for _name, color, seats in self.parts]
+
+    def legend_rows(self) -> list["LegendEntry"]:
+        """Строки легенды: сам блок, а за ним — из кого он собран.
+
+        Участников показываем отдельно, иначе по картинке не понять, чей
+        цвет под плёнкой. Проценты у всех считаются от палаты, поэтому в
+        сумме строки дают больше сотни — так и должно быть: коалиция и её
+        партии занимают одни и те же места, а не разные.
+        """
+        if not self.parts:
+            return [self]
+        return [self] + [LegendEntry(name, color, seats)
+                         for name, color, seats in self.parts]
 
 
 def _font(name: str, size: int) -> ImageFont.FreeTypeFont:
@@ -49,6 +90,10 @@ def render_png(
     """Собирает картинку и отдаёт её содержимым PNG-файла."""
     image = Image.new("RGB", (width, height), theme.BG)
     draw = ImageDraw.Draw(image)
+    # Плёнки коалиций полупрозрачны, а на RGB прозрачность рисовать нечем:
+    # копим их отдельным слоем и накладываем на готовую картинку.
+    film = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    film_draw = ImageDraw.Draw(film)
 
     # Всё построено от высоты: композиция одинакова на 1080p и на 4K.
     unit = height / 1080
@@ -75,6 +120,7 @@ def render_png(
 
     _draw_chart(
         draw,
+        film_draw,
         origin_x=(width - chart_width) / 2,
         origin_y=cursor_y + (available_height - chart_height) / 2,
         chart_width=chart_width,
@@ -87,18 +133,22 @@ def render_png(
         _draw_legend(draw, legend_lines, margin, height - margin - legend_height,
                      available_width, unit, line_height)
 
+    image = Image.alpha_composite(image.convert("RGBA"), film).convert("RGB")
+
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
     return buffer.getvalue()
 
 
-def _draw_chart(draw: ImageDraw.ImageDraw, origin_x: float, origin_y: float,
+def _draw_chart(draw: ImageDraw.ImageDraw, film_draw: ImageDraw.ImageDraw,
+                origin_x: float, origin_y: float,
                 chart_width: float, total_seats: int, rows: int,
                 distribution: list[LegendEntry]) -> None:
     scale = chart_width / VIEWBOX_WIDTH
-    dist = [(entry.color, entry.seats) for entry in distribution]
+    dist = [part for entry in distribution for part in entry.chart_parts()]
+    seats = compute_seats(total_seats, rows, dist)
 
-    for seat in compute_seats(total_seats, rows, dist):
+    for seat in seats:
         x = origin_x + seat.x * scale
         y = origin_y + seat.y * scale
         r = seat.radius * scale
@@ -109,12 +159,45 @@ def _draw_chart(draw: ImageDraw.ImageDraw, origin_x: float, origin_y: float,
             width=max(1, round(1.2 * scale)),
         )
 
+    _draw_films(film_draw, film_sectors(seats), origin_x, origin_y, scale)
+
+
+def _draw_films(film_draw: ImageDraw.ImageDraw, sectors, origin_x: float,
+                origin_y: float, scale: float) -> None:
+    """Кладёт плёнки коалиций — по одной заливке на блок.
+
+    Полосы рядов сперва собираются в маску и только потом красятся: если
+    рисовать их по очереди полупрозрачной краской, в местах, где полосы
+    заходят друг на друга, плёнка легла бы дважды и по блоку пошли бы тёмные
+    швы. В маске наложение ничего не меняет — там просто «закрашено».
+    """
+    by_color: dict[str, list] = {}
+    for sector in sectors:
+        by_color.setdefault(sector.color, []).append(sector)
+
+    for color, group in by_color.items():
+        mask = Image.new("L", film_draw.im.size, 0)
+        mask_draw = ImageDraw.Draw(mask)
+        for sector in group:
+            points = [(origin_x + x * scale, origin_y + y * scale)
+                      for x, y in sector_polygon(sector, pad=_FILM_OVERLAP)]
+            mask_draw.polygon(points, fill=255)
+        film_draw.bitmap((0, 0), mask, fill=_rgba(color, FILM_ALPHA))
+
+
+def _rgba(color: str, alpha: float) -> tuple[int, int, int, int]:
+    """«#rrggbb» и прозрачность → кортеж, который понимает Pillow."""
+    value = color.lstrip("#")
+    return (int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16),
+            max(0, min(255, round(alpha * 255))))
+
 
 def _layout_legend(distribution: list[LegendEntry], total_seats: int,
                    max_width: float, unit: float) -> list[list[dict]]:
     """Раскладывает легенду по строкам — как в окне, с переносом."""
     if not distribution:
         return []
+    distribution = [row for entry in distribution for row in entry.legend_rows()]
 
     font_size = round(26 * unit)
     swatch_size = round(20 * unit)
@@ -169,10 +252,7 @@ def _draw_legend(draw: ImageDraw.ImageDraw, lines: list[list[dict]],
 
         for item in line:
             size = item["swatch"]
-            draw.rectangle(
-                [cursor_x, center_y - size / 2, cursor_x + size, center_y + size / 2],
-                fill=item["entry"].color,
-            )
+            _draw_swatch(draw, item["entry"], cursor_x, center_y - size / 2, size)
             cursor_x += size + item["gap"]
 
             draw.text((cursor_x, center_y), item["label"], font=item["font"],
@@ -182,6 +262,42 @@ def _draw_legend(draw: ImageDraw.ImageDraw, lines: list[list[dict]],
             draw.text((cursor_x, center_y), item["percent"], font=item["font"],
                       fill=theme.NEUTRAL_700, anchor="lm")
             cursor_x += item["percent_width"] + item["column_gap"]
+
+
+def _draw_swatch(draw: ImageDraw.ImageDraw, entry: LegendEntry,
+                 x: float, y: float, size: float) -> None:
+    """Квадратик легенды: у партии — её цвет, у коалиции — сама коалиция.
+
+    Блок показывается так же, как на схеме: полоски участников, накрытые
+    плёнкой. Один общий цвет вместо них означал бы, что коалиция — отдельная
+    партия, а она не отдельная.
+    """
+    if not entry.parts:
+        draw.rectangle([x, y, x + size, y + size], fill=entry.color)
+        return
+
+    film = entry.film or entry.color
+    step = size / len(entry.parts)
+    for index, (_name, color, _seats) in enumerate(entry.parts):
+        left = x + step * index
+        # Последняя полоска дотягивается до края: иначе на дробном шаге
+        # справа остаётся щель в пиксель.
+        right = x + size if index == len(entry.parts) - 1 else left + step
+        draw.rectangle([left, y, right, y + size],
+                       fill=_blend(color, film, FILM_ALPHA))
+    draw.rectangle([x, y, x + size, y + size],
+                   outline=_blend(film, film, FILM_EDGE_ALPHA), width=1)
+
+
+def _blend(base: str, film: str, alpha: float) -> tuple[int, int, int]:
+    """Цвет `base` под плёнкой `film` — то же, что даёт наложение с альфой.
+
+    Легенда рисуется прямо на непрозрачной картинке, отдельный слой ради
+    квадратика в двадцать пикселей заводить не из-за чего.
+    """
+    under = _rgba(base, 1.0)
+    over = _rgba(film, 1.0)
+    return tuple(round(u + (o - u) * alpha) for u, o in zip(under[:3], over[:3]))
 
 
 def suggest_file_name(convocation_name: str, prefix: str = "Парламент") -> str:

@@ -11,10 +11,12 @@ from __future__ import annotations
 import random
 from pathlib import Path
 
-from . import district_seed, elections, store
+from . import coalitions as coalition_rules, district_seed, elections, store
 from .model import (
+    Coalition,
     Convocation,
     District,
+    MIN_COALITION,
     Settlement,
     default_districts,
     Party,
@@ -129,6 +131,13 @@ class ParlamentService:
 
         for conv in self.project.convocations:
             conv.seats.pop(party.id, None)
+            # Блок, в котором осталась одна партия, распускается: договор
+            # с самим собой — это не блок.
+            for coalition in conv.coalitions:
+                coalition.members = [pid for pid in coalition.members
+                                     if pid != party.id]
+            conv.coalitions = [c for c in conv.coalitions
+                               if len(c.members) >= MIN_COALITION]
             if not conv.has_election:
                 continue
             # Округ, из которого убрали партию, пересчитывается целиком: её
@@ -726,6 +735,76 @@ class ParlamentService:
         if district is None:
             raise ValidationError("Округ не найден.")
         return district
+
+    # -- коалиции -------------------------------------------------------------
+
+    def create_coalition(self, convocation_id: str, name: str, color: str,
+                         members: list[str]) -> Coalition:
+        """Собирает блок из партий созыва."""
+        conv = self._require_convocation(convocation_id)
+        clean = self._clean_members(conv, members)
+        coalition = Coalition(id=new_id("k"), name=self._clean_name(name),
+                              color=self._clean_color(color), members=clean)
+        conv.coalitions.append(coalition)
+        self._persist()
+        return coalition
+
+    def update_coalition(self, convocation_id: str, coalition_id: str, name: str,
+                         color: str, members: list[str]) -> Coalition:
+        conv = self._require_convocation(convocation_id)
+        coalition = self._require_coalition(conv, coalition_id)
+        clean = self._clean_members(conv, members, besides=coalition_id)
+        coalition.name = self._clean_name(name)
+        coalition.color = self._clean_color(color)
+        coalition.members = clean
+        self._persist()
+        return coalition
+
+    def delete_coalition(self, convocation_id: str, coalition_id: str) -> None:
+        """Распускает блок. Партии остаются на своих местах — блок был только
+        договорённостью, а мандаты принадлежат им, а не ему."""
+        conv = self._require_convocation(convocation_id)
+        self._require_coalition(conv, coalition_id)
+        conv.coalitions = [c for c in conv.coalitions if c.id != coalition_id]
+        self._persist()
+
+    def blocs(self, convocation_id: str) -> list:
+        """Состав созыва блоками, крупнейший первым (см. `coalitions.blocs`)."""
+        conv = self._require_convocation(convocation_id)
+        return coalition_rules.blocs(self.project.parties, conv.seats, conv.coalitions)
+
+    def _require_coalition(self, conv: Convocation, coalition_id: str) -> Coalition:
+        found = next((c for c in conv.coalitions if c.id == coalition_id), None)
+        if found is None:
+            raise ValidationError("Коалиция не найдена — возможно, она уже распущена.")
+        return found
+
+    def _clean_members(self, conv: Convocation, members: list[str],
+                       besides: str | None = None) -> list[str]:
+        """Проверяет состав блока и убирает повторы, сохраняя порядок.
+
+        Партия состоит не больше чем в одном блоке этого созыва: иначе её
+        места вошли бы в оба, и сумма блоков перевалила бы за размер палаты —
+        а «большинство» стало бы выдумкой.
+        """
+        clean = list(dict.fromkeys(str(pid) for pid in members or []))
+        for party_id in clean:
+            self._require_party(party_id)
+        if len(clean) < MIN_COALITION:
+            raise ValidationError(
+                f"В коалиции должно быть хотя бы {MIN_COALITION} партии — "
+                f"иначе это просто партия.")
+
+        taken = {pid: c for c in conv.coalitions if c.id != besides
+                 for pid in c.members}
+        for party_id in clean:
+            other = taken.get(party_id)
+            if other is not None:
+                party = self.project.party(party_id)
+                raise ValidationError(
+                    f"«{party.name}» уже состоит в коалиции «{other.name}». "
+                    f"Партия может быть только в одном блоке.")
+        return clean
 
     # -- свои цвета -----------------------------------------------------------
 

@@ -47,6 +47,14 @@ class Seat:
     y: float
     radius: float
     color: str
+    #: Угол места на дуге, в радианах: π — левый край полукруга, 0 — правый.
+    #: Нужен, чтобы найти сектор коалиции, не пересчитывая геометрию заново.
+    angle: float = 0.0
+    #: Радиус ряда, в котором стоит место. Нужен плёнке коалиции: границу
+    #: блока она ведёт по каждому ряду отдельно.
+    ring: float = 0.0
+    #: Цвет плёнки коалиции над этим местом; `None` — место вне блока.
+    film: str | None = None
 
 
 def compute_seats(
@@ -57,7 +65,9 @@ def compute_seats(
 ) -> list[Seat]:
     """Считает координаты всех мест.
 
-    :param dist: пары «цвет — число мест» в порядке отрисовки (слева направо)
+    :param dist: в порядке отрисовки (слева направо) — либо пары «цвет партии,
+                 число мест», либо тройки, где третьим идёт цвет плёнки
+                 коалиции над этими местами (`None` — партия сама по себе).
     """
     seat_count = max(1, int(total))
     row_count = max(2, int(rows))
@@ -82,10 +92,19 @@ def compute_seats(
         counts[by_remainder[k % row_count]] += 1
 
     # Плоский список цветов: сначала места партий по порядку, затем пустые.
+    # Рядом — плёнка коалиции для каждого места, чтобы отрисовка знала, какие
+    # места накрыты одним блоком, не пересчитывая ничего заново.
     colors: list[str] = []
-    for color, seats in dist:
-        colors.extend([color] * max(0, int(seats)))
-    colors.extend([empty_color] * (seat_count - len(colors)))
+    films: list[str | None] = []
+    for entry in dist:
+        color, seats = entry[0], entry[1]
+        film = entry[2] if len(entry) > 2 else None
+        count = max(0, int(seats))
+        colors.extend([color] * count)
+        films.extend([film] * count)
+    empty = seat_count - len(colors)
+    colors.extend([empty_color] * empty)
+    films.extend([None] * empty)
 
     placed: list[tuple[float, float]] = []
     for row_index, count_in_row in enumerate(counts):
@@ -111,9 +130,117 @@ def compute_seats(
             y=_CENTER_Y - radius * math.sin(angle),
             radius=seat_radius,
             color=colors[index],
+            angle=angle,
+            ring=radius,
+            film=films[index],
         )
         for index, (angle, radius) in enumerate(placed)
     ]
+
+
+#: Плотность плёнки коалиции. Достаточно, чтобы блок читался одним пятном,
+#: и достаточно мало, чтобы под ней различались цвета самих партий: коалиция
+#: — не новая партия, а то, как договорились нынешние.
+FILM_ALPHA = 0.26
+#: Плотнее той же краски — для квадратика коалиции в легенде, где плёнку
+#: нужно обозначить рамкой на два десятка пикселей.
+FILM_EDGE_ALPHA = 0.55
+
+
+@dataclass(frozen=True)
+class FilmSector:
+    """Сектор, накрытый плёнкой одной коалиции.
+
+    Места красятся подряд слева направо, поэтому блок — это всегда сплошной
+    кусок дуги: от `start_angle` (левее) до `end_angle` (правее), через все
+    ряды сразу. Радиусы у всех секторов одинаковы, но лежат здесь же, чтобы
+    отрисовке не пришлось знать про устройство схемы.
+    """
+
+    color: str
+    start_angle: float
+    end_angle: float
+    inner_radius: float
+    outer_radius: float
+
+
+def film_sectors(seats: list[Seat]) -> list[FilmSector]:
+    """Находит куски дуги, накрытые плёнками коалиций, — по ряду за раз.
+
+    Границу между блоками ведём посередине между соседями **внутри одного
+    ряда**, а не по всей схеме сразу. Соблазнительно накрыть блок одним
+    сплошным сектором от края до края, но шаг мест по дуге в рядах разный:
+    прямой радиальный срез, посчитанный по общему порядку, проходит через
+    кружки соседних рядов и закрашивает их наполовину. Полоса на ряд такого
+    не допускает — граница всегда ровно между двумя местами этого ряда, — а
+    полосы соседних рядов смыкаются вплотную и на глаз читаются одним блоком.
+
+    Края полукруга (π и 0) отдаём крайним блокам целиком: место с краю и так
+    стоит у самой кромки.
+    """
+    if not seats:
+        return []
+
+    rings = sorted({seat.ring for seat in seats})
+    # Полуширина полосы — половина расстояния между рядами: полосы соседних
+    # рядов тогда сходятся без щели, а место в кружок всегда внутри (его
+    # радиус заведомо меньше, см. `seat_radius`).
+    step = (rings[1] - rings[0]) if len(rings) > 1 else _OUTER_RADIUS - _INNER_RADIUS
+    half = step / 2
+
+    sectors: list[FilmSector] = []
+    for ring in rings:
+        row = [seat for seat in seats if seat.ring == ring]
+        row.sort(key=lambda seat: seat.angle, reverse=True)
+
+        start = 0
+        for index in range(len(row) + 1):
+            if index < len(row) and row[index].film == row[start].film:
+                continue
+            film = row[start].film
+            if film is not None:
+                left = (math.pi if start == 0
+                        else (row[start - 1].angle + row[start].angle) / 2)
+                right = (0.0 if index == len(row)
+                         else (row[index - 1].angle + row[index].angle) / 2)
+                sectors.append(FilmSector(film, left, right,
+                                          ring - half, ring + half))
+            start = index
+    return sectors
+
+
+def with_alpha(color: str, alpha: float) -> str:
+    """«#rrggbb» + прозрачность → «#aarrggbb», как принято во Flet и Flutter."""
+    channel = max(0, min(255, round(alpha * 255)))
+    return f"#{channel:02x}{color.lstrip('#')}"
+
+
+def sector_polygon(sector: FilmSector, steps: int = 48, pad: float = 0.0
+                   ) -> list[tuple[float, float]]:
+    """Сектор точками в координатах макета — для отрисовки многоугольником.
+
+    Pillow не умеет заливать кольцевой сектор напрямую, а толщина дуги у него
+    считается внутрь от габаритов, и подогнать её точно под кольцо непросто.
+    Ломаная из полусотни точек на глаз неотличима от дуги и ведёт себя
+    предсказуемо на любом разрешении.
+    """
+    span = sector.start_angle - sector.end_angle
+    count = max(2, int(steps * max(span, 0.0) / math.pi) + 2)
+    # `pad` раздвигает полосу по радиусу: полосы соседних рядов тогда заходят
+    # друг на друга, и между ними не остаётся щели в пиксель от округления.
+    outer = sector.outer_radius + pad
+    inner = max(0.0, sector.inner_radius - pad)
+    outer_arc = [
+        (_CENTER_X + outer * math.cos(sector.start_angle - span * i / (count - 1)),
+         _CENTER_Y - outer * math.sin(sector.start_angle - span * i / (count - 1)))
+        for i in range(count)
+    ]
+    inner_arc = [
+        (_CENTER_X + inner * math.cos(sector.end_angle + span * i / (count - 1)),
+         _CENTER_Y - inner * math.sin(sector.end_angle + span * i / (count - 1)))
+        for i in range(count)
+    ]
+    return outer_arc + inner_arc
 
 
 def chart_height_for_width(width: float) -> float:
@@ -134,6 +261,37 @@ def _shapes(seats: list[Seat], scale: float, offset_x: float = 0.0) -> list[cv.S
             stroke_width=_SEAT_STROKE_WIDTH * scale,
             style=ft.PaintingStyle.STROKE,
         )))
+    # Плёнки — последними, поверх мест: сквозь них должны просвечивать цвета
+    # партий, а не наоборот.
+    shapes.extend(_film_shapes(seats, scale, offset_x))
+    return shapes
+
+
+def _film_shapes(seats: list[Seat], scale: float,
+                 offset_x: float) -> list[cv.Shape]:
+    """Кольцевые сектора коалиций — дугой с толстой обводкой.
+
+    Толщина обводки равна толщине кольца, поэтому дуга радиусом посередине
+    закрашивает его целиком: отдельного примитива под кольцевой сектор в
+    Canvas нет, а собирать его из Path ради того же результата незачем.
+    """
+    shapes: list[cv.Shape] = []
+    for sector in film_sectors(seats):
+        thickness = sector.outer_radius - sector.inner_radius
+        middle = (sector.outer_radius + sector.inner_radius) / 2
+        radius = middle * scale
+        box_x = offset_x + _CENTER_X * scale - radius
+        box_y = _CENTER_Y * scale - radius
+        # Угол на схеме растёт против часовой стрелки, у Canvas — по ней:
+        # отсюда минус, а размах остаётся положительным.
+        start = -sector.start_angle
+        sweep = sector.start_angle - sector.end_angle
+        shapes.append(cv.Arc(
+            box_x, box_y, radius * 2, radius * 2, start, sweep,
+            paint=ft.Paint(color=with_alpha(sector.color, FILM_ALPHA),
+                           stroke_width=thickness * scale,
+                           style=ft.PaintingStyle.STROKE),
+        ))
     return shapes
 
 

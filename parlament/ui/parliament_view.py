@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import flet as ft
 
+from .. import coalitions
 from ..model import Convocation
 from ..service import ValidationError
 from ..store import StoreError
@@ -39,11 +40,12 @@ class ParliamentView:
         has_parties = bool(app.parties)
 
         self.chart = SeatChart(app.total_seats, self.service.project.rows,
-                               [(p.color, s) for p, s in app.distribution(conv)])
+                               coalitions.chart_distribution(app.blocs(conv)))
         self.legend_row = ft.Row(wrap=True, spacing=26, run_spacing=8)
         self.majority_text = ft.Text(size=theme.fs(12))
         self.conv_list = ft.Column(spacing=6, tight=True)
         self.stage_meta = ft.Text(size=theme.fs(13), color=theme.NEUTRAL_700)
+        self.coalition_row = ft.Row(wrap=True, spacing=10, run_spacing=8)
 
         center = self._build_stage(conv) if has_parties else self._build_empty_stage()
         right = self._build_seat_rail(conv) if has_parties else self._build_empty_rail()
@@ -130,6 +132,7 @@ class ParliamentView:
                 ft.Row(head, spacing=12, vertical_alignment=ft.CrossAxisAlignment.END),
                 ft.Container(self.chart, padding=ft.Padding.only(top=14)),
                 ft.Container(self.legend_row, padding=ft.Padding.only(top=8)),
+                ft.Container(self._coalition_bar(), padding=ft.Padding.only(top=12)),
                 ft.Container(expand=True),           # свободное место до заметки внизу
                 ft.Container(
                     padding=ft.Padding.only(top=14),
@@ -141,6 +144,66 @@ class ParliamentView:
                 ),
             ], spacing=0, expand=True),
         )
+
+    def _coalition_bar(self) -> ft.Control:
+        """Строка блоков под легендой: кто с кем и сколько это даёт вместе.
+
+        Живёт на главном экране, а не в отдельном окне: коалиция — это способ
+        прочитать нынешний состав, и смотреть на неё нужно рядом со схемой,
+        где сразу видно, накрывает блок большинство или нет.
+        """
+        controls: list[ft.Control] = [
+            ft.Text("Коалиции", size=theme.fs(12), color=theme.NEUTRAL_600),
+            self.coalition_row,
+        ]
+        if self.app.is_editable:
+            controls.append(theme.ghost_button("+ Собрать",
+                                               lambda _e: self.app.new_coalition()))
+        return ft.Row(controls, spacing=12,
+                      vertical_alignment=ft.CrossAxisAlignment.CENTER)
+
+    def _coalition_chip(self, bloc) -> ft.Control:
+        """Плашка блока: плёнка поверх полосок участников, имя и вес."""
+        app = self.app
+        short = ", ".join(m.name for m in bloc.members)
+        over = bloc.seats - app.majority_seats
+        note = (f"большинство, запас {over}" if over >= 0
+                else f"до большинства не хватает {-over}")
+        stripes = ft.Row(
+            [ft.Container(expand=max(1, m.seats), bgcolor=m.color)
+             for m in bloc.members], spacing=0, expand=True)
+
+        chip = ft.Container(
+            padding=ft.Padding.symmetric(horizontal=10, vertical=6),
+            bgcolor=theme.NEUTRAL_100,
+            border_radius=theme.RADIUS,
+            tooltip=f"{bloc.name}: {short}",
+            content=ft.Row([
+                # Тот же приём, что и на схеме: цвета участников, а сверху
+                # плёнка блока — плашка выглядит как кусок зала.
+                ft.Stack([stripes,
+                          ft.Container(expand=True,
+                                       bgcolor=dialogs._film_color(bloc.color))],
+                         width=26, height=theme.fs(14)),
+                ft.Text(bloc.name, size=theme.fs(13),
+                        font_family=theme.FONT_SEMIBOLD, color=theme.TEXT),
+                ft.Text(str(bloc.seats), size=theme.fs(13), color=theme.TEXT),
+                ft.Text(note, size=theme.fs(11),
+                        color=theme.ACCENT_2_700 if over >= 0 else theme.NEUTRAL_600),
+            ], spacing=8, tight=True,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        )
+        if not app.is_editable:
+            return chip
+        return ft.Row([
+            chip,
+            theme.icon_button(ft.Icons.EDIT_OUTLINED,
+                              lambda _e, b=bloc: app.edit_coalition(b.coalition_id),
+                              tooltip="Правка коалиции", size=13),
+            theme.icon_button(ft.Icons.CLOSE,
+                              lambda _e, b=bloc: app.delete_coalition(b.coalition_id),
+                              danger=True, tooltip="Распустить коалицию", size=13),
+        ], spacing=2, tight=True, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
     def _build_empty_stage(self) -> ft.Control:
         app = self.app
@@ -356,38 +419,31 @@ class ParliamentView:
         """
         app = self.app
         conv = app.selected
-        distribution = app.distribution(conv)
+        blocs = app.blocs(conv)
         used = app.used_seats(conv)
         remaining = app.total_seats - used
 
         self.chart.set_data(app.total_seats, self.service.project.rows,
-                            [(p.color, s) for p, s in distribution])
+                            coalitions.chart_distribution(blocs))
+        self._refresh_legend(blocs)
+        self._refresh_coalitions(blocs)
 
-        if distribution:
-            self.legend_row.controls = [
-                ft.Row([
-                    theme.swatch(party.color, 11),
-                    ft.Text(party.name, size=theme.fs(13), color=theme.TEXT),
-                    ft.Text(str(seats), size=theme.fs(13),
-                            font_family=theme.FONT_SEMIBOLD, color=theme.TEXT),
-                    ft.Text(fmt.percent(seats, app.total_seats), size=theme.fs(13),
-                            color=theme.NEUTRAL_600),
-                ], spacing=8, tight=True)
-                for party, seats in distribution
-            ]
-        else:
-            self.legend_row.controls = []
-
-        largest = distribution[0] if distribution else None
-        if largest and largest[1] >= app.majority_seats:
-            self.majority_text.value = f"{largest[0].name} — абсолютное большинство"
-            self.majority_text.color = theme.ACCENT_2_700
-        elif largest:
-            self.majority_text.value = (f"Крупнейшая фракция: {largest[0].name} "
-                                        f"({largest[1]}), большинства нет")
-            self.majority_text.color = theme.NEUTRAL_700
-        else:
+        largest = blocs[0] if blocs else None
+        if largest is None:
             self.majority_text.value = "Мест никому не отдано."
+            self.majority_text.color = theme.NEUTRAL_700
+        elif largest.seats >= app.majority_seats:
+            # Блок держит палату наравне с партией — ради этого он и заведён.
+            # Слово «коалиция» дописываем только к нему: у партии оно и так
+            # понятно, а строка от него лишь длиннее.
+            who = (f"Коалиция «{largest.name}»" if largest.is_coalition
+                   else largest.name)
+            self.majority_text.value = f"{who} — абсолютное большинство"
+            self.majority_text.color = theme.ACCENT_2_700
+        else:
+            what = "Крупнейший блок" if largest.is_coalition else "Крупнейшая фракция"
+            self.majority_text.value = (f"{what}: {largest.name} "
+                                        f"({largest.seats}), большинства нет")
             self.majority_text.color = theme.NEUTRAL_700
 
         if not app.manual_seats and conv.has_election:
@@ -411,13 +467,61 @@ class ParliamentView:
 
         self.refresh_conv_list(live=live)
         if live:
-            for control in (self.chart, self.legend_row, self.majority_text,
-                            self.stage_meta):
+            for control in (self.chart, self.legend_row, self.coalition_row,
+                            self.majority_text, self.stage_meta):
                 push(control)
             if app.manual_seats:
                 for control in (self.used_text, self.remaining_text, self.progress,
                                 self.remaining_note, self.reset_button):
                     push(control)
+
+    def _refresh_legend(self, blocs) -> None:
+        """Легенда: блок строкой, а за ним — из кого он собран.
+
+        Участников показываем отдельно, иначе по цвету под плёнкой не понять,
+        чьи это места. Проценты у всех считаются от палаты, поэтому строки в
+        сумме дают больше сотни: коалиция и её партии занимают одни и те же
+        места, а не разные.
+        """
+        app = self.app
+        rows: list[ft.Control] = []
+        for bloc in blocs:
+            if bloc.is_coalition:
+                rows.append(self._legend_row(
+                    bloc.name, bloc.seats,
+                    self._film_swatch(bloc), bold=True))
+            for member in bloc.members:
+                rows.append(self._legend_row(
+                    member.name, member.seats, theme.swatch(member.color, 11)))
+        self.legend_row.controls = rows
+
+    def _legend_row(self, name: str, seats: int, mark: ft.Control,
+                    bold: bool = False) -> ft.Control:
+        return ft.Row([
+            mark,
+            ft.Text(name, size=theme.fs(13), color=theme.TEXT,
+                    font_family=theme.FONT_SEMIBOLD if bold else None),
+            ft.Text(str(seats), size=theme.fs(13),
+                    font_family=theme.FONT_SEMIBOLD, color=theme.TEXT),
+            ft.Text(fmt.percent(seats, self.app.total_seats), size=theme.fs(13),
+                    color=theme.NEUTRAL_600),
+        ], spacing=8, tight=True)
+
+    def _film_swatch(self, bloc, size: int = 11) -> ft.Control:
+        """Квадратик коалиции — тот же приём, что и на схеме: полоски
+        участников, накрытые плёнкой блока."""
+        side = theme.fs(size)
+        return ft.Stack([
+            ft.Row([ft.Container(expand=max(1, m.seats), bgcolor=m.color)
+                    for m in bloc.members], spacing=0, expand=True),
+            ft.Container(expand=True, bgcolor=dialogs._film_color(bloc.color)),
+        ], width=side * 2, height=side)
+
+    def _refresh_coalitions(self, blocs) -> None:
+        made = [bloc for bloc in blocs if bloc.is_coalition]
+        self.coalition_row.controls = [self._coalition_chip(b) for b in made] or [
+            ft.Text("блоков пока нет", size=theme.fs(12), color=theme.NEUTRAL_600)
+        ]
 
     # -- правка мест --------------------------------------------------------
 

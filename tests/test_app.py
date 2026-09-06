@@ -586,6 +586,43 @@ class TestExport(AppTestCase):
         self.assertEqual([r.label for r in radios],
                          ["1920 × 1080", "2560 × 1440", "3840 × 2160"])
 
+    def test_the_coalition_film_reaches_the_picture(self):
+        # Плёнка рисуется отдельным полупрозрачным слоем, и легко было бы
+        # собрать её и забыть наложить: проверяем по самим пикселям.
+        import io
+
+        from PIL import Image
+
+        plain = [LegendEntry("Народный союз", "#0088b0", 60),
+                 LegendEntry("Партия труда", "#d6006c", 64)]
+        blocked = [LegendEntry("Левый блок", "#7a3fb5", 124, film="#7a3fb5",
+                               parts=(("Народный союз", "#0088b0", 60),
+                                      ("Партия труда", "#d6006c", 64)))]
+        without = Image.open(io.BytesIO(render_png(plain, width=960, height=540)))
+        covered = Image.open(io.BytesIO(render_png(blocked, width=960, height=540)))
+        self.assertNotEqual(without.tobytes(), covered.tobytes())
+
+        # Под плёнкой цвета партий остаются различимы — она не заливка.
+        left = {covered.getpixel((x, y)) for x in range(200, 260)
+                for y in range(300, 360)}
+        self.assertGreater(len(left), 1)
+
+    def test_a_bloc_puts_its_members_in_the_legend_too(self):
+        bloc = LegendEntry("Левый блок", "#7a3fb5", 56, film="#7a3fb5",
+                           parts=(("Народный союз", "#0088b0", 34),
+                                  ("Партия труда", "#d6006c", 22)))
+        rows = bloc.legend_rows()
+        self.assertEqual([r.name for r in rows],
+                         ["Левый блок", "Народный союз", "Партия труда"])
+        # Схема же получает места участников, накрытые общей плёнкой.
+        self.assertEqual(bloc.chart_parts(),
+                         [("#0088b0", 34, "#7a3fb5"), ("#d6006c", 22, "#7a3fb5")])
+
+    def test_a_lone_party_stays_one_row_without_a_film(self):
+        one = LegendEntry("Consilium", "#c8621a", 31)
+        self.assertEqual([r.name for r in one.legend_rows()], ["Consilium"])
+        self.assertEqual(one.chart_parts(), [("#c8621a", 31, None)])
+
     def test_export_refuses_empty_distribution(self):
         self.add_parties(3)
         self.app.export_png()
@@ -1167,6 +1204,131 @@ class TestSeatsAfterElection(AppTestCase):
         self.assertTrue(any("Просмотр истории" in t for t in texts(self.body)))
         self.assertEqual(self.app.selected.seats, seats)
         self.assertFalse(self.app.manual_seats)
+
+
+class TestCoalitions(AppTestCase):
+    """Коалиции на главном экране: плёнка, плашки, легенда, большинство."""
+
+    def setUp(self):
+        super().setUp()
+        self.distribute(4)
+        self.a, self.b, self.c, self.d = self.app.parties[:4]
+
+    def assemble(self, *members, name="Левый блок", color="#7a3fb5"):
+        made = self.service.create_coalition(self.app.selected.id, name, color,
+                                             [m.id for m in members])
+        self.app.render()
+        return made
+
+    def test_without_blocs_the_bar_says_so(self):
+        self.assertIn("блоков пока нет",
+                      texts(self.app.parliament.coalition_row))
+
+    def test_a_bloc_shows_up_as_a_chip_with_its_weight(self):
+        self.assemble(self.a, self.b)
+        shown = texts(self.app.parliament.coalition_row)
+        self.assertIn("Левый блок", shown)
+        weight = self.app.selected.seats[self.a.id] + self.app.selected.seats[self.b.id]
+        self.assertIn(str(weight), shown)
+
+    def test_the_chart_covers_the_members_with_one_film(self):
+        self.assemble(self.a, self.b)
+        dist = self.app.parliament.chart._dist
+        films = [film for _color, _seats, film in dist]
+        # Участники идут подряд и накрыты одной плёнкой, остальные — без.
+        self.assertEqual(films[:2], ["#7a3fb5", "#7a3fb5"])
+        self.assertTrue(all(film is None for film in films[2:]))
+
+    def test_a_bloc_can_hold_the_majority_a_party_cannot(self):
+        seats = self.app.selected.seats
+        big = sorted(self.app.parties, key=lambda p: -seats.get(p.id, 0))
+        # Собираем блок, пока он не перевесит половину палаты.
+        members, total = [], 0
+        for party in big:
+            members.append(party)
+            total += seats.get(party.id, 0)
+            if total >= self.app.majority_seats:
+                break
+        self.assertNotIn("абсолютное большинство",
+                         self.app.parliament.majority_text.value)
+        self.assemble(*members)
+        self.assertIn("Коалиция «Левый блок» — абсолютное большинство",
+                      self.app.parliament.majority_text.value)
+
+    def test_the_legend_lists_the_bloc_and_who_is_in_it(self):
+        self.assemble(self.a, self.b)
+        shown = texts(self.app.parliament.legend_row)
+        self.assertIn("Левый блок", shown)
+        self.assertIn(self.a.name, shown)
+        self.assertIn(self.b.name, shown)
+
+    def test_a_bloc_that_takes_everyone_leaves_no_lone_party(self):
+        self.assemble(self.a, self.b, self.c, self.d)
+        blocs = self.app.blocs(self.app.selected)
+        self.assertEqual(len(blocs), 1)
+        self.assertEqual(blocs[0].seats, sum(self.app.selected.seats.values()))
+
+    def test_disbanding_returns_the_parties_to_the_chart(self):
+        made = self.assemble(self.a, self.b)
+        self.service.delete_coalition(self.app.selected.id, made.id)
+        self.app.render()
+        films = [film for _c, _s, film in self.app.parliament.chart._dist]
+        self.assertTrue(all(film is None for film in films))
+        self.assertIn("блоков пока нет", texts(self.app.parliament.coalition_row))
+
+    def checkboxes(self) -> list:
+        return find_all(self.page.dialog, lambda c: isinstance(c, ft.Checkbox))
+
+    def fill_dialog(self, name: str, *members) -> None:
+        """Заполняет диалог блока так же, как это делает человек."""
+        dialog = self.page.dialog
+        find(dialog, lambda c: isinstance(c, ft.TextField)).value = name
+        chosen = {m.id for m in members}
+        for box, party in zip(self.checkboxes(), self.app.parties):
+            if party.id in chosen:
+                box.value = True
+                box.on_change(ft.ControlEvent(control=box, name="change", data="true"))
+
+    def submit(self, label: str) -> None:
+        find(self.page.dialog, lambda c: isinstance(c, ft.Button)
+             and c.content == label).on_click(None)
+
+    def test_the_dialog_locks_parties_already_taken(self):
+        self.assemble(self.a, self.b)
+        self.app.new_coalition()
+        # Первые две партии уже в блоке — их галочки закрыты, и видно, кем
+        # заняты: ругаться при сохранении было бы поздно.
+        self.assertEqual([c.disabled for c in self.checkboxes()[:4]],
+                         [True, True, False, False])
+        self.assertIn("в блоке «Левый блок»", texts(self.page.dialog))
+
+    def test_the_dialog_assembles_a_bloc(self):
+        self.app.new_coalition()
+        self.fill_dialog("Правый блок", self.c, self.d)
+        self.submit("Собрать")
+        blocs = [b for b in self.app.blocs(self.app.selected) if b.is_coalition]
+        self.assertEqual([b.name for b in blocs], ["Правый блок"])
+        self.assertEqual(blocs[0].seats,
+                         self.app.selected.seats[self.c.id]
+                         + self.app.selected.seats[self.d.id])
+
+    def test_the_dialog_refuses_a_bloc_of_one(self):
+        self.app.new_coalition()
+        self.fill_dialog("Соло", self.a)
+        self.submit("Собрать")
+        self.assertEqual(self.app.selected.coalitions, [])
+        error = find(self.page.dialog, lambda c: isinstance(c, ft.Text)
+                     and c.visible and "хотя бы" in (c.value or ""))
+        self.assertIsNotNone(error)
+
+    def test_an_archived_convocation_offers_no_assembling(self):
+        self.service.fix_convocation("Второй состав")
+        self.app.selected_convocation_id = self.service.project.convocations[0].id
+        self.app.render()
+        self.assertNotIn("+ Собрать", texts(self.body))
+        # И вход через действие тоже закрыт, а не только кнопка спрятана.
+        self.app.new_coalition()
+        self.assertIsNone(self.page.dialog)
 
 
 class TestDeletePartyWarning(AppTestCase):

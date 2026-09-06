@@ -18,7 +18,7 @@ from . import format as fmt
 from . import theme
 from .mount import push
 from .export import RESOLUTIONS, suggest_file_name
-from .seat_chart import SeatChart
+from .seat_chart import FILM_ALPHA, SeatChart, with_alpha
 
 _HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
 
@@ -347,6 +347,157 @@ def _open_custom_color_dialog(page: ft.Page, current: str,
 # -- удаление партии --------------------------------------------------------
 
 
+def coalition_dialog(coalition, parties: list, seats: dict, taken: dict,
+                     used_colors: int,
+                     on_save: Callable[[str, str, list], str | None],
+                     on_cancel: Callable) -> ft.AlertDialog:
+    """Сборка или правка блока: название, цвет плёнки и кто в него входит.
+
+    :param taken: `{party_id: имя чужого блока}` — партии, уже занятые другой
+                  коалицией. Их галочки заблокированы, а не просто ругаются
+                  при сохранении: видно сразу, кто свободен.
+    :param on_save: возвращает текст ошибки либо None, если сохранилось.
+
+    Цвет здесь — не «цвет партии», а плотность плёнки над её местами, поэтому
+    рядом с палитрой показан живой образец блока: полоски выбранных партий под
+    выбранной краской. Так видно то же, что получится на схеме зала.
+    """
+    editing = coalition is not None
+    start_color = (coalition.color if editing
+                   else theme.PALETTE[used_colors % len(theme.PALETTE)])
+    chosen: dict[str, bool] = {
+        party.id: bool(editing and party.id in coalition.members)
+        for party in parties
+    }
+
+    name_field = theme.text_field(coalition.name if editing else "",
+                                  label_text="Название блока", autofocus=True)
+    hex_field = theme.text_field(start_color.upper(), label_text="HEX", width=120,
+                                 monospace=True)
+    error = ft.Text("", size=theme.fs(12), color=theme.ACCENT_2_700, visible=False)
+    preview = ft.Row(spacing=0, height=theme.fs(30))
+    summary = ft.Text(size=theme.fs(12), color=theme.NEUTRAL_700)
+    palette_row = ft.Row(spacing=_SWATCH_GAP, wrap=True, run_spacing=_SWATCH_GAP)
+
+    state = {"color": start_color}
+
+    def refresh_preview() -> None:
+        inside = [p for p in parties if chosen.get(p.id)]
+        total = sum(seats.get(p.id, 0) for p in inside)
+        preview.controls = [
+            ft.Container(expand=max(1, seats.get(party.id, 0)),
+                         bgcolor=party.color, tooltip=party.name)
+            for party in inside
+        ] or [ft.Container(expand=True, bgcolor=theme.NEUTRAL_300)]
+        # Плёнка — отдельный слой поверх полосок, ровно как на схеме зала.
+        preview.controls = [ft.Stack([
+            ft.Row(preview.controls, spacing=0, expand=True),
+            ft.Container(expand=True, bgcolor=_film_color(state["color"])),
+        ], expand=True)]
+        summary.value = (
+            f"{fmt.pluralize(len(inside), fmt.PARTIES_COUNT)} · "
+            f"{fmt.pluralize(total, fmt.SEATS)}"
+            if inside else "Партии не выбраны")
+        push(preview)
+        push(summary)
+
+    def apply_color(color: str, update_hex: bool = True) -> None:
+        state["color"] = color
+        if update_hex:
+            hex_field.value = color.upper()
+        for control in palette_row.controls:
+            if control.data:
+                selected = control.data == color
+                control.border = ft.Border.all(
+                    2 if selected else 1,
+                    theme.ACCENT if selected else "#1f000000")
+        push(palette_row)
+        push(hex_field)
+        refresh_preview()
+
+    def on_hex_change(_event) -> None:
+        color = normalize_hex(hex_field.value)
+        if color:
+            apply_color(color, update_hex=False)
+
+    hex_field.on_change = on_hex_change
+
+    for color in theme.PALETTE:
+        size = theme.fs(_SWATCH_SIZE)
+        selected = color == start_color.lower()
+        palette_row.controls.append(ft.Container(
+            width=size, height=size, bgcolor=color, data=color,
+            border_radius=theme.RADIUS,
+            border=ft.Border.all(2 if selected else 1,
+                                 theme.ACCENT if selected else "#1f000000"),
+            on_click=lambda e: apply_color(e.control.data),
+            ink=True,
+        ))
+
+    def toggle(party_id: str, value: bool) -> None:
+        chosen[party_id] = value
+        refresh_preview()
+
+    rows: list[ft.Control] = []
+    for party in parties:
+        busy = taken.get(party.id)
+        checkbox = ft.Checkbox(
+            value=chosen[party.id],
+            disabled=bool(busy),
+            fill_color=theme.ACCENT,
+            on_change=lambda e, pid=party.id: toggle(pid, bool(e.control.value)),
+        )
+        label = ft.Text(party.name, size=theme.fs(14),
+                        color=theme.NEUTRAL_600 if busy else theme.TEXT,
+                        no_wrap=True, overflow=ft.TextOverflow.ELLIPSIS)
+        note = (f"в блоке «{busy}»" if busy
+                else fmt.pluralize(seats.get(party.id, 0), fmt.SEATS))
+        rows.append(ft.Row([
+            checkbox,
+            theme.swatch(party.color, 12),
+            ft.Container(label, expand=True),
+            ft.Text(note, size=theme.fs(12), color=theme.NEUTRAL_600),
+        ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER))
+
+    def save(_event) -> None:
+        members = [pid for pid, on in chosen.items() if on]
+        message = on_save(name_field.value or "", state["color"], members)
+        if message:
+            _show_error(error, message)
+
+    refresh_preview()
+    return _shell(
+        "Правка коалиции" if editing else "Собрать коалицию",
+        [
+            name_field,
+            ft.Column([
+                theme.label("Цвет плёнки"),
+                ft.Row([hex_field], spacing=10),
+                palette_row,
+            ], spacing=8, tight=True),
+            ft.Column([
+                theme.label("Так блок ляжет на схему"),
+                ft.Container(preview, border=ft.Border.all(1, theme.DIVIDER)),
+                summary,
+            ], spacing=6, tight=True),
+            ft.Column([
+                theme.label("Кто входит"),
+                ft.Container(ft.Column(rows, spacing=2, scroll=ft.ScrollMode.AUTO),
+                             height=min(220, 34 * max(1, len(rows)))),
+            ], spacing=6, tight=True),
+            error,
+        ],
+        [_cancel(on_cancel),
+         theme.primary_button("Сохранить" if editing else "Собрать", save)],
+        width=520,
+    )
+
+
+def _film_color(color: str) -> str:
+    """Цвет плёнки с её прозрачностью — в том же виде, что и на схеме зала."""
+    return with_alpha(color, FILM_ALPHA)
+
+
 def delete_party_dialog(party: Party, usage: list[dict], plural: Callable,
                         on_confirm: Callable, on_cancel: Callable,
                         footprint: dict | None = None) -> ft.AlertDialog:
@@ -672,8 +823,14 @@ def rename_dialog(convocation: Convocation, on_confirm: Callable[[str], None],
 def export_dialog(convocation: Convocation, total: int, rows: int,
                   distribution: list[tuple[str, str, int]],
                   on_confirm: Callable[[dict], None],
-                  on_cancel: Callable) -> ft.AlertDialog:
-    """`distribution` — тройки «сокращение, цвет, мест» для предпросмотра."""
+                  on_cancel: Callable,
+                  chart_dist: list[tuple] | None = None) -> ft.AlertDialog:
+    """`distribution` — тройки «сокращение, цвет, мест» для предпросмотра.
+
+    `chart_dist` — то же самое в виде, который понимает схема, но с плёнками
+    коалиций: без него предпросмотр показал бы зал без блоков, а картинка на
+    выходе — с ними.
+    """
     file_field = theme.text_field(suggest_file_name(convocation.name),
                                   label_text="Имя файла")
 
@@ -693,9 +850,11 @@ def export_dialog(convocation: Convocation, total: int, rows: int,
                               active_color=theme.ACCENT,
                               label_style=ft.TextStyle(size=theme.fs(13), color=theme.TEXT))
 
-    preview_chart = SeatChart(total, rows,
-                              [(color, seats) for _abbr, color, seats in distribution],
-                              height=150)
+    preview_chart = SeatChart(
+        total, rows,
+        chart_dist if chart_dist is not None
+        else [(color, seats) for _abbr, color, seats in distribution],
+        height=150)
 
     def confirm(_event) -> None:
         _label, width, height = RESOLUTIONS[int(resolution_picker.value)]

@@ -34,6 +34,10 @@ ORDINALS = [
     "Шестнадцатый", "Семнадцатый", "Восемнадцатый", "Девятнадцатый", "Двадцатый",
 ]
 
+#: Меньше двух партий — это не блок, а просто партия: коалиция из одного
+#: участника показывала бы плёнку над самой собой и ничего не объясняла.
+MIN_COALITION = 2
+
 HEX_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 
@@ -76,6 +80,46 @@ class Party:
 
 
 @dataclass
+class Coalition:
+    """Союз партий внутри одного созыва — блок, который голосует заодно.
+
+    Своих мест у коалиции нет: её вес — это сумма мест участников, и меняется
+    он сам собой, когда меняются их места. Поэтому здесь только состав, имя и
+    цвет плёнки, которой блок накрыт на схеме зала: сквозь неё видно цвета
+    самих партий, потому что коалиция — не новая партия, а то, как нынешние
+    договорились между собой.
+
+    Живёт в созыве, а не в проекте: с кем партия дружит — свойство созыва, и
+    в следующем составе расклад бывает совсем другой. История должна помнить,
+    кто с кем блокировался тогда, а не показывать нынешние союзы задним числом.
+    """
+
+    id: str
+    name: str
+    color: str
+    #: `party_id` участников, в порядке добавления. Партия состоит не больше
+    #: чем в одном блоке — иначе её места считались бы дважды.
+    members: list[str] = field(default_factory=list)
+
+    def seats(self, seats: dict[str, int]) -> int:
+        """Вес блока при таком распределении мест."""
+        return sum(seats.get(party_id, 0) for party_id in self.members)
+
+    def to_dict(self) -> dict:
+        return {"id": self.id, "name": self.name, "color": self.color,
+                "members": list(self.members)}
+
+    @staticmethod
+    def from_dict(raw: dict) -> "Coalition":
+        return Coalition(
+            id=str(raw["id"]),
+            name=str(raw.get("name", "")),
+            color=normalize_color(raw.get("color", "#7d7979")),
+            members=[str(m) for m in raw.get("members") or []],
+        )
+
+
+@dataclass
 class Convocation:
     """Созыв — снимок распределения мест.
 
@@ -99,6 +143,9 @@ class Convocation:
     #:
     #: Пустой словарь означает состав, набранный руками без выборов.
     results: dict[str, dict] = field(default_factory=dict)
+    #: Блоки этого созыва — кто с кем договорился. Мест сами не несут, их
+    #: вес складывается из мест участников.
+    coalitions: list["Coalition"] = field(default_factory=list)
 
     @property
     def is_fixed(self) -> bool:
@@ -129,6 +176,7 @@ class Convocation:
             "fixedAt": self.fixed_at,
             "results": {d: {p: r.to_dict() for p, r in per.items()}
                        for d, per in self.results.items() if per},
+            "coalitions": [c.to_dict() for c in self.coalitions],
         }
 
     @staticmethod
@@ -167,6 +215,8 @@ class Convocation:
             created_at=str(raw.get("createdAt") or now_iso()),
             fixed_at=raw.get("fixedAt") or None,
             results=results,
+            coalitions=[Coalition.from_dict(c) for c in raw.get("coalitions") or []
+                        if isinstance(c, dict) and c.get("id")],
         )
 
 
@@ -398,6 +448,11 @@ class Project:
                 if did in known_districts
             }
             conv.results = {did: renormalize(per) for did, per in trimmed.items() if per}
+            # Блок без двух живых участников — уже не блок: партию могли
+            # удалить, а файл — поправить руками.
+            for coalition in conv.coalitions:
+                coalition.members = [pid for pid in coalition.members if pid in known]
+            conv.coalitions = [c for c in conv.coalitions if len(c.members) >= MIN_COALITION]
 
         if not convocations:
             convocations = [Convocation(id=new_id("c"), number=1, name=convocation_name(1))]

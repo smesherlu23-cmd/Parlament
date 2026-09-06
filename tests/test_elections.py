@@ -570,7 +570,6 @@ class TestSettlementsAndSupport(ElectionTestCase):
         import json
 
         from parlament import store
-        from parlament.model import new_id
 
         raw = json.loads(self.path.read_text(encoding="utf-8"))
         for item in raw["districts"]:

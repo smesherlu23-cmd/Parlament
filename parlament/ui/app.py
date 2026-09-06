@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import flet as ft
 
-from .. import model
+from .. import coalitions, model
 from ..model import Convocation, Party
 from ..service import ParlamentService, ValidationError
 from ..store import StoreError
@@ -139,6 +139,15 @@ class ParlamentApp:
 
     def used_seats(self, conv: Convocation) -> int:
         return sum(conv.seats.values())
+
+    def blocs(self, conv: Convocation) -> list:
+        """Состав блоками: коалиция идёт одной колонкой, крупнейшая слева.
+
+        Схема, легенда и строка большинства читают состав отсюда, а не из
+        `distribution`: партия, вошедшая в блок, не должна стоять на дуге
+        отдельно от союзников — иначе плёнка накрыла бы чужие места.
+        """
+        return coalitions.blocs(self.parties, conv.seats, conv.coalitions)
 
     # -- отрисовка ----------------------------------------------------------
 
@@ -527,6 +536,83 @@ class ParlamentApp:
             party, usage, fmt.plural, confirm, lambda _e: self.close_dialog(),
             footprint=footprint))
 
+    # -- коалиции -------------------------------------------------------------
+
+    def new_coalition(self) -> None:
+        self._open_coalition_dialog(None)
+
+    def edit_coalition(self, coalition_id: str) -> None:
+        conv = self.selected
+        found = next((c for c in conv.coalitions if c.id == coalition_id), None)
+        if found is not None:
+            self._open_coalition_dialog(found)
+
+    def _open_coalition_dialog(self, coalition) -> None:
+        if not self.is_editable:
+            return
+        conv = self.selected
+        if len(self.parties) < model.MIN_COALITION:
+            self.toast(f"Чтобы собрать блок, нужно хотя бы "
+                       f"{fmt.pluralize(model.MIN_COALITION, fmt.PARTIES_COUNT)}.",
+                       error=True)
+            return
+
+        # Партии, уже занятые другим блоком: в диалоге их галочки закрыты, и
+        # видно, кем именно заняты.
+        taken = {pid: other.name for other in conv.coalitions
+                 if coalition is None or other.id != coalition.id
+                 for pid in other.members}
+
+        def save(name: str, color: str, members: list[str]) -> str | None:
+            try:
+                if coalition:
+                    self.service.update_coalition(conv.id, coalition.id, name,
+                                                  color, members)
+                else:
+                    self.service.create_coalition(conv.id, name, color, members)
+            except (ValidationError, StoreError) as error:
+                return str(error)
+
+            self.close_dialog()
+            self.render()
+            self.toast(f"Коалиция «{name.strip()}» "
+                       f"{'обновлена' if coalition else 'собрана'}.")
+            return None
+
+        self.page.show_dialog(dialogs.coalition_dialog(
+            coalition, self.parties, conv.seats, taken,
+            len(self.parties) + len(conv.coalitions),
+            save, lambda _e: self.close_dialog()))
+
+    def delete_coalition(self, coalition_id: str) -> None:
+        """Распускает блок. Мест это не меняет: они принадлежат партиям."""
+        if not self.is_editable:
+            return
+        conv = self.selected
+        found = next((c for c in conv.coalitions if c.id == coalition_id), None)
+        if found is None:
+            return
+
+        def confirm(_event) -> None:
+            try:
+                self.service.delete_coalition(conv.id, coalition_id)
+            except (ValidationError, StoreError) as error:
+                self.toast(str(error), error=True)
+                return
+            self.close_dialog()
+            self.render()
+            self.toast(f"Коалиция «{found.name}» распущена.")
+
+        self.page.show_dialog(dialogs._shell(
+            "Распустить коалицию",
+            [ft.Text(f"Распустить блок «{found.name}»?\n\n"
+                     "Партии останутся на своих местах — блок был только "
+                     "договорённостью, а мандаты принадлежат им.",
+                     size=theme.fs(14), color=theme.TEXT)],
+            [theme.secondary_button("Отмена", lambda _e: self.close_dialog()),
+             theme.primary_button("Распустить", confirm, danger=True)],
+        ))
+
     # -- созывы -------------------------------------------------------------
 
     def rename_convocation(self) -> None:
@@ -646,16 +732,24 @@ class ParlamentApp:
 
     def export_png(self) -> None:
         conv = self.selected
-        distribution = self.distribution(conv)
-        if not distribution:
+        blocs = self.blocs(conv)
+        if not blocs:
             self.toast("Нечего экспортировать: места не распределены.", error=True)
             return
+        legend = [
+            LegendEntry(
+                bloc.name, bloc.color, bloc.seats,
+                film=bloc.film,
+                parts=tuple((m.name, m.color, m.seats) for m in bloc.members)
+                if bloc.is_coalition else (),
+            )
+            for bloc in blocs
+        ]
 
         async def confirm(settings: dict) -> None:
             self.close_dialog()
             data = render_png(
-                [LegendEntry(party.name, party.color, seats)
-                 for party, seats in distribution],
+                legend,
                 total_seats=self.total_seats,
                 rows=self.service.project.rows,
                 width=settings["width"],
@@ -682,10 +776,10 @@ class ParlamentApp:
             conv,
             self.total_seats,
             self.service.project.rows,
-            [(party.abbr or party.name, party.color, seats)
-             for party, seats in distribution],
+            [(m.name, m.color, m.seats) for bloc in blocs for m in bloc.members],
             lambda settings: self.page.run_task(confirm, settings),
             lambda _e: self.close_dialog(),
+            chart_dist=coalitions.chart_distribution(blocs),
         ))
 
     # -- прочее -------------------------------------------------------------
