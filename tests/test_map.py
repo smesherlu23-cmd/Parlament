@@ -18,7 +18,9 @@ from parlament.district_geometry import (  # noqa: E402
 )
 from parlament.district_seed import SEED_DISTRICTS  # noqa: E402
 from parlament.ui import theme  # noqa: E402
-from parlament.ui.map_chart import _inside  # noqa: E402
+import flet.canvas as cv  # noqa: E402
+
+from parlament.ui.map_chart import MapChart, _inside  # noqa: E402
 from parlament.ui.map_export import render_map_png  # noqa: E402
 from parlament.ui.map_frame import (  # noqa: E402
     CONTENT_ASPECT,
@@ -133,6 +135,37 @@ class TestLabels(unittest.TestCase):
         self.assertEqual(text_color("#f2e9c8", "#201e1d", "#ffffff"), "#201e1d")
         self.assertEqual(text_color("#1f3a93", "#201e1d", "#ffffff"), "#ffffff")
         self.assertEqual(text_color("не цвет", "#201e1d", "#ffffff"), "#201e1d")
+
+
+class TestNoDigitsOnTheMap(unittest.TestCase):
+    """На карте только названия округов.
+
+    Номер округа и число мандатов её засоряли: читать по ним нечего — номер
+    и так подписан на игровой карте, а мандаты видны в разборе по клику.
+    """
+
+    def labels(self) -> list[str]:
+        chart = MapChart(districts=sample_districts())
+        chart._width_px, chart._height_px = 1400.0, 620.0
+        chart._redraw()
+        return [s.value for s in chart._canvas.shapes if isinstance(s, cv.Text)]
+
+    def test_not_a_single_label_is_a_number(self):
+        for value in self.labels():
+            self.assertFalse(value.strip().isdigit(),
+                             f"на карте осталась цифра «{value}»")
+
+    def test_every_label_is_a_district_name(self):
+        names = {name for _c, name, _s, _r, _p in SEED_DISTRICTS}
+        shown = self.labels()
+        self.assertTrue(shown, "карта осталась без подписей вовсе")
+        for value in shown:
+            self.assertIn(value, names)
+
+    def test_a_district_gets_at_most_one_label(self):
+        # Раньше под названием стояла вторая строка с мандатами.
+        shown = self.labels()
+        self.assertEqual(len(shown), len(set(shown)))
 
 
 class TestMapPng(unittest.TestCase):

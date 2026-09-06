@@ -20,7 +20,6 @@ from .map_frame import (
     CONTENT_ASPECT,
     NAME_MARGIN,
     label_spot,
-    room_at,
     place,
     text_color,
 )
@@ -109,23 +108,26 @@ def _render_map(districts, width: int, height: int) -> Image.Image:
 
 def _draw_labels(draw: ImageDraw.ImageDraw, districts, width: int,
                  height: int) -> None:
-    """Подписывает округа поверх заливки.
+    """Подписывает округа названиями поверх заливки.
+
+    Только названиями: цифры — номер округа и число мандатов — карту
+    засоряли, а читать по ним было нечего. Номер и так подписан на игровой
+    карте, мандаты видны в разборе по клику, а здесь важно, чей округ и
+    какого он цвета.
 
     Точки подписей лежат в самой геометрии и гарантированно попадают внутрь
-    своего округа. В крупный округ идёт название и число мандатов, в мелкий —
-    только номер: городские округа метрополий лежат вплотную, и название там
-    налезло бы на соседей. Цвет буквы выбирается по яркости заливки, поэтому
-    подпись читается на любой партийной краске.
+    своего округа. Где название не помещается никаким кеглем — округ
+    остаётся без подписи: лучше пусто, чем поверх соседа. Цвет буквы
+    выбирается по яркости заливки, поэтому подпись читается на любой
+    партийной краске.
     """
     base = max(9, round(width * 0.0112))
     # Названия у округов разной длины, а места под них — разное. Пробуем
-    # несколько кеглей от крупного к мелкому: подпись целиком лучше номера,
-    # пока её вообще можно прочесть.
+    # несколько кеглей от крупного к мелкому, пока подпись ещё читается.
     steps = [base, round(base * 0.88), round(base * 0.78), round(base * 0.7)]
     fonts = [_font(_SEMIBOLD, size) for size in dict.fromkeys(steps) if size >= 8]
-    code_font = _font(_SEMIBOLD, max(8, round(width * 0.0102)))
 
-    for code, name, seats, color in districts:
+    for code, name, _seats, color in districts:
         spot = label_spot(code, 0, 0, width, height)
         if spot is None:
             continue
@@ -133,25 +135,9 @@ def _draw_labels(draw: ImageDraw.ImageDraw, districts, width: int,
         room *= NAME_MARGIN
         ink = text_color(color or theme.EMPTY_SEAT, theme.TEXT, "#ffffff")
 
-        # Название стоит выше найденной точки, а округ там уже другой
-        # ширины — меряем ровно ту строку, куда ляжет текст.
-        chosen = name_row = None
-        for font in fonts:
-            row = y - font.size * 0.6
-            here = room_at(code, x, row, 0, 0, width, height) * NAME_MARGIN
-            if font.getlength(name) <= min(room, here):
-                chosen, name_row = font, row
-                break
-
+        chosen = next((f for f in fonts if f.getlength(name) <= room), None)
         if chosen is not None:
-            seats_font = _font(_REGULAR, max(7, round(chosen.size * 0.82)))
-            draw.text((x, name_row), name, font=chosen, fill=ink, anchor="mm")
-            draw.text((x, y + chosen.size * 0.72), str(seats), font=seats_font,
-                      fill=ink, anchor="mm")
-        elif code_font.getlength(str(code)) <= room:
-            # Название не влезло даже мелким — остаётся номер: он и так
-            # подписан на игровой карте, а полное имя видно по клику.
-            draw.text((x, y), str(code), font=code_font, fill=ink, anchor="mm")
+            draw.text((x, y), name, font=chosen, fill=ink, anchor="mm")
 
 
 def _load_background(path: Path | None) -> Image.Image | None:

@@ -131,14 +131,9 @@ def label_spot(code: int, left: float, top: float, width: float,
     for step in range(_PROBE_STEPS):
         offset = (step / (_PROBE_STEPS - 1) - 0.5) * 2 * _PROBE_REACH * height
         probe_y = y + offset
-        for begin, finish in _spans(code, probe_y, left, top, width, height):
-            if not begin <= x <= finish:
-                continue
-            # Текст ставится по центру и растёт в обе стороны, поэтому
-            # считаем по ближнему краю.
-            room = 2 * min(x - begin, finish - x)
-            if best is None or room > best[2]:
-                best = (x, probe_y, room)
+        room = room_at(code, x, probe_y, left, top, width, height)
+        if best is None or room > best[2]:
+            best = (x, probe_y, room)
     return best
 
 

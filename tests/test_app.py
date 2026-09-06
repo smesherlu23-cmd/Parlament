@@ -207,11 +207,13 @@ class TestSeatDistribution(AppTestCase):
         self.assertEqual(self.app.used_seats(self.app.selected), 0)
 
     def test_legend_and_percentages(self):
+        # Без выборов голосов не существует, и на их месте стоит доля палаты.
         self.distribute()
         shown = texts(self.app.parliament.legend_row)
         self.assertIn("Народный союз", shown)
-        self.assertIn(fmt.percent(SAMPLE[0][3], SEED_TOTAL_SEATS), shown)
-        self.assertIn("4,8 %", shown)
+        self.assertIn(f"{fmt.percent(SAMPLE[0][3], SEED_TOTAL_SEATS)} мест", shown)
+        self.assertIn("4,8 % мест", shown)
+        self.assertNotIn("голосов", " ".join(shown))
 
     def test_largest_party_leads_the_chart(self):
         self.distribute()
@@ -1276,12 +1278,21 @@ class TestCoalitions(AppTestCase):
         self.assertIn("Коалиция «Левый блок» — абсолютное большинство",
                       self.app.parliament.majority_text.value)
 
-    def test_the_legend_lists_the_bloc_and_who_is_in_it(self):
+    def test_the_legend_lists_parties_and_leaves_blocs_to_their_own_row(self):
+        # Блок стоит строкой ниже — вместе с перевесом над большинством и
+        # кнопками правки. В легенде его дублировать незачем: строки там
+        # переносятся, и понять, кто в каком блоке, всё равно не выходило.
         self.assemble(self.a, self.b)
-        shown = texts(self.app.parliament.legend_row)
-        self.assertIn("Левый блок", shown)
-        self.assertIn(self.a.name, shown)
-        self.assertIn(self.b.name, shown)
+        legend = texts(self.app.parliament.legend_row)
+        self.assertIn(self.a.name, legend)
+        self.assertIn(self.b.name, legend)
+        self.assertNotIn("Левый блок", legend)
+        self.assertIn("Левый блок", texts(self.app.parliament.coalition_row))
+
+    def test_the_legend_keeps_one_row_per_party(self):
+        self.assemble(self.a, self.b)
+        rows = self.app.parliament.legend_row.controls
+        self.assertEqual(len(rows), len(self.app.parties))
 
     def test_a_bloc_that_takes_everyone_leaves_no_lone_party(self):
         self.assemble(self.a, self.b, self.c, self.d)
@@ -1367,10 +1378,12 @@ class TestVotePercentages(AppTestCase):
         self.app.show_parliament()
 
     def test_the_legend_shows_votes_next_to_seats(self):
-        shown = " ".join(texts(self.app.parliament.legend_row))
-        self.assertIn("голосов", shown)
-        # Доля мест и доля голосов — разные числа, и обе на месте.
-        self.assertGreaterEqual(shown.count("%"), 6)
+        shown = texts(self.app.parliament.legend_row)
+        self.assertTrue(any("голосов" in t for t in shown))
+        # По одному числу на строку: доля мест и доля голосов рядом читались
+        # как одна цифра с непонятным довеском.
+        self.assertEqual(sum(1 for t in shown if "%" in t), len(self.app.parties))
+        self.assertNotIn("мест", " ".join(shown))
 
     def test_the_rail_shows_votes_for_every_party(self):
         rail = self.app.parliament._build_election_rail(self.app.selected)

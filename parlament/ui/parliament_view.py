@@ -169,22 +169,15 @@ class ParliamentView:
         over = bloc.seats - app.majority_seats
         note = (f"большинство, запас {over}" if over >= 0
                 else f"до большинства не хватает {-over}")
-        stripes = ft.Row(
-            [ft.Container(expand=max(1, m.seats), bgcolor=m.color)
-             for m in bloc.members], spacing=0, expand=True)
-
         chip = ft.Container(
             padding=ft.Padding.symmetric(horizontal=10, vertical=6),
             bgcolor=theme.NEUTRAL_100,
             border_radius=theme.RADIUS,
+            # Состав блока — в подсказке: в самой плашке ему тесно, а по
+            # полоскам видно только цвета.
             tooltip=f"{bloc.name}: {short}",
             content=ft.Row([
-                # Тот же приём, что и на схеме: цвета участников, а сверху
-                # плёнка блока — плашка выглядит как кусок зала.
-                ft.Stack([stripes,
-                          ft.Container(expand=True,
-                                       bgcolor=dialogs._film_color(bloc.color))],
-                         width=26, height=theme.fs(14)),
+                self._film_swatch(bloc, size=13),
                 ft.Text(bloc.name, size=theme.fs(13),
                         font_family=theme.FONT_SEMIBOLD, color=theme.TEXT),
                 ft.Text(str(bloc.seats), size=theme.fs(13), color=theme.TEXT),
@@ -486,51 +479,43 @@ class ParliamentView:
                     push(control)
 
     def _refresh_legend(self, blocs) -> None:
-        """Легенда: блок строкой, а за ним — из кого он собран.
+        """Легенда — только партии, по строке на каждую.
 
-        Участников показываем отдельно, иначе по цвету под плёнкой не понять,
-        чьи это места. Проценты у всех считаются от палаты, поэтому строки в
-        сумме дают больше сотни: коалиция и её партии занимают одни и те же
-        места, а не разные.
+        Коалиции сюда не идут, хотя места считаются по блокам: они стоят
+        строкой ниже, вместе с перевесом над большинством и кнопками правки.
+        Показывать их и там и тут значило захламлять легенду вдвое — и
+        путать: в общем переносе строк было не понять, какие партии в каком
+        блоке, а проценты блока и его участников считались от одной и той же
+        палаты и в сумме давали больше сотни.
         """
-        rows: list[ft.Control] = []
-        for bloc in blocs:
-            if bloc.is_coalition:
-                rows.append(self._legend_row(
-                    bloc.name, bloc.seats, bloc.votes,
-                    self._film_swatch(bloc), bold=True))
-            for member in bloc.members:
-                rows.append(self._legend_row(
-                    member.name, member.seats, member.votes,
-                    theme.swatch(member.color, 11)))
-        self.legend_row.controls = rows
-
-    def _legend_row(self, name: str, seats: int, votes: float | None,
-                    mark: ft.Control, bold: bool = False) -> ft.Control:
-        """Строка легенды: сколько мест, какая это доля палаты и — если
-        выборы были — сколько голосов за этим стоит.
-
-        Проценты мест и голосов расходятся: округа делятся по большинству,
-        и партия набирает мест то больше своей доли, то меньше. Показывать
-        одни места значило бы скрывать ровно эту разницу.
-        """
-        line: list[ft.Control] = [
-            mark,
-            ft.Text(name, size=theme.fs(13), color=theme.TEXT,
-                    font_family=theme.FONT_SEMIBOLD if bold else None),
-            ft.Text(str(seats), size=theme.fs(13),
-                    font_family=theme.FONT_SEMIBOLD, color=theme.TEXT),
-            ft.Text(fmt.percent(seats, self.app.total_seats), size=theme.fs(13),
-                    color=theme.NEUTRAL_600),
+        self.legend_row.controls = [
+            self._legend_row(member) for bloc in blocs for member in bloc.members
         ]
-        if votes is not None:
-            line.append(ft.Text(f"· {fmt.share(votes)} голосов", size=theme.fs(12),
-                                color=theme.NEUTRAL_600))
-        return ft.Row(line, spacing=8, tight=True)
 
-    def _film_swatch(self, bloc, size: int = 11) -> ft.Control:
-        """Квадратик коалиции — тот же приём, что и на схеме: полоски
-        участников, накрытые плёнкой блока."""
+    def _legend_row(self, member) -> ft.Control:
+        """Строка легенды: цвет, название, места и одно число рядом.
+
+        Одно, а не два: доля мест и доля голосов рядом друг с другом читались
+        как одна цифра с непонятным довеском. Когда выборы были, интереснее
+        голоса — с местами их и сравнивают, а сама доля палаты и так видна
+        по схеме. Когда состав набран руками, голосов не существует, и на их
+        месте стоит доля мест.
+        """
+        if member.votes is not None:
+            metric = f"{fmt.share(member.votes)} голосов"
+        else:
+            metric = f"{fmt.percent(member.seats, self.app.total_seats)} мест"
+        return ft.Row([
+            theme.swatch(member.color, 11),
+            ft.Text(member.name, size=theme.fs(13), color=theme.TEXT),
+            ft.Text(str(member.seats), size=theme.fs(13),
+                    font_family=theme.FONT_SEMIBOLD, color=theme.TEXT),
+            ft.Text(metric, size=theme.fs(13), color=theme.NEUTRAL_600),
+        ], spacing=8, tight=True)
+
+    def _film_swatch(self, bloc, size: int = 13) -> ft.Control:
+        """Квадратик коалиции — тот же приём, что и на схеме зала: цвета
+        участников, а сверху плёнка блока. Плашка выглядит куском зала."""
         side = theme.fs(size)
         return ft.Stack([
             ft.Row([ft.Container(expand=max(1, m.seats), bgcolor=m.color)

@@ -214,12 +214,15 @@ def _layout_legend(distribution: list[LegendEntry], total_seats: int,
     items = []
     for entry in distribution:
         label = f"{entry.name} {entry.seats}"
-        percent = f" ({entry.seats / total_seats * 100:.1f}".replace(".", ",") + " %"
-        # Голоса рядом с местами: округа делятся по большинству, и эти два
-        # числа расходятся — ровно за этим на них и смотрят.
+        # Одно число рядом с местами, а не два: доля палаты и доля голосов
+        # бок о бок читались как одна цифра с непонятным довеском. Когда
+        # выборы были, интереснее голоса — с местами их и сравнивают, а сама
+        # доля палаты видна по схеме. Иначе на их месте стоит доля палаты.
         if entry.votes is not None:
-            percent += f", голосов {entry.votes:.1f}".replace(".", ",") + " %"
-        percent += ")"
+            percent = f" ({entry.votes:.1f}".replace(".", ",") + " % голосов)"
+        else:
+            percent = (f" ({entry.seats / total_seats * 100:.1f}".replace(".", ",")
+                       + " % мест)")
         items.append({
             "entry": entry,
             "label": label,

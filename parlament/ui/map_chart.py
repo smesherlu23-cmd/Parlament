@@ -29,7 +29,6 @@ from .map_frame import (
     NAME_MARGIN,
     label_spot,
     place,
-    room_at,
     text_color,
     unplace,
 )
@@ -159,15 +158,17 @@ class MapChart(ft.Container):
                 height: float) -> list[cv.Shape]:
         """Подписи округов — те же, что и в выгруженной картинке.
 
-        В округ, где название помещается, идёт имя и число мандатов; в
-        мелкий — только номер, он и так подписан на игровой карте. Цвет
-        буквы выбирается по яркости заливки, поэтому подпись читается на
-        любой партийной краске и обводку рисовать не нужно.
+        Только названия: цифры — номер округа и число мандатов — карту
+        засоряли. Номер и так подписан на игровой карте, а мандаты видны в
+        разборе по клику. Где название не помещается никаким кеглем, округ
+        остаётся без подписи: лучше пусто, чем поверх соседа. Цвет буквы
+        выбирается по яркости заливки, поэтому подпись читается на любой
+        партийной краске и обводку рисовать не нужно.
         """
         shapes: list[cv.Shape] = []
         base = max(7.0, height * 0.026)
 
-        for code, name, seats, color in self._districts:
+        for code, name, _seats, color in self._districts:
             spot = label_spot(code, left, top, width, height)
             if spot is None:
                 continue
@@ -179,15 +180,9 @@ class MapChart(ft.Container):
             # средней ширине знака: для подбора «влезает или нет» этого
             # довольно, а промах вправляется запасом в NAME_MARGIN.
             size = next((s for s in (base, base * 0.88, base * 0.78, base * 0.7)
-                         if len(name) * s * _GLYPH_WIDTH <= min(room, room_at(
-                             code, x, y - s * 0.6, left, top, width, height))),
-                        None)
+                         if len(name) * s * _GLYPH_WIDTH <= room), None)
             if size is not None:
-                shapes.append(_text(x, y - size * 0.6, name, size, ink, bold=True))
-                shapes.append(_text(x, y + size * 0.75, str(seats),
-                                    size * 0.82, ink))
-            elif len(str(code)) * base * _GLYPH_WIDTH <= room:
-                shapes.append(_text(x, y, str(code), base, ink, bold=True))
+                shapes.append(_text(x, y, name, size, ink, bold=True))
         return shapes
 
     # -- клик ---------------------------------------------------------------
