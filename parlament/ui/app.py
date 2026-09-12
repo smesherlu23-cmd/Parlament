@@ -279,8 +279,8 @@ class ParlamentApp:
                 # именно с этого экрана они и заводятся. Спрятанная кнопка
                 # означала бы, что в проекте, начатом до карты, до выборов не
                 # добраться вовсе.
-                theme.secondary_button("Карта", lambda _e: self.show_map()),
                 theme.secondary_button("Поддержка", lambda _e: self.show_support()),
+                theme.secondary_button("Карта", lambda _e: self.show_map()),
             ]
             if archive_view:
                 right.append(theme.primary_button("Править состав", lambda _e: self.edit_archived()))
