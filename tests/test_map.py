@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -17,7 +18,14 @@ from parlament.ui import theme  # noqa: E402
 import flet.canvas as cv  # noqa: E402
 
 from parlament.ui.map_chart import MapChart  # noqa: E402
+from parlament.settlement_points import SETTLEMENT_POINTS  # noqa: E402
 from parlament.ui.map_export import render_map_png  # noqa: E402
+from parlament.ui.support_export import (  # noqa: E402
+    BUNDLED_MAP,
+    is_image,
+    map_image,
+    render_support_png,
+)
 from parlament.ui.map_frame import CONTENT_ASPECT, CONTENT_BOX, place, unplace  # noqa: E402
 
 _COLORS = ["#0088b0", "#d6006c", "#4c7a34", "#c8621a", "#3b4a8c"]
@@ -143,6 +151,68 @@ class TestMapPng(unittest.TestCase):
             legend=[("Народный союз", "#0088b0", 6, 34, 27.4)])
         taller = Image.open(io.BytesIO(with_extras)).height
         self.assertGreater(taller, bare)
+
+
+class TestSupportPng(unittest.TestCase):
+    """Выгрузка расстановки поддержки одной партии."""
+
+    def png(self, marks, **kwargs) -> Image.Image:
+        data = render_support_png(marks, "Партия труда", "#c41e5d",
+                                  width=900, **kwargs)
+        self.assertTrue(data.startswith(b"\x89PNG"))
+        return Image.open(io.BytesIO(data)).convert("RGB")
+
+    def test_the_picture_keeps_the_whole_canvas(self):
+        # Кадр здесь не обрезается по архипелагу, как у выборов: подписи
+        # пунктов нарисованы на самой подложке и обрезку не переживут.
+        image = self.png([("Трэлавик", 6, 6)])
+        self.assertEqual(image.width, 900)
+        self.assertAlmostEqual(image.height, round(900 / MAP_ASPECT), delta=1)
+
+    def test_the_party_colour_appears_on_the_map(self):
+        colors = _pixels(self.png([("Трэлавик", 6, 6)]))
+        self.assertIn(_rgb("#c41e5d"), colors)
+
+    def test_without_any_marks_the_party_colour_is_only_in_the_corner(self):
+        # Квадратик партии в углу остаётся, но над картой не должно быть ни
+        # одного числа её цветом.
+        bare = self.png([])
+        top = bare.crop((0, 0, bare.width, round(bare.height * 0.8)))
+        self.assertNotIn(_rgb("#c41e5d"), _pixels(top))
+
+    def test_a_place_missing_from_the_map_is_skipped(self):
+        # Пункт переименовали руками — рисовать его негде, но выгрузка всё
+        # равно обязана собраться.
+        self.png([("Такого пункта нет", 3, 6)])
+
+    def test_every_known_place_has_a_point(self):
+        # Разметка карты и справочник пунктов не должны расходиться: иначе
+        # часть очков молча не попадала бы на картинку.
+        known = set(SETTLEMENT_POINTS)
+        seeded = set()
+        for _code, _name, _seats, region, places in SEED_DISTRICTS:
+            seeded |= set(places or ())
+            if places is None:
+                seeded.add(region)
+        self.assertEqual(seeded - known, set())
+
+    def test_the_bundled_map_is_used_when_the_project_has_none(self):
+        # Ведущий не обязан ничего подкладывать: карта едет с приложением.
+        self.assertEqual(map_image(None), BUNDLED_MAP if BUNDLED_MAP.exists() else None)
+
+    def test_a_project_map_beats_the_bundled_one(self):
+        with tempfile.TemporaryDirectory() as folder:
+            own = Path(folder) / "map.png"
+            Image.new("RGB", (16, 9), "#123456").save(own)
+            self.assertEqual(map_image(Path(folder)), own)
+
+    def test_a_readable_picture_passes_the_check(self):
+        buffer = io.BytesIO()
+        Image.new("RGBA", (4, 4), "#ffffff").save(buffer, "PNG")
+        self.assertTrue(is_image(buffer.getvalue()))
+
+    def test_something_that_is_not_a_picture_fails_it(self):
+        self.assertFalse(is_image(b"cthulhu fhtagn"))
 
 
 if __name__ == "__main__":

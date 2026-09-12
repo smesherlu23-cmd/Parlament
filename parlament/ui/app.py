@@ -15,22 +15,28 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import flet as ft
 
 from .. import coalitions, model
 from ..model import Convocation, Party
-from ..service import ParlamentService, ValidationError
+from ..service import EMBLEM_SUFFIXES, ParlamentService, ValidationError
 from ..store import StoreError
 from . import dialogs, format as fmt, theme
 from .export import LegendEntry, render_png, suggest_file_name
 from .elections_view import ElectionsView
 from .map_chart import map_image_path
 from .map_export import render_map_png
+from .mount import push
+from .support_export import is_image, map_image as support_map_image
+from .support_export import render_support_png
 from .map_view import MapView
 from .parliament_view import ParliamentView
 from .parties_view import PartiesView
 from .support_view import SupportView
-from .support_file import export_support_template, read_support_file
+from .support_file import (export_support_template, read_picked_bytes,
+                           read_support_file)
 
 
 class ParlamentApp:
@@ -246,6 +252,9 @@ class ParlamentApp:
                 theme.secondary_button("Загрузить таблицу",
                                        lambda _e: self.load_support_file(),
                                        disabled=not usable),
+                theme.secondary_button("Экспорт поддержки",
+                                       lambda _e: self.export_support_png(),
+                                       disabled=not usable),
             ]
         elif self.view == "elections":
             left = [
@@ -431,6 +440,53 @@ class ParlamentApp:
             lambda _e: self.close_dialog(),
         ))
 
+    def export_support_png(self) -> None:
+        """Выгружает расстановку поддержки одной партии на карту."""
+        rows = []
+        for party in self.parties:
+            marks = self.service.support_marks(party.id)
+            rows.append((party.id, party.name, party.color,
+                         sum(n for _n, n, _c in marks),
+                         sum(c for _n, _p, c in marks),
+                         len(marks)))
+        if not any(row[3] for row in rows):
+            self.toast("Ни у одной партии нет очков поддержки.", error=True)
+            return
+
+        background = support_map_image(self.service.path.parent)
+
+        async def confirm(settings: dict) -> None:
+            self.close_dialog()
+            party = self.service.project.party(settings["party_id"])
+            if party is None:
+                return
+            data = render_support_png(
+                self.service.support_marks(party.id),
+                party.name, party.color, width=settings["width"],
+                background=background,
+                emblem=self.service.party_emblem_path(party.id),
+            )
+
+            file_name = (settings["file_name"] or "").strip() or suggest_file_name(
+                party.name, prefix="Поддержка")
+            if not file_name.lower().endswith(".png"):
+                file_name += ".png"
+
+            saved = await self.file_picker.save_file(
+                dialog_title="Экспорт поддержки в PNG",
+                file_name=file_name,
+                allowed_extensions=["png"],
+                src_bytes=data,
+            )
+            if saved:
+                self.toast("Поддержка сохранена.")
+
+        self.page.show_dialog(dialogs.support_export_dialog(
+            rows,
+            lambda settings: self.page.run_task(confirm, settings),
+            lambda _e: self.close_dialog(),
+        ))
+
     def load_support_file(self) -> None:
         """Загружает таблицу с населёнными пунктами и очками поддержки."""
 
@@ -524,7 +580,95 @@ class ParlamentApp:
             self.page, party, len(self.parties), save, lambda _e: self.close_dialog(),
             recent_colors=self.recent_colors,
             on_custom_color_picked=self._remember_recent_color,
+            extra=self._emblem_block(party) if party else None,
         ))
+
+    def _emblem_block(self, party: Party) -> list[ft.Control]:
+        """Строка с эмблемой партии внутри диалога правки.
+
+        Только у заведённой партии: файл эмблемы называется по её
+        идентификатору (см. `service.set_party_emblem`), а у новой партии его
+        ещё нет — сначала «Сохранить», потом эмблема.
+        """
+        preview = ft.Container(
+            width=theme.fs(44), height=theme.fs(44),
+            bgcolor=theme.NEUTRAL_100, border_radius=theme.RADIUS,
+            border=ft.Border.all(1, theme.DIVIDER),
+            alignment=ft.Alignment.CENTER,
+        )
+        note = ft.Text("", size=theme.fs(12), color=theme.NEUTRAL_700, expand=True)
+        clear_button = theme.ghost_button(
+            "Убрать", lambda _e: self._clear_party_emblem(party.id, show), danger=True)
+
+        def show() -> None:
+            path = self.service.party_emblem_path(party.id)
+            if path is None:
+                preview.content = ft.Icon(ft.Icons.IMAGE_OUTLINED, size=theme.fs(18),
+                                          color=theme.NEUTRAL_600)
+                note.value = "Эмблемы нет — в выгрузке будет цветной квадратик."
+            else:
+                # Ключ со временем правки: без него Flet оставил бы на экране
+                # прошлую картинку — путь-то не изменился.
+                preview.content = ft.Image(src=f"{path}?v={path.stat().st_mtime_ns}",
+                                           fit=ft.BoxFit.CONTAIN,
+                                           width=theme.fs(40), height=theme.fs(40))
+                note.value = "Показывается в углу выгрузки поддержки."
+            clear_button.visible = path is not None
+            for control in (preview, note, clear_button):
+                push(control)
+
+        show()
+        return [
+            ft.Container(height=1, bgcolor=theme.DIVIDER),
+            ft.Row([
+                preview,
+                ft.Column([
+                    ft.Text("Эмблема", size=theme.fs(13), color=theme.TEXT),
+                    note,
+                ], spacing=2, tight=True, expand=True),
+                theme.secondary_button("Выбрать…",
+                                       lambda _e: self._pick_party_emblem(party.id, show)),
+                clear_button,
+            ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        ]
+
+    def _pick_party_emblem(self, party_id: str, done) -> None:
+        """Выбирает картинку под эмблему и кладёт её рядом с проектом."""
+
+        async def pick() -> None:
+            files = await self.file_picker.pick_files(
+                dialog_title="Эмблема партии",
+                allowed_extensions=[s.lstrip(".") for s in EMBLEM_SUFFIXES],
+                allow_multiple=False,
+                with_data=True,
+            )
+            if not files:
+                return
+            picked = files[0]
+            data = read_picked_bytes(picked)
+            suffix = Path(getattr(picked, "name", "") or
+                          getattr(picked, "path", "") or "").suffix
+            if not is_image(data):
+                self.toast("Это не картинка — выберите PNG, JPG или WEBP.", error=True)
+                return
+            try:
+                self.service.set_party_emblem(party_id, data, suffix)
+            except (ValidationError, StoreError) as error:
+                self.toast(str(error), error=True)
+                return
+            done()
+            self.render()
+
+        self.page.run_task(pick)
+
+    def _clear_party_emblem(self, party_id: str, done) -> None:
+        try:
+            self.service.clear_party_emblem(party_id)
+        except (ValidationError, StoreError) as error:
+            self.toast(str(error), error=True)
+            return
+        done()
+        self.render()
 
     def _remember_recent_color(self, color: str) -> None:
         color = color.lower()

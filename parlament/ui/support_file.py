@@ -23,7 +23,7 @@ ENCODINGS = ("utf-8-sig", "utf-8", "cp1251")
 
 def read_support_file(picked, project: Project) -> SupportImportResult:
     """Разбирает выбранный файл с таблицей поддержки."""
-    return parse_support_text(_read_bytes(picked), project)
+    return parse_support_text(read_picked_bytes(picked), project)
 
 
 def parse_support_text(data: bytes, project: Project) -> SupportImportResult:
@@ -101,7 +101,12 @@ def export_support_template(project: Project) -> bytes:
     return buffer.getvalue().encode("utf-8-sig")
 
 
-def _read_bytes(picked) -> bytes:
+def read_picked_bytes(picked) -> bytes:
+    """Содержимое выбранного в диалоге файла.
+
+    Flet отдаёт его то байтами (`with_data=True`), то путём —
+    зависит от платформы, поэтому проверяем оба.
+    """
     data = getattr(picked, "bytes", None)
     if data:
         return bytes(data)

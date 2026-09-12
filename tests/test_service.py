@@ -625,3 +625,126 @@ class TestGameFlow(ServiceTestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestSupportMarks(ServiceTestCase):
+    """Пункты партии для выгрузки поддержки на карту."""
+
+    def setUp(self):
+        super().setUp()
+        self.a = self.party("Партия труда", "#c41e5d", "ПТ")
+        self.b = self.party("Аграрный блок", "#4c7a34", "АБ")
+        self.by_name = {d.name: d for d in self.service.project.districts}
+
+    def give(self, settlement_name, party_id, points):
+        for district in self.service.project.districts:
+            for settlement in district.settlements:
+                if settlement.name == settlement_name:
+                    self.service.set_support(district.id, settlement.id,
+                                             party_id, points)
+                    return
+        raise AssertionError(f"пункт «{settlement_name}» не найден")
+
+    def test_only_places_with_points_get_in(self):
+        self.give("Трэлавик", self.a.id, 4)
+        self.assertEqual(self.service.support_marks(self.a.id),
+                         [("Трэлавик", 4, 6)])
+
+    def test_a_party_without_points_gets_an_empty_list(self):
+        self.give("Трэлавик", self.a.id, 4)
+        self.assertEqual(self.service.support_marks(self.b.id), [])
+
+    def test_a_city_comes_once_for_all_its_districts(self):
+        # У Гаффинсвика пять избирательных округов, а копилка одна — и точка
+        # на карте тоже одна.
+        city = self.service.project.city("Гаффинсвик")
+        self.service.set_city_support(city.id, self.a.id, 5)
+        self.assertEqual([m for m in self.service.support_marks(self.a.id)],
+                         [("Гаффинсвик", 5, 12)])
+
+    def test_the_city_carries_its_own_larger_pool(self):
+        city = self.service.project.city("Гаффинсвик")
+        self.service.set_city_support(city.id, self.a.id, 5)
+        _name, _got, capacity = self.service.support_marks(self.a.id)[0]
+        self.assertEqual(capacity, 12)
+
+    def test_an_unknown_party_is_refused(self):
+        with self.assertRaises(ValidationError):
+            self.service.support_marks("нет такой")
+
+
+class TestPartyEmblem(ServiceTestCase):
+    """Эмблема партии: файл рядом с проектом, имя — в самой партии."""
+
+    #: Простейший корректный PNG 1×1 — содержимое здесь неважно, важно, что
+    #: сервис кладёт байты как есть и не пытается их толковать.
+    PNG = bytes.fromhex(
+        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+        "0000000d49444154789c63f8cfc0f01f00050001ff89993d1d"
+        "0000000049454e44ae426082")
+
+    def setUp(self):
+        super().setUp()
+        self.a = self.party()
+
+    def test_a_fresh_party_has_no_emblem(self):
+        self.assertEqual(self.a.emblem, "")
+        self.assertIsNone(self.service.party_emblem_path(self.a.id))
+
+    def test_setting_puts_the_file_next_to_the_project(self):
+        self.service.set_party_emblem(self.a.id, self.PNG, "png")
+        path = self.service.party_emblem_path(self.a.id)
+        self.assertIsNotNone(path)
+        self.assertTrue(path.exists())
+        self.assertEqual(path.parent, self.path.parent / "emblems")
+        self.assertEqual(path.read_bytes(), self.PNG)
+
+    def test_the_file_is_named_after_the_party_not_the_source(self):
+        # Имя исходника сюда не попадает: два проекта с картинками «logo.png»
+        # не должны спорить за одно имя.
+        self.service.set_party_emblem(self.a.id, self.PNG, ".png")
+        self.assertEqual(self.a.emblem, f"{self.a.id}.png")
+
+    def test_a_second_emblem_replaces_the_first(self):
+        self.service.set_party_emblem(self.a.id, self.PNG, "png")
+        self.service.set_party_emblem(self.a.id, self.PNG, "webp")
+        self.assertEqual(self.a.emblem, f"{self.a.id}.webp")
+        folder = self.service.emblems_dir()
+        self.assertEqual(sorted(p.name for p in folder.glob(f"{self.a.id}.*")),
+                         [f"{self.a.id}.webp"])
+
+    def test_a_stranger_format_is_refused(self):
+        with self.assertRaises(ValidationError):
+            self.service.set_party_emblem(self.a.id, self.PNG, "txt")
+
+    def test_an_empty_file_is_refused(self):
+        with self.assertRaises(ValidationError):
+            self.service.set_party_emblem(self.a.id, b"", "png")
+
+    def test_clearing_removes_both_the_record_and_the_file(self):
+        self.service.set_party_emblem(self.a.id, self.PNG, "png")
+        file = self.service.party_emblem_path(self.a.id)
+        self.service.clear_party_emblem(self.a.id)
+        self.assertEqual(self.a.emblem, "")
+        self.assertIsNone(self.service.party_emblem_path(self.a.id))
+        self.assertFalse(file.exists())
+
+    def test_a_missing_file_reads_as_no_emblem(self):
+        # Картинку унесли из папки мимо программы — выгрузка не должна
+        # спотыкаться о путь в никуда.
+        self.service.set_party_emblem(self.a.id, self.PNG, "png")
+        (self.service.emblems_dir() / self.a.emblem).unlink()
+        self.assertIsNone(self.service.party_emblem_path(self.a.id))
+
+    def test_the_emblem_survives_saving_and_opening(self):
+        self.service.set_party_emblem(self.a.id, self.PNG, "png")
+        other = self.path.parent / "копия.parlament.json"
+        self.service.save_project_as(other)
+        fresh = ParlamentService(self.path)
+        fresh.open_project(other)
+        self.assertEqual(fresh.project.parties[0].emblem, f"{self.a.id}.png")
+
+    def test_editing_a_party_keeps_its_emblem(self):
+        self.service.set_party_emblem(self.a.id, self.PNG, "png")
+        self.service.update_party(self.a.id, name="Другое имя", color="#123456")
+        self.assertEqual(self.a.emblem, f"{self.a.id}.png")

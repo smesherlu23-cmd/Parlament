@@ -1866,5 +1866,162 @@ class TestProjectWithoutDistricts(unittest.TestCase):
         self.assertEqual(again.project.total_seats, SEED_TOTAL_SEATS)
 
 
+class TestSupportExport(AppTestCase):
+    """Выгрузка расстановки поддержки: кнопка, выбор партии, картинка."""
+
+    #: Настоящий PNG 1×1 — под эмблему, которую «выбирают» в диалоге.
+    PNG = bytes.fromhex(
+        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+        "0000000d49444154789c63f8cfc0f01f00050001ff89993d1d"
+        "0000000049454e44ae426082")
+
+    def setUp(self):
+        super().setUp()
+        self.add_parties(2)
+        self.a, self.b = self.app.parties[0], self.app.parties[1]
+        self.saved = []
+        test = self
+
+        class Picker:
+            async def pick_files(self, **_kwargs):
+                return [test.picked]
+
+            async def save_file(self, **kwargs):
+                test.saved.append(kwargs)
+                return "/куда-то/Поддержка.png"
+
+        self.picked = None
+        self.app.file_picker = Picker()
+        self.app.show_support()
+
+    def give(self, name: str, party, points: int) -> None:
+        for district in self.service.project.districts:
+            for settlement in district.settlements:
+                if settlement.name == name:
+                    self.service.set_support(district.id, settlement.id,
+                                             party.id, points)
+                    return
+        raise AssertionError(f"пункт «{name}» не найден")
+
+    def open_dialog(self) -> None:
+        self.app.export_support_png()
+
+    def button(self):
+        return find(self.app.appbar_slot, lambda c: isinstance(c, ft.Button)
+                    and c.content == "Экспорт поддержки")
+
+    def test_the_button_stands_in_the_support_header(self):
+        self.assertIsNotNone(self.button())
+        self.assertFalse(self.button().disabled)
+
+    def test_nothing_to_export_says_so_instead_of_opening_a_dialog(self):
+        self.open_dialog()
+        self.assertIn("нет очков", self.page.last_toast)
+
+    def test_the_dialog_counts_points_for_every_party(self):
+        self.give("Трэлавик", self.a, 4)
+        self.open_dialog()
+        shown = " ".join(texts(self.page.dialog))
+        self.assertIn("4 из 6 очков", shown)
+        # Вторая партия в списке есть, но без очков.
+        self.assertIn("очков нет", shown)
+
+    def test_a_party_without_points_cannot_be_chosen(self):
+        self.give("Трэлавик", self.a, 4)
+        self.open_dialog()
+        radios = {r.value: r.disabled for r in
+                  find_all(self.page.dialog, lambda c: isinstance(c, ft.Radio))}
+        self.assertFalse(radios[self.a.id])
+        self.assertTrue(radios[self.b.id])
+
+    def test_saving_hands_png_bytes_to_the_picker(self):
+        self.give("Трэлавик", self.a, 4)
+        self.open_dialog()
+        find(self.page.dialog, lambda c: isinstance(c, ft.Button)
+             and c.content == "Сохранить как…").on_click(None)
+
+        self.assertEqual(len(self.saved), 1)
+        call = self.saved[0]
+        self.assertTrue(call["src_bytes"].startswith(b"\x89PNG"))
+        self.assertIn(self.a.name.replace(" ", "_"), call["file_name"])
+        self.assertTrue(call["file_name"].endswith(".png"))
+        self.assertEqual(self.page.last_toast, "Поддержка сохранена.")
+
+    def test_the_file_name_follows_the_chosen_party(self):
+        self.give("Трэлавик", self.a, 4)
+        self.give("Хердалур", self.b, 2)
+        self.open_dialog()
+        picker = find(self.page.dialog, lambda c: isinstance(c, ft.RadioGroup)
+                      and c.value == self.a.id)
+        picker.value = self.b.id
+        picker.on_change(None)
+        field = find(self.page.dialog, lambda c: isinstance(c, ft.TextField))
+        self.assertIn(self.b.name.replace(" ", "_"), field.value)
+
+
+class TestPartyEmblemInTheDialog(AppTestCase):
+    """Эмблема партии: выбирается в диалоге правки, едет в выгрузку."""
+
+    PNG = TestSupportExport.PNG
+
+    def setUp(self):
+        super().setUp()
+        self.add_parties(1)
+        self.a = self.app.parties[0]
+        test = self
+
+        class Picker:
+            async def pick_files(self, **_kwargs):
+                return [test.picked]
+
+        class Picked:
+            name = "герб.png"
+            path = None
+            bytes = test.PNG
+
+        self.picked = Picked()
+        self.app.file_picker = Picker()
+
+    def test_a_new_party_has_no_emblem_row(self):
+        # Файл эмблемы называется по идентификатору партии, а у новой его
+        # ещё нет: сначала «Сохранить», потом эмблема.
+        self.app.new_party()
+        self.assertNotIn("Эмблема", texts(self.page.dialog))
+
+    def test_an_existing_party_offers_one(self):
+        self.app.edit_party(self.a)
+        self.assertIn("Эмблема", texts(self.page.dialog))
+        self.assertIn("Эмблемы нет — в выгрузке будет цветной квадратик.",
+                      texts(self.page.dialog))
+
+    def test_picking_a_file_stores_it_by_the_party(self):
+        self.app.edit_party(self.a)
+        find(self.page.dialog, lambda c: isinstance(c, ft.Button)
+             and c.content == "Выбрать…").on_click(None)
+        self.assertEqual(self.a.emblem, f"{self.a.id}.png")
+        self.assertIsNotNone(self.service.party_emblem_path(self.a.id))
+
+    def test_a_file_that_is_not_a_picture_is_refused(self):
+        class NotAPicture:
+            name = "документ.png"
+            path = None
+            bytes = b"not a picture at all"
+
+        self.picked = NotAPicture()
+        self.app.edit_party(self.a)
+        find(self.page.dialog, lambda c: isinstance(c, ft.Button)
+             and c.content == "Выбрать…").on_click(None)
+        self.assertEqual(self.a.emblem, "")
+        self.assertIn("не картинка", self.page.last_toast)
+
+    def test_clearing_takes_it_away(self):
+        self.service.set_party_emblem(self.a.id, self.PNG, "png")
+        self.app.edit_party(self.a)
+        find(self.page.dialog, lambda c: isinstance(c, ft.Button)
+             and c.content == "Убрать").on_click(None)
+        self.assertEqual(self.a.emblem, "")
+
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

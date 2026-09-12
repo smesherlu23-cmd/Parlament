@@ -68,7 +68,8 @@ def party_dialog(page: ft.Page, party: Party | None, used_colors: int,
                  on_save: Callable[[str, str], str | None],
                  on_cancel: Callable,
                  recent_colors: list[str] | None = None,
-                 on_custom_color_picked: Callable[[str], None] | None = None) -> ft.AlertDialog:
+                 on_custom_color_picked: Callable[[str], None] | None = None,
+                 extra: list[ft.Control] | None = None) -> ft.AlertDialog:
     """Создание или правка партии: название и цвет.
 
     `page` нужен, чтобы кнопка «Свой цвет» могла открыть подбор поверх этого
@@ -81,6 +82,9 @@ def party_dialog(page: ft.Page, party: Party | None, used_colors: int,
     не открывать подбор заново для похожих партий подряд. `on_custom_color_picked`
     зовётся при подтверждении в подборе цвета — так вызывающая сторона узнаёт,
     что цвет стоит запомнить.
+    `extra` — готовые блоки, которые встают под палитрой: эмблема партии
+    собирается в `app`, потому что упирается в выбор файла, а диалог про
+    файлы ничего не знает.
     """
     editing = party is not None
     start_color = party.color if party else theme.PALETTE[used_colors % len(theme.PALETTE)]
@@ -184,6 +188,8 @@ def party_dialog(page: ft.Page, party: Party | None, used_colors: int,
     if recent_row.controls:
         body.append(ft.Container(height=1, bgcolor=theme.DIVIDER))
         body.append(recent_row)
+    for block in extra or ():
+        body.append(block)
     body.append(error)
 
     return _shell(
@@ -984,6 +990,96 @@ def map_export_dialog(convocation_name: str, districts,
             ft.Row([legend_check, title_check], spacing=20),
         ],
         [_cancel(on_cancel), theme.primary_button("Сохранить как…", confirm)],
+        width=500,
+    )
+
+
+def support_export_dialog(parties: list[tuple[str, str, str, int, int, int]],
+                          on_confirm: Callable[[dict], None],
+                          on_cancel: Callable) -> ft.AlertDialog:
+    """Выгрузка расстановки поддержки — на одну партию за раз.
+
+    `parties` — `(id, название, цвет, очков, из запаса, пунктов)`. Картинка
+    у каждой партии своя: одна карта со всеми сразу читалась бы как каша из
+    чисел, а ведущему нужно показать игроку именно его расстановку.
+
+    Партия без единого очка в списке есть, но выбрать её нельзя: выгружать
+    у неё нечего, и пустая карта с одной подписью в углу только сбивала бы
+    с толку.
+    """
+    usable = [row for row in parties if row[3] > 0]
+    first = usable[0][0] if usable else ""
+
+    file_field = theme.text_field(
+        suggest_file_name(next((r[1] for r in usable), ""), prefix="Поддержка"),
+        label_text="Имя файла")
+
+    def row(party_id: str, name: str, color: str,
+            got: int, total: int, places: int) -> ft.Control:
+        empty = got <= 0
+        note = ("очков нет" if empty
+                else f"{got} из {total} очков, {fmt.pluralize(places, fmt.PLACES)}")
+        return ft.Row([
+            ft.Radio(value=party_id, label="", active_color=theme.ACCENT,
+                     disabled=empty),
+            theme.swatch(color, 10),
+            ft.Text(name, size=theme.fs(13),
+                    color=theme.NEUTRAL_600 if empty else theme.TEXT,
+                    expand=True, no_wrap=True, overflow=ft.TextOverflow.ELLIPSIS),
+            ft.Text(note, size=theme.fs(11), color=theme.NEUTRAL_600),
+        ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+
+    party_picker = ft.RadioGroup(
+        value=first,
+        content=ft.Column([row(*item) for item in parties], spacing=2, tight=True),
+    )
+
+    def on_party(_event) -> None:
+        # Имя файла подстраивается под выбранную партию, пока его не трогали
+        # руками: иначе все выгрузки уезжали бы под именем первой в списке.
+        chosen = next((r for r in usable if r[0] == party_picker.value), None)
+        if chosen is not None:
+            file_field.value = suggest_file_name(chosen[1], prefix="Поддержка")
+            push(file_field)
+
+    party_picker.on_change = on_party
+
+    resolution_picker = ft.RadioGroup(
+        value="0",
+        content=ft.Row([
+            ft.Radio(value=str(index), label=label, active_color=theme.ACCENT,
+                     label_style=ft.TextStyle(size=theme.fs(13), color=theme.TEXT))
+            for index, (label, _w, _h) in enumerate(RESOLUTIONS)
+        ], spacing=2),
+    )
+
+    def confirm(_event) -> None:
+        if not party_picker.value:
+            return
+        _label, width, _height = RESOLUTIONS[int(resolution_picker.value)]
+        on_confirm({"party_id": party_picker.value,
+                    "file_name": file_field.value,
+                    "width": width})
+
+    return _shell(
+        "Экспорт поддержки в PNG",
+        [
+            ft.Text("Карта покажет, сколько очков у партии в каждом пункте — "
+                    "подписаны только те, где они есть.",
+                    size=theme.fs(12), color=theme.NEUTRAL_700),
+            ft.Container(
+                bgcolor=theme.BG,
+                padding=ft.Padding.symmetric(horizontal=10, vertical=8),
+                content=party_picker,
+            ),
+            file_field,
+            ft.Column([
+                ft.Text("Разрешение", size=theme.fs(12), color=theme.NEUTRAL_700),
+                resolution_picker,
+            ], spacing=5, tight=True),
+        ],
+        [_cancel(on_cancel),
+         theme.primary_button("Сохранить как…", confirm, disabled=not usable)],
         width=500,
     )
 

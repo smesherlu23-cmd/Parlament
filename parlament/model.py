@@ -65,9 +65,14 @@ class Party:
     name: str
     color: str
     abbr: str = ""
+    #: Имя файла эмблемы в папке `emblems` рядом с файлом проекта — без пути,
+    #: чтобы проект можно было перенести вместе с картинками. Пустая строка —
+    #: эмблемы нет, и на выгрузках вместо неё идёт цветной квадратик партии.
+    emblem: str = ""
 
     def to_dict(self) -> dict:
-        return {"id": self.id, "name": self.name, "color": self.color, "abbr": self.abbr}
+        return {"id": self.id, "name": self.name, "color": self.color,
+                "abbr": self.abbr, "emblem": self.emblem}
 
     @staticmethod
     def from_dict(raw: dict) -> "Party":
@@ -76,6 +81,7 @@ class Party:
             name=str(raw.get("name", "")),
             color=normalize_color(raw.get("color", "#7d7979")),
             abbr=str(raw.get("abbr", "")),
+            emblem=str(raw.get("emblem", "")),
         )
 
 

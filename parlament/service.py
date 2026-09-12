@@ -29,6 +29,15 @@ from .model import (
 
 MAX_NAME_LENGTH = 120
 MAX_ABBR_LENGTH = 12
+#: Папка с эмблемами партий — рядом с файлом проекта, чтобы переносить его
+#: вместе с картинками одной папкой.
+EMBLEMS_DIR = "emblems"
+#: Форматы, которые принимаются под эмблему: то, что умеет и Pillow на
+#: выгрузке, и Flet в окне.
+EMBLEM_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
+#: Потолок размера эмблемы. Картинка едет внутрь папки проекта и в каждую
+#: выгрузку — многомегабайтному исходнику там делать нечего.
+MAX_EMBLEM_BYTES = 8 * 1024 * 1024
 #: Сколько последних вручную подобранных цветов хранить в проекте.
 RECENT_COLORS_LIMIT = 10
 
@@ -105,6 +114,80 @@ class ParlamentService:
         party.name = self._clean_name(name)
         party.color = self._clean_color(color)
         party.abbr = self._clean_abbr(abbr)
+        self._persist()
+        return party
+
+    # -- эмблема партии -----------------------------------------------------
+
+    def emblems_dir(self) -> Path:
+        """Папка с эмблемами — рядом с файлом проекта.
+
+        Именно рядом, а не по абсолютному пути внутри партии: проект
+        переносят вместе с папкой, и абсолютный путь после переноса указывал
+        бы в пустоту.
+        """
+        return self.path.parent / EMBLEMS_DIR
+
+    def party_emblem_path(self, party_id: str) -> Path | None:
+        """Файл эмблемы партии, если он заведён и лежит на месте."""
+        party = self._require_party(party_id)
+        if not party.emblem:
+            return None
+        candidate = self.emblems_dir() / party.emblem
+        return candidate if candidate.exists() else None
+
+    def set_party_emblem(self, party_id: str, data: bytes, suffix: str) -> Party:
+        """Кладёт эмблему партии рядом с проектом и запоминает её имя.
+
+        :param data: содержимое картинки; читаемость её как изображения
+                     проверяет вызывающая сторона — здесь нет Pillow, как и
+                     вообще ничего про отрисовку.
+        :param suffix: расширение исходного файла, с точкой или без.
+
+        Имя файла берётся по идентификатору партии, а не по исходному: два
+        разных проекта с одинаково названными картинками не должны спорить
+        за одно имя, а повторная загрузка обязана затирать прошлую эмблему,
+        а не копить файлы.
+        """
+        party = self._require_party(party_id)
+        kind = "." + str(suffix or "").strip().lstrip(".").lower()
+        if kind not in EMBLEM_SUFFIXES:
+            allowed = ", ".join(sorted(s.lstrip(".") for s in EMBLEM_SUFFIXES))
+            raise ValidationError(f"Эмблема должна быть картинкой: {allowed}.")
+        if not data:
+            raise ValidationError("Файл эмблемы пуст.")
+        if len(data) > MAX_EMBLEM_BYTES:
+            raise ValidationError(
+                f"Эмблема больше {MAX_EMBLEM_BYTES // (1024 * 1024)} МБ — "
+                "уменьшите картинку.")
+
+        folder = self.emblems_dir()
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            # Прошлая эмблема могла быть в другом формате — убираем её, иначе
+            # рядом остался бы осиротевший файл, который никто не откроет.
+            for old in folder.glob(f"{party.id}.*"):
+                old.unlink(missing_ok=True)
+            (folder / f"{party.id}{kind}").write_bytes(data)
+        except OSError as error:
+            raise ValidationError(
+                f"Не удалось сохранить эмблему: {error.strerror or error}") from None
+
+        party.emblem = f"{party.id}{kind}"
+        self._persist()
+        return party
+
+    def clear_party_emblem(self, party_id: str) -> Party:
+        """Убирает эмблему партии — и запись о ней, и сам файл."""
+        party = self._require_party(party_id)
+        if party.emblem:
+            try:
+                (self.emblems_dir() / party.emblem).unlink(missing_ok=True)
+            except OSError:
+                # Файл не убрался — записи о нём всё равно быть не должно,
+                # иначе выгрузка будет искать то, чего партия уже не признаёт.
+                pass
+        party.emblem = ""
         self._persist()
         return party
 
@@ -551,6 +634,36 @@ class ParlamentService:
     def district_capacity(self, district_id: str) -> int:
         """Сколько очков поддержки в округе можно раздать всего."""
         return self.project.district_capacity(self._require_district(district_id))
+
+    def support_marks(self, party_id: str) -> list[tuple[str, int, int]]:
+        """Где у партии есть очки: `(название пункта, очки, запас)`.
+
+        Для выгрузки поддержки на карту: пункты без очков в неё не попадают,
+        потому что показывать «0 из 6» по всему архипелагу — значит скрыть
+        за шумом те несколько пунктов, где партия действительно работает.
+
+        Город идёт одной строкой на всю метрополию, а не по разу на каждый
+        свой избирательный округ: копилка у них общая (см.
+        `Project.district_support`), и точка на карте у города тоже одна.
+        """
+        self._require_party(party_id)
+        marks: list[tuple[str, int, int]] = []
+        seen_cities: set[str] = set()
+        for district in self.project.districts:
+            if district_seed.is_city(district.code):
+                if district.region in seen_cities:
+                    continue
+                seen_cities.add(district.region)
+                city = self.project.city(district.region)
+                points = city.support.get(party_id, 0) if city else 0
+                if city is not None and points > 0:
+                    marks.append((city.name, points, city.capacity))
+                continue
+            for settlement in district.settlements:
+                points = settlement.support.get(party_id, 0)
+                if points > 0:
+                    marks.append((settlement.name, points, settlement.capacity))
+        return marks
 
     def base_share(self, district_id: str, party_id: str) -> float:
         """База партии в округе — её доля голосов до поправок, в процентах.
