@@ -31,6 +31,7 @@ from parlament.elections import (  # noqa: E402
     PartyResult,
     allocate_seats,
     base_shares,
+    boost_points,
     district_winner,
     normalize_shares,
     renormalize,
@@ -242,8 +243,11 @@ class TestRollMechanic(unittest.TestCase):
                          PartyResult())
 
     def test_raw_is_the_sum_before_normalization(self):
+        # Местная поправка (modifier) в сумму не входит — она уже отражена
+        # в base (см. `boost_points`), и прибавить её ещё раз значило бы
+        # посчитать дважды.
         result = PartyResult(base=50.0, national=-2.0, island=1.0, modifier=3.0, wobble=0.5)
-        self.assertAlmostEqual(result.raw, 52.5)
+        self.assertAlmostEqual(result.raw, 49.5)
 
     def test_renormalize_shares_out_the_votes_of_whoever_left(self):
         # Ушедшая партия забрала половину округа; её голоса расходятся между
@@ -275,6 +279,68 @@ class TestRollMechanic(unittest.TestCase):
                 "c": PartyResult(base=0.0, modifier=-4.0)}
         self.assertEqual({pid: r.share for pid, r in renormalize(left).items()},
                          {"b": 0.0, "c": 0.0})
+
+
+class TestBoostPoints(unittest.TestCase):
+    """`boost_points` — местная поправка той же монетой, что живые очки."""
+
+    def test_a_bonus_within_capacity_simply_adds_up(self):
+        # Запас с лихвой хватает на всех — поправка просто прибавляется.
+        boosted = boost_points({"a": 3.0, "b": 1.0}, {"a": 2.0}, capacity=12.0)
+        self.assertEqual(boosted, {"a": 5.0, "b": 1.0})
+
+    def test_a_party_without_a_modifier_stays_untouched(self):
+        boosted = boost_points({"a": 3.0, "b": 1.0}, {"a": 2.0}, capacity=12.0)
+        self.assertEqual(boosted["b"], 1.0)
+
+    def test_a_penalty_cannot_push_support_below_zero(self):
+        # Живых очков меньше, чем штраф, — упираемся в ноль, а не в минус.
+        boosted = boost_points({"a": 2.0}, {"a": -5.0}, capacity=12.0)
+        self.assertEqual(boosted["a"], 0.0)
+
+    def test_a_bonus_cannot_push_support_above_the_district_capacity(self):
+        # Запас всего округа — потолок для придуманной поддержки.
+        boosted = boost_points({"a": 4.0}, {"a": 50.0}, capacity=12.0)
+        self.assertEqual(boosted["a"], 12.0)
+
+    def test_several_bonuses_together_may_still_overflow_the_pool(self):
+        # У каждой партии свой потолок — весь округ; вместе они могут
+        # попросить больше, чем есть на самом деле. Это ловит уже
+        # `base_shares` (запас распределяется пропорционально), а не
+        # `boost_points` — он лишь применяет каждую поправку по отдельности.
+        boosted = boost_points({"a": 4.0, "b": 4.0}, {"a": 50.0, "b": 50.0},
+                                capacity=12.0)
+        self.assertEqual(boosted, {"a": 12.0, "b": 12.0})
+
+    def test_a_zero_modifier_changes_nothing(self):
+        boosted = boost_points({"a": 3.0}, {"a": 0.0}, capacity=12.0)
+        self.assertEqual(boosted["a"], 3.0)
+
+    def test_a_party_with_zero_real_points_still_gets_boosted(self):
+        # Партия ещё не получила ни одного живого очка — поправка стартует
+        # не с нуля округа, а с нуля партии, и тоже упирается в потолок.
+        boosted = boost_points({"a": 0.0}, {"a": 50.0}, capacity=12.0)
+        self.assertEqual(boosted["a"], 12.0)
+
+    def test_a_modifier_for_a_party_absent_from_points_is_simply_ignored(self):
+        # Результат перечисляет только тех, у кого есть живые очки: поправка
+        # сама по себе партию в округ не вписывает.
+        boosted = boost_points({}, {"a": 50.0}, capacity=12.0)
+        self.assertEqual(boosted, {})
+
+
+class _NoWobble:
+    """Генератор без случайности — только колебание всегда ровно ноль.
+
+    Нужен там, где тест проверяет саму механику (местную поправку, барьер),
+    а не то, как на неё ляжет случайный шум: с настоящим `random.Random`
+    результат зависел бы от зерна, и пришлось бы подбирать запас на все
+    исходы колебания сразу — не всегда есть такой запас, который остаётся
+    и больше нуля, и меньше барьера одновременно.
+    """
+
+    def triangular(self, _low: float, _high: float, _mode: float) -> float:
+        return 0.0
 
 
 class ElectionTestCase(unittest.TestCase):
@@ -436,7 +502,13 @@ class TestElectionResults(ElectionTestCase):
         district = self.only_party_here("Судбригг", self.a)
         self.service.roll_election(self.conv.id, self.dominance, rng=random.Random(6))
         self.assertEqual(self.service.district_winners(self.conv.id)[district.id], self.a.id)
-        self.assertEqual(self.conv.results[district.id][self.a.id].modifier, 1000)
+        # Поправка упёрлась в потолок округа: сколько бы ни попросили, больше
+        # оставшегося места (весь запас минус то, что уже раздали игроки) не
+        # прибавить.
+        capacity = self.service.district_capacity(district.id)
+        given = self.service.district_points(district.id)[self.a.id]
+        self.assertEqual(self.conv.results[district.id][self.a.id].modifier,
+                         capacity - given)
 
         self.service.roll_election(self.conv.id, {}, rng=random.Random(6))
         self.assertEqual(self.conv.results[district.id][self.a.id].modifier, 0)
@@ -756,12 +828,37 @@ class TestRollElection(ElectionTestCase):
         self.assertAlmostEqual(sum(r.base for r in per_party.values()), 100.0)
 
     def test_modifier_reaches_the_result(self):
+        # Живые очки нужны, чтобы штрафу было откуда вычитать: у партии без
+        # своих очков и так ноль, дальше некуда — см. следующий тест.
+        self.give_support(self.a, 5)
         self.service.roll_election(
             self.conv.id,
             {self.district.id: {self.a.id: {"modifier": -3}}},
             rng=random.Random(5))
         result = self.conv.results[self.district.id][self.a.id]
         self.assertEqual(result.modifier, -3)
+
+    def test_a_local_penalty_cannot_go_below_zero_support(self):
+        # Партия без своих очков и так на нуле — штраф её глубже не утопит,
+        # а не уводит в минус. Организации меньше нуля не бывает.
+        self.service.roll_election(
+            self.conv.id,
+            {self.district.id: {self.a.id: {"modifier": -3}}},
+            rng=random.Random(5))
+        result = self.conv.results[self.district.id][self.a.id]
+        self.assertEqual(result.modifier, 0)
+
+    def test_a_local_bonus_cannot_exceed_the_district_pool(self):
+        # Организованной поддержки не бывает больше, чем весь округ: если
+        # ведущий попросил больше, партия просто упирается в потолок.
+        capacity = self.service.district_capacity(self.district.id)
+        self.service.roll_election(
+            self.conv.id,
+            {self.district.id: {self.a.id: {"modifier": capacity + 50}}},
+            rng=random.Random(5))
+        result = self.conv.results[self.district.id][self.a.id]
+        self.assertEqual(result.modifier, capacity)
+        self.assertAlmostEqual(result.base, 100.0)
 
     def test_national_mood_reaches_every_district(self):
         # Один и тот же модификатор партии должен прибавиться в каждом
@@ -1022,12 +1119,18 @@ class TestVoteShares(ElectionTestCase):
     def test_votes_and_seats_are_allowed_to_disagree(self):
         # Ради этого их и показывают рядом: округа делятся по большинству,
         # и доля мест партии не обязана совпадать с долей голосов.
-        # Уверенно берём половину округов: там уходят все мандаты, а в
-        # остальных партия идёт наравне со всеми — мест выходит больше, чем
-        # голосов. Это и есть перекос, который эти два числа показывают.
-        half = self.service.project.districts[::2]
+        #
+        # Берём остров Вакула — там меньше людей на мандат, чем в среднем
+        # по стране (см. `TestPopulation.test_mandates_and_people_disagree
+        # _across_islands`): взяв его целиком, партия получает долю мест
+        # заметно больше своей доли голосов, и разница не зависит ни от
+        # зерна, ни от острова, ни от точных чисел — это и есть перекос,
+        # который эти два числа показывают.
+        vakula = [d for d in self.service.project.districts
+                  if island_of(d.region) == "Остров Вакула (запад)"]
         self.service.roll_election(self.conv.id, {
-            d.id: {self.a.id: {"modifier": 1000}} for d in half
+            d.id: {self.a.id: {"modifier": self.service.district_capacity(d.id) + 50}}
+            for d in vakula
         }, rng=random.Random(8))
         votes = self.service.vote_shares(self.conv.id)
         seats = self.conv.seats
@@ -1103,16 +1206,24 @@ class TestEveryoneRolledZero(ElectionTestCase):
     Без всякой поддержки база делится поровну (33,3 % на три партии), а
     колебание — не больше ±`WOBBLE_RANGE`, так что штраф -40 гарантированно
     топит каждую партию в ноль независимо от того, как выпадет колебание.
+
+    Штраф здесь — «настроение по стране», а не местная поправка: местная
+    теперь в очках поддержки и дальше нуля саму партию не утопит (см.
+    `TestRollElection.test_a_local_penalty_cannot_go_below_zero_support`) —
+    ноль очков означает лишь то, что у партии нет своих, а не что её
+    вычеркнули из гонки; неопределившиеся всё равно достанутся ей наравне
+    со всеми. «Настроение по стране» осталось в процентных пунктах и
+    вычитается уже после раздела на проценты, поэтому им округ можно
+    утопить по-настоящему.
     """
 
     def setUp(self):
         super().setUp()
         self.district = self.by_name["Судбригг"]
-        penalty = {"modifier": -40}
+        penalty = -40.0
         self.service.roll_election(
-            self.conv.id,
-            {self.district.id: {self.a.id: penalty, self.b.id: penalty,
-                                self.c.id: penalty}},
+            self.conv.id, {},
+            national={self.a.id: penalty, self.b.id: penalty, self.c.id: penalty},
             rng=random.Random(43))
 
     def test_the_result_is_kept_for_the_record(self):
@@ -1157,13 +1268,18 @@ class TestDeletingAParty(ElectionTestCase):
         # партия оставалась под пятью процентами и мест не получала. Если
         # доли не пересчитать, она так и осталась бы ни с чем — при том что
         # в округе, кроме неё, уже никого.
-        # Соперник забирает округ почти целиком, мелкой партии остаётся
-        # положительная, но крохотная доля: +5 п.п. против колебания в ±3
-        # никогда не уходят в минус, так что расклад не зависит от зерна.
+        #
+        # Местная поправка — теперь очки поддержки, а не проценты пункты, и
+        # больше всего запаса округа дать не может: A забирает почти весь
+        # округ, но не весь без остатка. Один свободный пункт остаётся
+        # неопределившимся и делится на всех троих поровну — вот и крохотная,
+        # но положительная доля B. Колебание здесь отключено (`_NoWobble`):
+        # эта крохотная доля меньше его обычного размаха, и с настоящим
+        # случайным колебанием результат зависел бы от зерна.
+        capacity = self.service.district_capacity(self.district.id)
         self.service.roll_election(self.conv.id, {
-            self.district.id: {self.a.id: {"modifier": 1000},
-                               self.b.id: {"modifier": 5}},
-        }, rng=random.Random(11))
+            self.district.id: {self.a.id: {"modifier": capacity - 1}},
+        }, rng=_NoWobble())
         small = self.conv.results[self.district.id][self.b.id].share
         self.assertGreater(small, 0)
         self.assertLess(small, THRESHOLD_PERCENT)

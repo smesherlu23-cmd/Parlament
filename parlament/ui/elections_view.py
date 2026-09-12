@@ -2,13 +2,15 @@
 
 Голоса в округе не вводятся — они считаются. У каждой партии есть база — её
 доля от очков поддержки, розданных в округе игроками (столбец «Поддержка»
-справа), — и к ней прибавляются (в процентных пунктах) три поправки:
-свободный модификатор на конкретный округ, «настроение по стране» — тот же
-модификатор, но один сразу на все округа партии, — и сдвиг по острову —
-такой же, но на один остров архипелага, а не на всю карту и не на один
-округ. Причина поправки не привязана к чему-то одному вроде дебатов — это
-может быть что угодно по ходу партии. После всех поправок добавляется
-небольшое случайное колебание, и доли округа нормируются к 100 %.
+справа). Местная поправка на конкретный округ (клетка в таблице) — той же
+монетой: временные очки поддержки, которые ведущий добавляет партии в этом
+округе, до предела его запаса, — она входит прямо в базу, ещё до раздела на
+проценты (см. `elections.boost_points`). Сверху, уже в процентных пунктах,
+прибавляются «настроение по стране» — тот же приём, но один сразу на все
+округа партии, — и сдвиг по острову, такой же, но на один остров архипелага.
+Причина поправки не привязана к чему-то одному вроде дебатов — это может
+быть что угодно по ходу партии. После всех поправок добавляется небольшое
+случайное колебание, и доли округа нормируются к 100 %.
 
 В розыгрыше участвуют все партии во всех округах — своя клетка не открывает
 партии доступ в округ, а лишь прибавляет к её доле: без всякой базы и
@@ -22,7 +24,7 @@ from __future__ import annotations
 import flet as ft
 
 from .. import district_seed
-from ..elections import PartyResult, base_shares
+from ..elections import PartyResult, base_shares, boost_points
 from . import theme
 from .mount import push
 
@@ -83,10 +85,13 @@ class ElectionsView:
                                 f"{self.service.project.total_seats} мест · {conv.name}",
                                 size=theme.fs(15), font_family=theme.FONT_SEMIBOLD,
                                 color=theme.TEXT),
-                        ft.Text("В клетке — поправка в процентных пунктах, можно со "
-                                "знаком минус. Поддержка берётся из населённых пунктов; "
-                                f"меньше {_threshold_label()} % голосов в округе — "
-                                "без места, но доля всё равно видна в разборе.",
+                        ft.Text("В клетке округа — временная прибавка к очкам "
+                                "поддержки партии, целым числом, можно со знаком "
+                                "минус (штраф); настроение по стране и сдвиг по "
+                                "острову — в процентных пунктах. Поддержка берётся "
+                                "из населённых пунктов; меньше "
+                                f"{_threshold_label()} % голосов в округе — без "
+                                "места, но доля всё равно видна в разборе.",
                                 size=theme.fs(12), color=theme.NEUTRAL_700),
                     ], spacing=3, tight=True, expand=True),
                     theme.ghost_button("Убрать все поправки",
@@ -246,7 +251,9 @@ class ElectionsView:
                 width=_BONUS_WIDTH, text_align=ft.TextAlign.RIGHT)
             bonus.data = (district.id, party.id)
             bonus.on_change = self._on_bonus
-            bonus.tooltip = "Местная поправка, в п.п., можно со знаком минус"
+            bonus.tooltip = ("Временная прибавка к очкам поддержки партии в "
+                             "округе, целым числом — до предела округа. Можно "
+                             "со знаком минус (штраф)")
 
             per_party[party.id] = bonus
             cells.append(ft.Container(bonus, width=_CELL_WIDTH))
@@ -279,9 +286,20 @@ class ElectionsView:
             field.value = cleaned
             push(field)
 
+    @staticmethod
+    def _sanitize_int(field: ft.TextField) -> None:
+        """То же самое, но без точки: местная поправка — очки поддержки,
+        а дробных сторонников не бывает."""
+        raw = field.value or ""
+        cleaned = "".join(ch for index, ch in enumerate(raw)
+                          if ch.isdigit() or (ch == "-" and index == 0))
+        if cleaned != field.value:
+            field.value = cleaned
+            push(field)
+
     def _on_bonus(self, event) -> None:
         field = event.control
-        self._sanitize(field)
+        self._sanitize_int(field)
         district_id, _party_id = field.data
         self._refresh_preview(district_id)
 
@@ -315,21 +333,24 @@ class ElectionsView:
                     push(field)
 
     def _refresh_preview(self, district_id: str, live: bool = True) -> None:
-        """Показывает базу партий округа — их долю от розданных очков.
+        """Показывает базу партий округа — их долю от очков вместе с уже
+        вписанной местной поправкой.
 
         Участвуют всегда все партии — этот столбец не про то, кто идёт
-        (идут все), а про то, у кого есть организованная база. Именно базу,
-        а не итог: колебание случайно, и обещать результат до розыгрыша
-        было бы враньём.
+        (идут все), а про то, у кого есть организованная база. Поправка
+        сюда уже включена: она в тех же очках и не случайна, в отличие от
+        настроения по стране, сдвига по острову и колебания — их до
+        розыгрыша обещать нельзя, а поправку в этой клетке ведущий только
+        что сам вписал.
 
-        Округ, где очков не раздали вовсе, показывается словами, а не
-        равными долями: «33 %» у каждого выглядит как настоящая поддержка,
-        хотя на деле её нет ни у кого и решать будут поправки с колебанием.
+        Округ, где очков не раздали и поправки не вписали, показывается
+        словами, а не равными долями: «33 %» у каждого выглядит как
+        настоящая поддержка, хотя на деле её нет ни у кого.
 
         База считается от всего запаса округа: партия, разобравшая одно очко
         из шести, не должна выглядеть хозяйкой деревни (см. `base_shares`).
-        Поэтому рядом показано и то, сколько очков вообще разобрано, — иначе
-        непонятно, почему у всех есть проценты.
+        Поэтому рядом показано и то, сколько очков вообще разобрано (с
+        поправкой), — иначе непонятно, почему у всех есть проценты.
         """
         district = self.service.project.district(district_id)
         preview = self.previews.get(district_id)
@@ -338,19 +359,22 @@ class ElectionsView:
 
         points = self.service.district_points(district_id)
         capacity = self.service.district_capacity(district_id)
-        if not any(points.values()):
+        modifiers = {party_id: _to_number(field.value)
+                    for party_id, field in self.cells.get(district_id, {}).items()}
+        if not any(points.values()) and not any(modifiers.values()):
             preview.value = "очков никто не раздал — доли равные"
             preview.color = theme.NEUTRAL_600
             if live:
                 push(preview)
             return
 
-        base = base_shares(points, capacity)
+        boosted = boost_points(points, modifiers, capacity)
+        base = base_shares(boosted, capacity)
         parts = [f"{party.abbr or party.name} {base[party.id]:.0f} %".replace(".", ",")
                  for party in self.app.parties if base.get(party.id)]
-        given = sum(points.values())
+        given = sum(boosted.values())
         if capacity and given < capacity:
-            parts.append(f"· разобрано {given} из {capacity}")
+            parts.append(f"· разобрано {given:.0f} из {capacity}")
 
         preview.value = "  ".join(parts)
         preview.color = theme.TEXT

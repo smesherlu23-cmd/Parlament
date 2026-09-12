@@ -574,21 +574,27 @@ class ParlamentService:
 
         :param modifiers: `{district_id: {party_id: {"modifier": число}}}` —
                           местная поправка, которую ведущий выставил руками
-                          на конкретный округ.
-        :param national: `{party_id: число}` — «настроение по стране»: та же
-                         поправка, но одна на партию сразу для всех округов.
+                          на конкретный округ. Целое число очков поддержки
+                          (см. `boost_points`), можно отрицательное.
+        :param national: `{party_id: число}` — «настроение по стране»: поправка
+                         в процентных пунктах, одна на партию сразу для всех
+                         округов.
         :param island: `{остров: {party_id: число}}` — то же самое, но на
                        один остров архипелага (см. `district_seed.islands`);
                        остров вычисляется по региону округа.
 
         У каждой партии в округе есть база — её доля от всего запаса очков
-        округа, — к которой прибавляются (в процентных пунктах) настроение по
-        стране, сдвиг по острову, местная поправка и случайное колебание;
-        итог нормируется к 100 % на весь округ.
+        округа, включая местную поправку: та складывается с живыми очками
+        партии той же монетой, до раздела на проценты (см. `boost_points`).
+        К получившейся базе прибавляются (уже в процентных пунктах)
+        настроение по стране, сдвиг по острову и случайное колебание; итог
+        нормируется к 100 % на весь округ.
 
         Неразобранные очки — неопределившиеся: они делятся поровну между
         всеми, поэтому партия, не работавшая в округе, идёт не с нуля, а
         одно очко из шести даёт перевес, но не разгром (см. `base_shares`).
+        Местная поправка не может вывести партию за пределы округа — ни
+        выше всего его запаса, ни ниже нуля.
         """
         conv = self._require_convocation(convocation_id)
         # Нечего разыгрывать не по нехватке поправок (участвуют все и без
@@ -623,29 +629,38 @@ class ParlamentService:
         for district in self.project.districts:
             per_district = modifiers.get(district.id, {})
             per_island = island.get(district_seed.island_of(district.region), {})
+            capacity = self.project.district_capacity(district)
             points = {party.id: self.project.district_support(district, party.id)
                      for party in self.project.parties}
-            base = elections.base_shares(points,
-                                         self.project.district_capacity(district))
+            local = {party.id: self._clean_local_modifier(
+                        (per_district.get(party.id) or {}).get("modifier", 0))
+                    for party in self.project.parties}
+            # Поправка складывается с живыми очками ещё до раздела на
+            # проценты — той же монетой, а не отдельной прибавкой поверх
+            # готовой доли: см. `boost_points`.
+            boosted = elections.boost_points(points, local, capacity)
+            base = elections.base_shares(boosted, capacity)
 
             raw: dict[str, float] = {}
             parts: dict[str, tuple[float, float, float, float]] = {}
             for party in self.project.parties:
-                setup = per_district.get(party.id) or {}
-                modifier = self._clean_bonus(setup.get("modifier", 0))
                 mood = self._clean_bonus(national.get(party.id, 0))
                 swing = self._clean_bonus(per_island.get(party.id, 0))
                 wobble = elections.roll_wobble(generator)
-                parts[party.id] = (mood, swing, modifier, wobble)
-                raw[party.id] = base[party.id] + mood + swing + modifier + wobble
+                # Сколько очков поправка дала на самом деле — уже после
+                # ограничения пределом округа: если ведущий попросил
+                # больше, чем осталось места, дальше некуда.
+                applied = boosted[party.id] - points[party.id]
+                parts[party.id] = (mood, swing, applied, wobble)
+                raw[party.id] = base[party.id] + mood + swing + wobble
 
             share = elections.normalize_shares(raw)
             district_results: dict[str, elections.PartyResult] = {}
             for party in self.project.parties:
-                mood, swing, modifier, wobble = parts[party.id]
+                mood, swing, applied, wobble = parts[party.id]
                 district_results[party.id] = elections.PartyResult(
                     base=base[party.id], national=mood, island=swing,
-                    modifier=modifier, wobble=wobble, share=share[party.id],
+                    modifier=applied, wobble=wobble, share=share[party.id],
                 )
             results[district.id] = district_results
 
@@ -758,6 +773,23 @@ class ParlamentService:
         if number != number or number in (float("inf"), float("-inf")):
             raise ValidationError("Модификатор должен быть обычным числом.")
         return number
+
+    def _clean_local_modifier(self, value: object) -> int:
+        """Местная поправка — целое число очков поддержки, можно со знаком
+        минус (штраф). Дробных сторонников не бывает — как и у живых очков,
+        которые эта поправка временно дополняет (см. `elections.boost_points`).
+        """
+        if isinstance(value, bool):
+            raise ValidationError("Местная поправка должна быть целым числом очков.")
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            raise ValidationError("Местная поправка должна быть целым числом очков.") from None
+        if number != number or number in (float("inf"), float("-inf")):
+            raise ValidationError("Местная поправка должна быть обычным числом.")
+        if not number.is_integer():
+            raise ValidationError("Местная поправка должна быть целым числом очков.")
+        return int(number)
 
     def clear_election(self, convocation_id: str) -> Convocation:
         """Убирает результаты выборов созыва — состав снова набирается руками."""

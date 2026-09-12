@@ -1097,16 +1097,25 @@ class TestRollBreakdown(unittest.TestCase):
         return _roll_breakdown(PartyResult(**kwargs))
 
     def test_lists_every_term(self):
+        # Местная поправка — не отдельное слагаемое, а пометка рядом с
+        # базой, в очках: она уже входит в base (см. `boost_points`), и
+        # прибавлять её к сумме ещё раз значило бы посчитать дважды.
         self.assertEqual(
             self.line(base=60.0, national=-4.0, island=1.2, modifier=2.0, wobble=-0.8),
-            "60,0 − 4,0 + 1,2 + 2,0 − 0,8 = 58,4 %")
+            "60,0 (+2 оч.) − 4,0 + 1,2 − 0,8 = 56,4 %")
 
     def test_bare_base_has_nothing_to_add(self):
         self.assertEqual(self.line(base=7.0), "7,0 = 7,0 %")
 
+    def test_a_negative_local_modifier_is_shown_too(self):
+        self.assertEqual(self.line(base=8.0, modifier=-3.0), "8,0 (−3 оч.) = 8,0 %")
+
     def test_clamped_sum_says_so(self):
-        # Иначе «3,0 − 9,0 = 0,0» выглядело бы арифметической ошибкой.
-        self.assertEqual(self.line(base=3.0, modifier=-9.0),
+        # Иначе «3,0 − 9,0 = 0,0» выглядело бы арифметической ошибкой. Уводит
+        # в минус только настроение по стране или сдвиг по острову — местная
+        # поправка дальше нуля саму базу не утопит, она ограничена ещё на
+        # уровне очков (см. `boost_points`), раньше, чем эта сумма считается.
+        self.assertEqual(self.line(base=3.0, national=-9.0),
                          "3,0 − 9,0 = 0,0 % (не ниже нуля)")
 
     def test_nothing_rolled_is_a_dash(self):
@@ -1135,13 +1144,15 @@ class TestElectionsPreview(AppTestCase):
         self.bonus(0, "0")
         self.assertEqual(self.app.elections.collect(), {})
 
-    def test_modifier_alone_does_not_change_the_support_preview(self):
-        # Строка справа — про базу от очков в НП, а не про модификатор: он
-        # и так виден в своей клетке рядом, а бросают тут все партии всегда.
+    def test_a_local_modifier_moves_the_support_preview(self):
+        # Местная поправка — временные очки поддержки, той же монетой, что
+        # и живые (см. `boost_points`): вписал — и база в строке справа сразу
+        # сдвигается, ещё до розыгрыша. Не случайность, а то, что ведущий
+        # только что сам вписал в клетку рядом.
         before = self.app.elections.previews[self.district.id].value
         self.bonus(0, "2")
         self.assertIn(self.district.id, self.app.elections.collect())
-        self.assertEqual(self.app.elections.previews[self.district.id].value, before)
+        self.assertNotEqual(self.app.elections.previews[self.district.id].value, before)
 
     def test_reapplying_the_election_always_produces_a_fresh_result(self):
         # Раньше пустая настройка (после того как последнюю поддержку
