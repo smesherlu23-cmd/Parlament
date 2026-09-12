@@ -140,7 +140,7 @@ class TestMapPng(unittest.TestCase):
         bare = self.png().height
         with_extras = render_map_png(
             sample_districts(), width=900, title="Третий состав",
-            legend=[("Народный союз", "#0088b0", 6, 34)])
+            legend=[("Народный союз", "#0088b0", 6, 34, 27.4)])
         taller = Image.open(io.BytesIO(with_extras)).height
         self.assertGreater(taller, bare)
 

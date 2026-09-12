@@ -1041,7 +1041,7 @@ class TestMapAndElections(AppTestCase):
         data = render_map_png(
             [(d.code, d.name, d.seats, None) for d in self.service.project.districts],
             width=640, title="Первый состав",
-            legend=[("Народный союз", "#0088b0", 1, 2)],
+            legend=[("Народный союз", "#0088b0", 1, 2, 100.0)],
         )
         self.assertTrue(data.startswith(b"\x89PNG"))
 
@@ -1418,6 +1418,27 @@ class TestVotePercentages(AppTestCase):
              and c.content == "Сбросить").on_click(None)
         self.type_seats(self.app.parties[0].id, "10")
         self.assertNotIn("голосов", " ".join(texts(self.app.parliament.legend_row)))
+
+    def test_votes_reach_the_map_export_legend(self):
+        # Как и в легенде схемы (test_votes_reach_the_exported_picture) —
+        # легенда карты должна знать долю голосов, а не только места и
+        # выигранные округа, иначе картинка рассказывает только половину
+        # расклада.
+        legend = self.app.map_legend(self.app.selected)
+        self.assertTrue(legend)
+        self.assertTrue(all(row[4] is not None for row in legend))
+
+    def test_hand_picked_map_shows_no_votes_in_the_legend(self):
+        # Без выборов голосов не существует (см. vote_shares) — легенда
+        # карты не должна подменять их нулём.
+        self.app.reset_election()
+        find(self.page.dialog, lambda c: isinstance(c, ft.Button)
+             and c.content == "Сбросить").on_click(None)
+        self.type_seats(self.app.parties[0].id, "10")
+
+        legend = self.app.map_legend(self.app.selected)
+        self.assertTrue(legend)
+        self.assertTrue(all(row[4] is None for row in legend))
 
     def test_votes_reach_the_exported_picture(self):
         self.app.export_png()

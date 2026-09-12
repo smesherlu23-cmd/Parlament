@@ -917,14 +917,16 @@ def export_dialog(convocation: Convocation, total: int, rows: int,
 
 
 def map_export_dialog(convocation_name: str, districts,
-                      legend: list[tuple[str, str, int, int]],
+                      legend: list[tuple[str, str, int, int, float | None]],
                       background,
                       on_confirm: Callable[[dict], None],
                       on_cancel: Callable) -> ft.AlertDialog:
     """Тот же диалог экспорта, что и у схемы зала, но для карты округов.
 
     `districts` — `(код, название, мест, цвет|None)` для предпросмотра;
-    `legend` — `(название партии, цвет, округов, мест)` строками сводки.
+    `legend` — `(название партии, цвет, округов, мест, доля голосов)`
+    строками сводки; предпросмотр в диалоге голосов не показывает — только
+    имя и места, доля видна уже на самой выгруженной картинке.
     """
     from .map_chart import MapChart
 
@@ -970,7 +972,7 @@ def map_export_dialog(convocation_name: str, districts,
                         ft.Row([theme.swatch(color, 7),
                                 ft.Text(f"{name} {seats}", size=theme.fs(10), color=theme.TEXT)],
                                spacing=5, tight=True)
-                        for name, color, _won, seats in legend
+                        for name, color, _won, seats, _votes in legend
                     ], wrap=True, spacing=14, run_spacing=4),
                 ], spacing=4, tight=True),
             ),

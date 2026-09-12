@@ -33,12 +33,14 @@ _SUPERSAMPLE = 3
 
 
 def render_map_png(districts, width: int = 1920, title: str | None = None,
-                   legend: list[tuple[str, str, int, int]] | None = None,
+                   legend: list[tuple[str, str, int, int, float | None]] | None = None,
                    background: Path | None = None) -> bytes:
     """Собирает картинку карты.
 
     :param districts: `(code, название, мест, цвет|None)` по каждому округу.
-    :param legend: `(название партии, цвет, округов, мест)` — строки сводки.
+    :param legend: `(название партии, цвет, округов, мест, доля голосов)` —
+                   строки сводки. Доля — в процентах, `None`, если выборов не
+                   было (у состава, набранного руками, голосов не существует).
     :param background: необязательная подложка под границами.
     """
     map_height = round(width / CONTENT_ASPECT)
@@ -118,12 +120,14 @@ def _draw_legend(draw: ImageDraw.ImageDraw, width: int, top: int, legend) -> Non
     y = top + round(width * 0.02)
     box = round(line * 0.42)
 
-    for name, color, districts, seats in legend:
+    for name, color, districts, seats, votes in legend:
         draw.rectangle([pad, y + (line - box) // 2, pad + box, y + (line + box) // 2],
                        fill=color, outline="#8a8686")
         draw.text((pad + box + round(width * 0.008), y + line // 2), name,
                   font=font, fill=theme.TEXT, anchor="lm")
-        draw.text((width - pad, y + line // 2),
-                  f"{districts} окр.   {seats} мест",
+        right = f"{districts} окр.   {seats} мест"
+        if votes is not None:
+            right += "   " + f"{votes:.1f}".replace(".", ",") + " % голосов"
+        draw.text((width - pad, y + line // 2), right,
                   font=font, fill=theme.NEUTRAL_700, anchor="rm")
         y += line

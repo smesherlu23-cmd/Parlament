@@ -150,6 +150,25 @@ class ParlamentApp:
         return coalitions.blocs(self.parties, conv.seats, conv.coalitions,
                                 self.service.vote_shares(conv.id))
 
+    def map_legend(self, conv: Convocation) -> list[tuple]:
+        """Строки легенды карты: `(имя, цвет, округов, мест, доля голосов)`.
+
+        Отдельно от `blocs()` — карта красится по победителю округа, а не по
+        коалициям: партия внутри блока на карте видна своим цветом, а не
+        цветом плёнки. Доля голосов та же, что и в легенде схемы (`None`,
+        если выборов не было).
+        """
+        winners = self.service.district_winners(conv.id)
+        won: dict[str, int] = {}
+        for party_id in winners.values():
+            won[party_id] = won.get(party_id, 0) + 1
+        votes = self.service.vote_shares(conv.id)
+        return sorted(
+            ((p.name, p.color, won.get(p.id, 0), conv.seats.get(p.id, 0), votes.get(p.id))
+             for p in self.parties if conv.seats.get(p.id, 0) or won.get(p.id, 0)),
+            key=lambda row: (row[3], row[2]), reverse=True,
+        )
+
     # -- отрисовка ----------------------------------------------------------
 
     def render(self) -> None:
@@ -380,14 +399,7 @@ class ParlamentApp:
             for d in self.service.project.districts if d.code
         ]
 
-        won: dict[str, int] = {}
-        for party_id in winners.values():
-            won[party_id] = won.get(party_id, 0) + 1
-        legend = sorted(
-            ((p.name, p.color, won.get(p.id, 0), conv.seats.get(p.id, 0))
-             for p in self.parties if conv.seats.get(p.id, 0) or won.get(p.id, 0)),
-            key=lambda row: (row[3], row[2]), reverse=True,
-        )
+        legend = self.map_legend(conv)
         background = map_image_path(self.service.path.parent)
 
         async def confirm(settings: dict) -> None:
