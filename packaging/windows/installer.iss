@@ -24,6 +24,10 @@ DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 UninstallDisplayIcon={app}\{#MyAppExeName}
+; Иконка самого мастера установки. Иконку установленной программы даёт
+; flet build из assets/icon.png прямо в exe, а вот ParlamentSetup.exe —
+; отдельный файл, и свою иконку берёт только отсюда.
+SetupIconFile=..\..\assets\icon.ico
 OutputDir=dist
 OutputBaseFilename=ParlamentSetup
 Compression=lzma2

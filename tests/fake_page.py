@@ -15,6 +15,7 @@ from typing import Any
 
 class FakeWindow:
     width = height = min_width = min_height = 0
+    icon = None
 
 
 class FakePage:

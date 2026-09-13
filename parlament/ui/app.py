@@ -78,6 +78,12 @@ class ParlamentApp:
         page.window.height = theme.WINDOW_HEIGHT
         page.window.min_width = theme.WINDOW_MIN_WIDTH
         page.window.min_height = theme.WINDOW_MIN_HEIGHT
+        # Иконка окна: без неё и в заголовке, и в панели задач стоит значок
+        # Flet. Сборка берёт свою иконку из assets/icon.png сама, но на окно
+        # это не распространяется — его иконку задаёт только программа, и
+        # только файлом .ico.
+        if theme.WINDOW_ICON.exists():
+            page.window.icon = str(theme.WINDOW_ICON)
 
         self.selected_convocation_id = self.service.project.active_convocation.id
         page.add(ft.Column([self.appbar_slot, self.body], spacing=0, expand=True))

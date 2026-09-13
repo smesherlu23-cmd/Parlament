@@ -212,7 +212,9 @@ class TestSeatDistribution(AppTestCase):
         shown = texts(self.app.parliament.legend_row)
         self.assertIn("Народный союз", shown)
         self.assertIn(f"{fmt.percent(SAMPLE[0][3], SEED_TOTAL_SEATS)} мест", shown)
-        self.assertIn("4,8 % мест", shown)
+        # И у самой мелкой фракции тоже — доля считается от размера палаты,
+        # а он берётся с карты, не зашит числом.
+        self.assertIn(f"{fmt.percent(SAMPLE[-1][3], SEED_TOTAL_SEATS)} мест", shown)
         self.assertNotIn("голосов", " ".join(shown))
 
     def test_largest_party_leads_the_chart(self):
@@ -739,11 +741,12 @@ class TestHelpers(unittest.TestCase):
         self.assertEqual(suggest_file_name("///"), "Парламент.png")
 
     def test_seats_never_overlap(self):
-        # Размер кружка был подобран под палату на 120 мест; на 124 соседи по
-        # дуге стоят ближе, и места наезжали друг на друга.
+        # Размер кружка когда-то был подобран под одну палату на 120 мест, и
+        # стоило ей вырасти, как соседи по дуге сходились и кружки наезжали
+        # друг на друга. Проверяем набор размеров, а не только нынешний.
         import math
 
-        for total in (60, 120, SEED_TOTAL_SEATS, 200, 300):
+        for total in (60, SEED_TOTAL_SEATS, 124, 200, 300):
             seats = compute_seats(total, 5, [])
             radius = seats[0].radius
             closest = min(
@@ -1847,7 +1850,11 @@ class TestProjectWithoutDistricts(unittest.TestCase):
              and c.content == "Добавить округа").on_click(None)
         self.assertEqual(self.service.project.convocations[0].seats["p1"], 40)
 
-    def test_dialog_spells_out_the_change_in_size(self):
+    def test_dialog_spells_out_the_size_of_the_house(self):
+        # Палата у таких файлов записана своя (120 из первой редакции ТЗ), и
+        # взятие округов её переписывает картой. С тех пор как карта тоже даёт
+        # 120, эти числа сошлись — но показать их всё равно надо: человек
+        # должен видеть, что размер палаты после согласия не изменится.
         self.button("Карта").on_click(None)
         self.button("Взять округа с карты").on_click(None)
         self.assertTrue(any(f"120 → {SEED_TOTAL_SEATS}" in t
@@ -2021,6 +2028,38 @@ class TestPartyEmblemInTheDialog(AppTestCase):
              and c.content == "Убрать").on_click(None)
         self.assertEqual(self.a.emblem, "")
 
+
+class TestWindowIcon(AppTestCase):
+    """Иконка окна берётся из assets/icon.ico."""
+
+    def test_the_window_gets_the_application_icon(self):
+        # Без этого и в заголовке окна, и в панели задач стоял значок Flet:
+        # иконку, которую сборка вшивает в exe, окно само не подхватывает.
+        self.assertEqual(self.page.window.icon, str(theme.WINDOW_ICON))
+
+    def test_the_icon_file_is_a_real_multi_size_ico(self):
+        # Windows выбирает из .ico размер под конкретное место — заголовок,
+        # панель задач, Alt+Tab. Собирается из icon.png (tools/build_icon.py).
+        from PIL import Image
+
+        self.assertTrue(theme.WINDOW_ICON.exists())
+        with Image.open(theme.WINDOW_ICON) as icon:
+            sizes = icon.ico.sizes()
+        self.assertIn((16, 16), sizes)
+        self.assertIn((256, 256), sizes)
+
+    def test_a_missing_icon_does_not_break_the_window(self):
+        # Файл собирается инструментом и в репозитории есть, но падать из-за
+        # его отсутствия программа не должна.
+        page = FakePage()
+        app = ParlamentApp(page, self.service)
+        original = theme.WINDOW_ICON
+        try:
+            theme.WINDOW_ICON = original.with_name("нет-такого.ico")
+            app.build()
+        finally:
+            theme.WINDOW_ICON = original
+        self.assertIsNone(page.window.icon)
 
 
 if __name__ == "__main__":

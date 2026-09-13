@@ -78,6 +78,11 @@ FONT_SEMIBOLD = "Source Serif 4 SemiBold"
 
 ASSETS_DIR = Path(__file__).resolve().parents[2] / "assets"
 FONTS_DIR = ASSETS_DIR / "fonts"
+#: Иконка окна. Отдельный .ico, а не icon.png: Windows берёт иконку окна
+#: только из этого формата (см. `flet.Window.icon`), а PNG рядом нужен
+#: сборке — из него `flet build` делает иконки всех платформ.
+#: Собирается из icon.png через tools/build_icon.py.
+WINDOW_ICON = ASSETS_DIR / "icon.ico"
 
 #: Шрифты лежат в репозитории — приложению не нужен интернет.
 FONTS = {
