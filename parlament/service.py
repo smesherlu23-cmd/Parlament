@@ -11,7 +11,8 @@ from __future__ import annotations
 import random
 from pathlib import Path
 
-from . import coalitions as coalition_rules, district_seed, elections, store
+from . import (coalitions as coalition_rules, district_seed, elections,
+               statistics as stats, store)
 from .model import (
     Coalition,
     Convocation,
@@ -848,6 +849,49 @@ class ParlamentService:
         """
         conv = self._require_convocation(convocation_id)
         return elections.shares(conv.results.get(district_id, {}))
+
+    # -- статистика выборов -------------------------------------------------
+
+    def island_stats(self, convocation_id: str) -> list:
+        """Сводка по островам: мандаты, население и доли партий.
+
+        Пустой список, если выборов не было: доли голосов берутся из разбора,
+        а у состава, набранного руками, его нет — и выдумывать проценты там
+        не из чего (см. `vote_shares`).
+        """
+        conv = self._require_convocation(convocation_id)
+        if not conv.results:
+            return []
+        return stats.island_rows(
+            [(d.id, district_seed.island_of(d.region), d.seats)
+             for d in self.project.districts],
+            conv.results,
+            self.district_allocation(convocation_id),
+            {d.id: self.district_population(d.id) for d in self.project.districts},
+        )
+
+    def battlegrounds(self, convocation_id: str, party_id: str) -> list:
+        """Все округа глазами партии — где выиграно, где близко, где пусто."""
+        conv = self._require_convocation(convocation_id)
+        self._require_party(party_id)
+        if not conv.results:
+            return []
+        return stats.battlegrounds(
+            party_id,
+            [(d.id, d.name, district_seed.island_of(d.region), d.seats)
+             for d in self.project.districts],
+            conv.results,
+            self.district_allocation(convocation_id),
+            {d.id: self.district_points(d.id) for d in self.project.districts},
+            {d.id: self.district_capacity(d.id) for d in self.project.districts},
+        )
+
+    def attribution(self, convocation_id: str) -> dict[str, dict[str, int]]:
+        """Сколько мандатов дало или отняло каждое слагаемое — по партиям."""
+        conv = self._require_convocation(convocation_id)
+        if not conv.results:
+            return {}
+        return stats.attribution(conv.results, self.project.district_seats)
 
     def _require_settlement(self, district_id: str, settlement_id: str) -> Settlement:
         district = self._require_district(district_id)

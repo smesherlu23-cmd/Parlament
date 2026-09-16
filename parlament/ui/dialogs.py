@@ -592,7 +592,7 @@ def district_dialog(district, rows: list[tuple], shares: dict[str, float],
                 font_family=theme.FONT_SEMIBOLD, color=theme.TEXT),
     ]
     if population > 0:
-        head.append(ft.Text(f"· {round(population / 1000):d} тыс. жителей",
+        head.append(ft.Text(f"· {fmt.people(population)} жителей",
                             size=theme.fs(13), color=theme.NEUTRAL_600))
     head.extend([
         ft.Container(expand=True),
@@ -1080,6 +1080,47 @@ def support_export_dialog(parties: list[tuple[str, str, str, int, int, int]],
         ],
         [_cancel(on_cancel),
          theme.primary_button("Сохранить как…", confirm, disabled=not usable)],
+        width=500,
+    )
+
+
+def stats_export_dialog(subject: str, per_party: bool,
+                        on_confirm: Callable[[dict], None],
+                        on_cancel: Callable) -> ft.AlertDialog:
+    """Экспорт статистики — выгружается то, что открыто на экране.
+
+    Выбирать здесь нечего, кроме имени файла и разрешения: вид и партию
+    человек уже выбрал на самом экране, и второй такой же выбор в диалоге
+    только сбивал бы с толку — что бы тогда считалось главным.
+    """
+    file_field = theme.text_field(suggest_file_name(subject, prefix="Статистика"),
+                                  label_text="Имя файла")
+    resolution_picker = ft.RadioGroup(
+        value="0",
+        content=ft.Row([
+            ft.Radio(value=str(index), label=label, active_color=theme.ACCENT,
+                     label_style=ft.TextStyle(size=theme.fs(13), color=theme.TEXT))
+            for index, (label, _w, _h) in enumerate(RESOLUTIONS)
+        ], spacing=2),
+    )
+
+    def confirm(_event) -> None:
+        _label, width, _height = RESOLUTIONS[int(resolution_picker.value)]
+        on_confirm({"file_name": file_field.value, "width": width})
+
+    return _shell(
+        "Экспорт статистики в PNG",
+        [
+            ft.Text(f"Выгрузится {'расклад партии «' + subject + '»' if per_party else 'общая статистика'}"
+                    " — то же, что открыто на экране.",
+                    size=theme.fs(12), color=theme.NEUTRAL_700),
+            file_field,
+            ft.Column([
+                ft.Text("Разрешение", size=theme.fs(12), color=theme.NEUTRAL_700),
+                resolution_picker,
+            ], spacing=5, tight=True),
+        ],
+        [_cancel(on_cancel), theme.primary_button("Сохранить как…", confirm)],
         width=500,
     )
 

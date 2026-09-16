@@ -24,7 +24,11 @@ from parlament.ui import format as fmt, theme  # noqa: E402
 from parlament.ui.app import ParlamentApp  # noqa: E402
 from parlament.ui.dialogs import normalize_hex  # noqa: E402
 from parlament.ui.export import LegendEntry, render_png, suggest_file_name  # noqa: E402
-from parlament.district_seed import SEED_TOTAL_SEATS, is_city  # noqa: E402
+from parlament.district_seed import (  # noqa: E402
+    SEED_TOTAL_SEATS,
+    is_city,
+    islands,
+)
 from parlament.elections import allocate_seats  # noqa: E402
 from parlament.district_geometry import (  # noqa: E402
     DISTRICT_CENTRES,
@@ -2060,6 +2064,130 @@ class TestWindowIcon(AppTestCase):
         finally:
             theme.WINDOW_ICON = original
         self.assertIsNone(page.window.icon)
+
+
+class TestStatsScreen(AppTestCase):
+    """Экран статистики: два вида, переключение, выгрузка."""
+
+    def setUp(self):
+        super().setUp()
+        self.add_parties(3)
+        self.a = self.app.parties[0]
+        self.by_name = {d.name: d for d in self.service.project.districts}
+        self.saved = []
+        test = self
+
+        class Picker:
+            async def save_file(self, **kwargs):
+                test.saved.append(kwargs)
+                return "/куда-то/Статистика.png"
+
+        self.app.file_picker = Picker()
+
+    def give(self, district_name: str, party, points: int) -> None:
+        district = self.by_name[district_name]
+        self.service.set_support(district.id, district.settlements[0].id,
+                                 party.id, points)
+
+    def elect(self) -> None:
+        self.give("Судбригг", self.a, 4)
+        self.app.show_elections()
+        self.app.apply_election()
+
+    def button(self, label: str):
+        return find(self.app.appbar_slot, lambda c: isinstance(c, ft.Button)
+                    and c.content == label)
+
+    def test_the_button_waits_for_an_election(self):
+        self.app.show_parliament()
+        self.assertTrue(self.button("Статистика").disabled)
+        self.elect()
+        self.app.show_parliament()
+        self.assertFalse(self.button("Статистика").disabled)
+
+    def test_without_an_election_the_screen_explains_itself(self):
+        self.app.show_stats()
+        self.assertIn("Статистика появится после выборов", texts(self.app.body))
+
+    def test_the_general_view_lists_every_island(self):
+        self.elect()
+        self.app.show_stats()
+        shown = " ".join(texts(self.app.body))
+        for island in islands():
+            self.assertIn(island, shown)
+
+    def test_the_general_view_shows_people_per_mandate(self):
+        # Мандаты по островам разложены неровно, и это то число, ради
+        # которого статистика по островам вообще нужна.
+        self.elect()
+        self.app.show_stats()
+        self.assertTrue(any("чел. на мандат" in t for t in texts(self.app.body)))
+
+    def test_switching_to_a_party_changes_the_view(self):
+        self.elect()
+        self.app.show_stats()
+        self.assertIsNone(self.app.stats_party)
+        self.app.stats_party = self.a.id
+        self.app.render()
+        shown = texts(self.app.body)
+        self.assertIn(self.a.name, shown)
+        self.assertIn("ГДЕ БОРОТЬСЯ", shown)
+
+    def test_the_party_view_offers_the_three_lists(self):
+        self.elect()
+        self.app.stats_party = self.a.id
+        self.app.show_stats()
+        shown = texts(self.app.body)
+        self.assertIn("Почти взяли", shown)
+        self.assertIn("Не хватило до барьера", shown)
+        self.assertIn("Свободные очки", shown)
+
+    def test_the_chosen_party_survives_a_redraw(self):
+        # Выбор живёт в приложении, а не в экране: экран пересобирается на
+        # каждое переключение, и иначе выбор слетал бы.
+        self.elect()
+        self.app.stats_party = self.a.id
+        self.app.show_stats()
+        self.app.render()
+        self.assertEqual(self.app.stats_party, self.a.id)
+
+    def test_export_hands_png_bytes_to_the_picker(self):
+        self.elect()
+        self.app.show_stats()
+        self.app.export_stats_png()
+        find(self.page.dialog, lambda c: isinstance(c, ft.Button)
+             and c.content == "Сохранить как…").on_click(None)
+
+        self.assertEqual(len(self.saved), 1)
+        call = self.saved[0]
+        self.assertTrue(call["src_bytes"].startswith(b"\x89PNG"))
+        self.assertTrue(call["file_name"].startswith("Статистика"))
+        self.assertEqual(self.page.last_toast, "Статистика сохранена.")
+
+    def test_export_follows_the_open_view(self):
+        # Выгружается то, что на экране: диалог второй раз про партию не
+        # спрашивает, и картинка партийного вида отличается от общей.
+        self.elect()
+        self.app.show_stats()
+        self.app.export_stats_png()
+        find(self.page.dialog, lambda c: isinstance(c, ft.Button)
+             and c.content == "Сохранить как…").on_click(None)
+
+        self.app.stats_party = self.a.id
+        self.app.render()
+        self.app.export_stats_png()
+        find(self.page.dialog, lambda c: isinstance(c, ft.Button)
+             and c.content == "Сохранить как…").on_click(None)
+
+        general, party = self.saved[0], self.saved[1]
+        self.assertIn(self.a.name.replace(" ", "_"), party["file_name"])
+        self.assertNotEqual(general["src_bytes"], party["src_bytes"])
+
+    def test_export_without_an_election_says_so(self):
+        self.app.show_stats()
+        self.app.export_stats_png()
+        self.assertIn("после выборов", self.page.last_toast)
+        self.assertFalse(self.saved)
 
 
 if __name__ == "__main__":

@@ -34,6 +34,8 @@ from .support_export import render_support_png
 from .map_view import MapView
 from .parliament_view import ParliamentView
 from .parties_view import PartiesView
+from .stats_export import render_stats_png
+from .stats_view import StatsView
 from .support_view import SupportView
 from .support_file import (export_support_template, read_picked_bytes,
                            read_support_file)
@@ -46,7 +48,7 @@ class ParlamentApp:
         self.page = page
         self.service = service
 
-        self.view = "parliament"   # parliament | parties | map | elections | support
+        self.view = "parliament"   # parliament | parties | map | elections | support | stats
         #: Заполняются при сборке соответствующего экрана.
         self.map_chart = None
         self.elections = None
@@ -56,6 +58,10 @@ class ParlamentApp:
         self.support_opened: set[str] = set()
         self.selected_convocation_id: str | None = None
         self.editing_archived: str | None = None
+        #: Чью статистику смотрим: None — общая, иначе id партии. Живёт в
+        #: приложении, а не в экране: экран пересобирается на каждое
+        #: переключение, и выбор бы каждый раз слетал.
+        self.stats_party: str | None = None
 
         self.file_picker = ft.FilePicker()
         self.body = ft.Container(expand=True)
@@ -192,6 +198,8 @@ class ParlamentApp:
             self.body.content = MapView(self).build()
         elif self.view == "support":
             self.body.content = SupportView(self).build()
+        elif self.view == "stats":
+            self.body.content = StatsView(self).build()
         elif self.view == "elections":
             # Экран выборов держит поля ввода, поэтому живёт в поле: с него
             # потом собираются введённые поправки.
@@ -243,6 +251,17 @@ class ParlamentApp:
                     "Выборы", lambda _e: self.show_elections(),
                     disabled=not votable, tooltip=why,
                 ),
+            ]
+        elif self.view == "stats":
+            left = [
+                theme.ghost_button("← К парламенту", lambda _e: self.show_parliament()),
+                ft.Text("СТАТИСТИКА", size=theme.fs(13), font_family=theme.FONT_SEMIBOLD,
+                        color=theme.TEXT, style=ft.TextStyle(letter_spacing=2.1)),
+            ]
+            right = [
+                theme.secondary_button(
+                    "Экспорт в PNG", lambda _e: self.export_stats_png(),
+                    disabled=not (self.selected.has_election and self.parties)),
             ]
         elif self.view == "support":
             left = [
@@ -296,6 +315,13 @@ class ParlamentApp:
                 # добраться вовсе.
                 theme.secondary_button("Поддержка", lambda _e: self.show_support()),
                 theme.secondary_button("Карта", lambda _e: self.show_map()),
+                # Показывается всегда, но до выборов нажимать не на что:
+                # статистика целиком считается из разбора по округам.
+                theme.secondary_button(
+                    "Статистика", lambda _e: self.show_stats(),
+                    disabled=not self.selected.has_election,
+                    tooltip=None if self.selected.has_election
+                    else "Появится после выборов"),
             ]
             if archive_view:
                 right.append(theme.primary_button("Править состав", lambda _e: self.edit_archived()))
@@ -327,6 +353,10 @@ class ParlamentApp:
 
     def show_elections(self) -> None:
         self.view = "elections"
+        self.render()
+
+    def show_stats(self) -> None:
+        self.view = "stats"
         self.render()
 
     def show_support(self) -> None:
@@ -442,6 +472,57 @@ class ParlamentApp:
 
         self.page.show_dialog(dialogs.map_export_dialog(
             conv.name, shapes, legend, background,
+            lambda settings: self.page.run_task(confirm, settings),
+            lambda _e: self.close_dialog(),
+        ))
+
+    def export_stats_png(self) -> None:
+        """Выгружает статистику — ровно ту, что открыта на экране."""
+        conv = self.selected
+        if not conv.has_election or not self.parties:
+            self.toast("Статистика появится после выборов.", error=True)
+            return
+
+        party_id = self.stats_party
+        party = self.service.project.party(party_id) if party_id else None
+        if party_id and party is None:
+            party_id = None
+
+        islands = self.service.island_stats(conv.id)
+        attribution = self.service.attribution(conv.id)
+        parties = [(p.id, p.name, p.abbr, p.color) for p in self.parties]
+        ground = self.service.battlegrounds(conv.id, party_id) if party_id else None
+        summary = None
+        if party is not None:
+            summary = (conv.seats.get(party.id, 0), self.total_seats,
+                       self.service.vote_shares(conv.id).get(party.id, 0.0))
+
+        async def confirm(settings: dict) -> None:
+            self.close_dialog()
+            data = render_stats_png(
+                conv.name, parties, islands, attribution,
+                party_id=party_id, summary=summary, ground=ground,
+                width=settings["width"],
+                emblem=self.service.party_emblem_path(party.id) if party else None,
+            )
+            stem = party.name if party else conv.name
+            file_name = (settings["file_name"] or "").strip() or suggest_file_name(
+                stem, prefix="Статистика")
+            if not file_name.lower().endswith(".png"):
+                file_name += ".png"
+
+            saved = await self.file_picker.save_file(
+                dialog_title="Экспорт статистики в PNG",
+                file_name=file_name,
+                allowed_extensions=["png"],
+                src_bytes=data,
+            )
+            if saved:
+                self.toast("Статистика сохранена.")
+
+        self.page.show_dialog(dialogs.stats_export_dialog(
+            party.name if party else conv.name,
+            party is not None,
             lambda settings: self.page.run_task(confirm, settings),
             lambda _e: self.close_dialog(),
         ))
