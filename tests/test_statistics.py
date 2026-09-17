@@ -220,6 +220,7 @@ class TestStatsThroughTheService(StatsServiceTestCase):
         self.assertEqual(self.service.island_stats(self.conv.id), [])
         self.assertEqual(self.service.battlegrounds(self.conv.id, self.a.id), [])
         self.assertEqual(self.service.attribution(self.conv.id), {})
+        self.assertIsNone(self.service.national_stats(self.conv.id))
 
     def test_islands_cover_the_whole_map(self):
         self.give("Судбригг", self.a, 4)
@@ -250,23 +251,27 @@ class TestStatsThroughTheService(StatsServiceTestCase):
                         if d.name == "Судбригг")
         self.assertEqual(worked.island, island_of(district.region))
 
-    def test_city_and_village_split_the_whole_map(self):
+    def test_national_stats_cover_the_whole_country(self):
+        # Вся Конфедерация одной строкой — та же сводка, что у острова, но
+        # с одной меткой на все округа сразу.
         self.give("Судбригг", self.a, 4)
         self.roll()
-        rows = self.service.settlement_type_stats(self.conv.id)
-        self.assertEqual(sorted(r.name for r in rows), ["Города", "Сёла"])
-        self.assertEqual(sum(r.seats for r in rows),
-                         self.service.project.total_seats)
-        self.assertAlmostEqual(sum(r.population for r in rows), 1_000_000.0, places=0)
+        row = self.service.national_stats(self.conv.id)
+        self.assertEqual(row.name, "Конфедерация")
+        self.assertEqual(row.seats, self.service.project.total_seats)
+        self.assertAlmostEqual(row.population, 1_000_000.0, places=0)
 
-    def test_cities_hold_more_than_half_the_house(self):
-        # Ось, которой не видно по островам: городских округов меньше, а
-        # мандатов в них больше.
+    def test_national_seats_match_the_sum_of_islands(self):
+        # Не пересчитано заново — та же группировка, что у island_stats,
+        # просто с одной меткой на все округа: суммы обязаны совпасть.
         self.give("Судбригг", self.a, 4)
         self.roll()
-        cities = next(r for r in self.service.settlement_type_stats(self.conv.id)
-                      if r.name == "Города")
-        self.assertGreater(cities.seats, self.service.project.total_seats / 2)
+        row = self.service.national_stats(self.conv.id)
+        by_party = {}
+        for island in self.service.island_stats(self.conv.id):
+            for party_id, seats in island.by_party.items():
+                by_party[party_id] = by_party.get(party_id, 0) + seats
+        self.assertEqual(row.by_party, by_party)
 
     def test_every_district_knows_the_price_of_its_next_seat(self):
         self.give("Судбригг", self.a, 4)

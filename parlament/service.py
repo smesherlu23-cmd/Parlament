@@ -870,24 +870,25 @@ class ParlamentService:
             {d.id: self.district_population(d.id) for d in self.project.districts},
         )
 
-    def settlement_type_stats(self, convocation_id: str) -> list:
-        """То же, но нарезано на города и сёла, а не на острова.
+    def national_stats(self, convocation_id: str) -> stats.GroupRow | None:
+        """Вся Конфедерация одной строкой — та же сводка, что у острова.
 
-        Ось, которой не видно по островам: городских округов тринадцать и в
-        них 68 мандатов из 120, а расклад в городе и в селе бывает совсем
-        разный — город обычно поляризован вокруг двух партий, село
-        раздроблено между всеми.
+        Даёт масштаб для сравнения: средний по стране показатель (сколько
+        человек стоит за мандатом), на фоне которого видно, насколько
+        сильно острова от него отклоняются. `group_rows` группирует по
+        любой метке, а здесь метка одна на все округа сразу — получается
+        группа из одного.
         """
         conv = self._require_convocation(convocation_id)
         if not conv.results:
-            return []
-        return stats.group_rows(
-            [(d.id, "Города" if district_seed.is_city(d.code) else "Сёла", d.seats)
-             for d in self.project.districts],
+            return None
+        rows = stats.group_rows(
+            [(d.id, "Конфедерация", d.seats) for d in self.project.districts],
             conv.results,
             self.district_allocation(convocation_id),
             {d.id: self.district_population(d.id) for d in self.project.districts},
         )
+        return rows[0] if rows else None
 
     def battlegrounds(self, convocation_id: str, party_id: str) -> list:
         """Все округа глазами партии — где выиграно, где близко, где пусто."""

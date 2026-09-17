@@ -65,8 +65,9 @@ class ParlamentApp:
         #: Какой из трёх видов статистики открыт: general | party | districts.
         self.stats_mode: str = "general"
         #: Сортировка таблицы округов: `(столбец, по убыванию)`. По умолчанию
-        #: — самые дешёвые мандаты сверху: ради этого таблицу и открывают.
-        self.stats_sort: tuple[str, bool] = ("to_next", False)
+        #: — по победителям: эту картинку рассылают всем разом, а не одному
+        #: игроку, и группировка по партии-победителю читается сразу всеми.
+        self.stats_sort: tuple[str, bool] = ("leader", False)
 
         self.file_picker = ft.FilePicker()
         self.body = ft.Container(expand=True)
@@ -495,17 +496,24 @@ class ParlamentApp:
 
         table_mode = self.stats_mode == "districts"
         islands = self.service.island_stats(conv.id)
-        kinds = self.service.settlement_type_stats(conv.id)
+        country = self.service.national_stats(conv.id) if party_id is None else None
         attribution = self.service.attribution(conv.id)
         parties = [(p.id, p.name, p.abbr, p.color) for p in self.parties]
         ground = self.service.battlegrounds(conv.id, party_id) if party_id else None
         table = None
         if table_mode:
-            # Таблице нужны все округа независимо от того, выбрана ли партия:
-            # без выбора в ней просто меньше столбцов.
-            table = sorted(
-                self.service.battlegrounds(conv.id, party_id or self.parties[0].id),
-                key=lambda b: (b.to_next is None, b.to_next or 0.0))
+            # Таблица никогда не бывает личной — выбранная партия ей не
+            # нужна, любая подойдёт для разбора округов; группируется по
+            # победителям, как и на экране (см. `_sort_key` в stats_view).
+            by_id = {p.id: p for p in self.parties}
+
+            def leader_key(b):
+                leader = by_id.get(b.leader)
+                name = fmt.short_name(leader.name, leader.abbr) if leader else ""
+                return (leader is None, name, b.name)
+
+            table = sorted(self.service.battlegrounds(conv.id, self.parties[0].id),
+                           key=leader_key)
         summary = None
         if party is not None:
             summary = (conv.seats.get(party.id, 0), self.total_seats,
@@ -517,7 +525,7 @@ class ParlamentApp:
                 conv.name, parties, islands, attribution,
                 party_id=party_id, summary=summary,
                 ground=None if table_mode else ground,
-                kinds=None if table_mode else kinds,
+                country=None if table_mode else country,
                 table=table, width=settings["width"],
                 emblem=self.service.party_emblem_path(party.id) if party else None,
             )
@@ -537,8 +545,9 @@ class ParlamentApp:
                 self.toast("Статистика сохранена.")
 
         self.page.show_dialog(dialogs.stats_export_dialog(
-            party.name if party else conv.name,
-            party is not None, table_mode,
+            conv.name if table_mode else (party.name if party else conv.name),
+            False if table_mode else party is not None,
+            table_mode,
             lambda settings: self.page.run_task(confirm, settings),
             lambda _e: self.close_dialog(),
         ))

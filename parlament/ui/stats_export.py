@@ -35,7 +35,7 @@ def render_stats_png(convocation_name: str, parties, islands: list[GroupRow],
                      attribution: dict, party_id: str | None = None,
                      summary: tuple | None = None,
                      ground: list[Battleground] | None = None,
-                     kinds: list[GroupRow] | None = None,
+                     country: GroupRow | None = None,
                      table: list[Battleground] | None = None,
                      width: int = 1920, emblem: Path | None = None) -> bytes:
     """Собирает картинку статистики.
@@ -46,18 +46,21 @@ def render_stats_png(convocation_name: str, parties, islands: list[GroupRow],
     :param party_id: чей это взгляд; `None` — общая статистика.
     :param summary: `(мандаты, вся палата, доля голосов)` для партийного вида.
     :param ground: округа глазами партии, для блока «где бороться».
-    :param kinds: тот же срез, но по типу округа — города против сёл.
+    :param country: вся Конфедерация одной строкой — только в общем виде,
+                    в партийном те же числа уже есть в шапке (`summary`).
     :param table: если задано — рисуется только таблица округов, отдельным
                   файлом: 27 строк поверх обзора сделали бы картинку, в
-                  которой не найти ни того, ни другого.
+                  которой не найти ни того, ни другого. Личных колонок в
+                  ней нет — `party_id` на неё не влияет.
     :param emblem: эмблема партии — в шапку партийного вида.
     """
-    by_id = {pid: (name, abbr, color) for pid, name, abbr, color in parties}
+    by_id = {pid: (name, fmt.short_name(name, abbr), color)
+             for pid, name, abbr, color in parties}
 
     if table is not None:
-        return _render_table(convocation_name, table, by_id, party_id, width, emblem)
+        return _render_table(convocation_name, table, by_id, width, emblem)
 
-    plan = _Plan(width, party_id is not None, bool(ground), bool(kinds))
+    plan = _Plan(width, party_id is not None, bool(ground), bool(country))
     canvas = Image.new("RGB", (width, plan.height), theme.BG)
     draw = ImageDraw.Draw(canvas)
     pen = _Pen(canvas, draw, width)
@@ -69,16 +72,17 @@ def render_stats_png(convocation_name: str, parties, islands: list[GroupRow],
         name, _abbr, color = by_id.get(party_id, ("Партия", "", theme.NEUTRAL_600))
         pen.party_head(name, color, summary, emblem)
 
+    if country is not None:
+        pen.section("По стране", "Вся Конфедерация одним взглядом — точка "
+                                 "отсчёта: на её фоне видно, где остров "
+                                 "держит перевес, а где идёт вровень со "
+                                 "средним")
+        pen.islands([country], by_id, None, hero=True)
+
     pen.section("По островам",
                 "Где за партию голосуют" if party_id
                 else "Кто где силён и сколько людей стоит за мандатом")
     pen.islands(islands, by_id, party_id)
-
-    if kinds:
-        pen.section("Город и село", "Второй срез той же карты: в городах "
-                                    "больше половины мандатов, и расклад там "
-                                    "обычно совсем не сельский")
-        pen.islands(kinds, by_id, party_id)
 
     if ground:
         pen.section("Где бороться",
@@ -99,8 +103,13 @@ def render_stats_png(convocation_name: str, parties, islands: list[GroupRow],
 
 
 def _render_table(convocation_name: str, rows: list[Battleground], by_id: dict,
-                  party_id: str | None, width: int, emblem: Path | None) -> bytes:
-    """Таблица округов целиком — отдельная картинка."""
+                  width: int, emblem: Path | None) -> bytes:
+    """Таблица округов целиком — отдельная картинка.
+
+    Личных колонок нет вовсе: эту картинку рассылают всем разом, а не одному
+    игроку, так что "наших" мандатов или доли здесь не бывает — только то,
+    что видно одинаково для всех: округ, остров, число мандатов и победитель.
+    """
     pad = round(width * 0.025)
     line = round(width * 0.021)
     head = round(width * 0.075)
@@ -109,18 +118,16 @@ def _render_table(convocation_name: str, rows: list[Battleground], by_id: dict,
     pen = _Pen(canvas, draw, width)
     pen.y = pad
 
-    party = by_id.get(party_id) if party_id else None
-    pen.title("Округа" if party is None else f"Округа · {party[0]}",
-              f"{convocation_name} · {fmt.pluralize(len(rows), fmt.DISTRICTS)}")
+    pen.title("Округа", f"{convocation_name} · {fmt.pluralize(len(rows), fmt.DISTRICTS)}")
 
     small = round(width * 0.0098)
-    columns = [("Округ", 0.0, "l"), ("Остров", 0.26, "l"), ("Мандатов", 0.40, "r")]
-    if party is not None:
-        columns += [("Наши", 0.46, "r"), ("Наша доля", 0.55, "r")]
-    columns.append(("Победитель", 0.68, "l"))
-    if party is not None:
-        columns += [("До мандата, п.п.", 0.84, "r")]
-    columns.append(("Очки", 0.93, "r"))
+    leader_spot = 0.62
+    columns = [
+        ("Округ", 0.0, "l"),
+        ("Остров", 0.32, "l"),
+        ("Мандатов", 0.54, "r"),
+        ("Победитель", leader_spot, "l"),
+    ]
 
     y = pen.y + round(small * 0.6)
     for title, spot, align in columns:
@@ -137,28 +144,13 @@ def _render_table(convocation_name: str, rows: list[Battleground], by_id: dict,
                             y + small * 1.45], fill=theme.SURFACE)
         leader = by_id.get(row.leader) if row.leader else None
         values = [
-            (_clip(draw, row.name, _font(_SEMIBOLD, small), (width - pad * 2) * 0.24),
+            (_clip(draw, row.name, _font(_SEMIBOLD, small), (width - pad * 2) * 0.28),
              0.0, "l", theme.TEXT, _SEMIBOLD),
-            (_short_island(row.island), 0.26, "l", theme.NEUTRAL_700, _REGULAR),
-            (str(row.seats), 0.40, "r", theme.TEXT, _REGULAR),
+            (_short_island(row.island), 0.32, "l", theme.NEUTRAL_700, _REGULAR),
+            (str(row.seats), 0.54, "r", theme.TEXT, _REGULAR),
+            (f"{leader[1]} {row.leader_share:.0f} %" if leader else "—",
+             leader_spot, "l", theme.TEXT, _REGULAR),
         ]
-        if party is not None:
-            values += [
-                (str(row.won), 0.46, "r",
-                 theme.TEXT if row.won else theme.NEUTRAL_600, _REGULAR),
-                (fmt.share(row.share), 0.55, "r", theme.TEXT, _REGULAR),
-            ]
-        values.append((f"{leader[1] or leader[0]} {row.leader_share:.0f} %"
-                       if leader else "—", 0.68, "l", theme.TEXT, _REGULAR))
-        if party is not None:
-            values.append(("+" + f"{row.to_next:.1f}".replace(".", ",")
-                           if row.to_next is not None else "весь наш",
-                           0.84, "r",
-                           theme.ACCENT_700 if row.to_next is not None
-                           else theme.NEUTRAL_600, _REGULAR))
-        values.append((f"{row.points}/{row.capacity}" if party is not None
-                       else f"{row.capacity - row.free}/{row.capacity}",
-                       0.93, "r", theme.NEUTRAL_700, _REGULAR))
 
         for text, spot, align, color, font_name in values:
             draw.text((pad + (width - pad * 2) * spot, y), text,
@@ -166,9 +158,9 @@ def _render_table(convocation_name: str, rows: list[Battleground], by_id: dict,
                       anchor="la" if align == "l" else "ra")
         if leader is not None:
             box = round(small * 0.7)
-            draw.rectangle([pad + (width - pad * 2) * 0.665 - box * 1.6,
+            draw.rectangle([pad + (width - pad * 2) * leader_spot - box * 1.6,
                             y + box * 0.2,
-                            pad + (width - pad * 2) * 0.665 - box * 0.6,
+                            pad + (width - pad * 2) * leader_spot - box * 0.6,
                             y + box * 1.2], fill=leader[2])
         y += line
 
@@ -186,16 +178,20 @@ class _Plan:
     """Сколько места занимает картинка — считается до отрисовки."""
 
     def __init__(self, width: int, per_party: bool, with_ground: bool,
-                 with_kinds: bool = False):
+                 with_country: bool = False):
         self.pad = round(width * 0.025)
         head = round(width * 0.075) if per_party else round(width * 0.055)
-        islands = round(width * 0.155) * (2 if with_kinds else 1)
+        islands = round(width * 0.155)
+        # Карточка страны крупнее (см. `hero` в `_Pen.islands`) — тот же
+        # множитель 1.3, что и у шрифта там, иначе бюджет высоты выйдет
+        # меньше настоящей карточки и низ картинки молча обрежется.
+        country = round(width * 0.155 * 1.3) if with_country else 0
         battles = round(width * 0.155) if with_ground else 0
         attribution = round(width * 0.09)
         section = round(width * 0.05)
-        blocks = 2 + int(with_ground) + int(with_kinds)
+        blocks = 2 + int(with_ground) + int(with_country)
         self.height = (self.pad * 2 + head + section * blocks
-                       + islands + battles + attribution)
+                       + islands + country + battles + attribution)
 
 
 class _Pen:
@@ -264,13 +260,21 @@ class _Pen:
 
     # -- блоки --------------------------------------------------------------
 
-    def islands(self, rows: list[GroupRow], by_id: dict, party_id: str | None) -> None:
+    def islands(self, rows: list[GroupRow], by_id: dict, party_id: str | None,
+               hero: bool = False) -> None:
+        """Карточка на каждую группу — остров или, при `hero`, страна целиком.
+
+        `hero` — крупнее шрифт и полоска: у страны в общем виде всегда одна
+        такая карточка на весь ряд, и она должна читаться как заголовок,
+        а не как ещё один остров.
+        """
         if not rows:
             return
+        scale = 1.3 if hero else 1.0
         gap = round(self.width * 0.014)
         column = (self.width - self.pad * 2 - gap * (len(rows) - 1)) // len(rows)
-        title = round(self.width * 0.0115)
-        small = round(self.width * 0.0095)
+        title = round(self.width * 0.0115 * scale)
+        small = round(self.width * 0.0095 * scale)
 
         for index, row in enumerate(rows):
             x = self.pad + index * (column + gap)
@@ -289,7 +293,7 @@ class _Pen:
                            fill=theme.NEUTRAL_700, anchor="la")
             y += round(small * 1.8)
 
-            bar = round(self.width * 0.006)
+            bar = round(self.width * 0.006 * (1.4 if hero else 1.0))
             if party_id is None:
                 segments = sorted(((by_id.get(pid, ("", "", theme.EMPTY_SEAT))[2], seats)
                                    for pid, seats in row.by_party.items() if seats),
@@ -314,7 +318,7 @@ class _Pen:
             self.draw.text((x, y), f"{fmt.count(row.people_per_seat)} чел. на мандат",
                            font=_font(_REGULAR, small), fill=theme.NEUTRAL_700, anchor="la")
 
-        self.y += self._islands_height(rows, party_id)
+        self.y += self._islands_height(rows, party_id, hero)
 
     def _legend(self, x: int, y: int, column: int, small: int,
                 shares: dict, by_id: dict) -> int:
@@ -331,7 +335,7 @@ class _Pen:
         for pid, share in sorted(shares.items(), key=lambda kv: -kv[1]):
             if share <= 0:
                 continue
-            text = f"{by_id.get(pid, ('', '?', ''))[1] or '?'} {share:.0f} %"
+            text = f"{by_id.get(pid, ('', '?', ''))[1]} {share:.0f} %"
             need = box * 1.5 + self.draw.textlength(text, font=font)
             if spot > x and spot + need > x + column:
                 spot, lines = x, lines + 1
@@ -343,10 +347,12 @@ class _Pen:
             spot += need + gap
         return lines
 
-    def _islands_height(self, rows: list[GroupRow], party_id: str | None) -> int:
+    def _islands_height(self, rows: list[GroupRow], party_id: str | None,
+                        hero: bool = False) -> int:
         """Сколько заняла полоса карточек — с учётом перенесённых подписей."""
-        small = round(self.width * 0.0095)
-        base = round(self.width * 0.105)
+        scale = 1.3 if hero else 1.0
+        small = round(self.width * 0.0095 * scale)
+        base = round(self.width * 0.105 * scale)
         if party_id is not None or not rows:
             return base
         column = ((self.width - self.pad * 2
@@ -431,9 +437,13 @@ class _Pen:
             box = round(small * 0.8)
             self.draw.rectangle([self.pad, y + box * 0.2, self.pad + box, y + box * 1.2],
                                 fill=color)
-            self.draw.text((self.pad + box * 1.8, y), name, font=_font(_REGULAR, small),
-                           fill=theme.TEXT, anchor="la")
             spot = self.pad + round(self.width * 0.16)
+            # Длинное название иначе наезжало бы на цифру сдвига — колонка
+            # с мандатами всегда начинается на одном и том же месте.
+            label = _clip(self.draw, name, _font(_REGULAR, small),
+                         spot - (self.pad + box * 1.8) - small * 0.6)
+            self.draw.text((self.pad + box * 1.8, y), label, font=_font(_REGULAR, small),
+                           fill=theme.TEXT, anchor="la")
             for key, value in moved.items():
                 # Единица прямо у числа: одно «−9» рядом с названием
                 # слагаемого читалось ребусом — мандаты это или проценты.

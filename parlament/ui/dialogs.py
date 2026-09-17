@@ -17,7 +17,7 @@ from ..model import Convocation, Party
 from . import format as fmt
 from . import theme
 from .mount import push
-from .export import RESOLUTIONS, suggest_file_name
+from .export import DEFAULT_RESOLUTION_INDEX, RESOLUTIONS, suggest_file_name
 from .seat_chart import FILM_ALPHA, SeatChart, with_alpha
 
 _HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
@@ -863,7 +863,7 @@ def export_dialog(convocation: Convocation, total: int, rows: int,
                                   label_text="Имя файла")
 
     resolution_picker = ft.RadioGroup(
-        value="0",
+        value=str(DEFAULT_RESOLUTION_INDEX),
         content=ft.Row([
             ft.Radio(value=str(index), label=label, active_color=theme.ACCENT,
                      label_style=ft.TextStyle(size=theme.fs(13), color=theme.TEXT))
@@ -940,7 +940,7 @@ def map_export_dialog(convocation_name: str, districts,
                                   label_text="Имя файла")
 
     resolution_picker = ft.RadioGroup(
-        value="0",
+        value=str(DEFAULT_RESOLUTION_INDEX),
         content=ft.Row([
             ft.Radio(value=str(index), label=label, active_color=theme.ACCENT,
                      label_style=ft.TextStyle(size=theme.fs(13), color=theme.TEXT))
@@ -1045,7 +1045,7 @@ def support_export_dialog(parties: list[tuple[str, str, str, int, int, int]],
     party_picker.on_change = on_party
 
     resolution_picker = ft.RadioGroup(
-        value="0",
+        value=str(DEFAULT_RESOLUTION_INDEX),
         content=ft.Row([
             ft.Radio(value=str(index), label=label, active_color=theme.ACCENT,
                      label_style=ft.TextStyle(size=theme.fs(13), color=theme.TEXT))
@@ -1087,9 +1087,7 @@ def support_export_dialog(parties: list[tuple[str, str, str, int, int, int]],
 def _stats_export_note(subject: str, per_party: bool, table: bool) -> str:
     """Что именно уедет в файл — вид человек выбрал на самом экране."""
     if table:
-        return ("Выгрузится таблица всех округов"
-                + (f" глазами партии «{subject}»" if per_party else "")
-                + " — то же, что открыто на экране.")
+        return "Выгрузится таблица округов, сгруппированная по победителям."
     what = f"расклад партии «{subject}»" if per_party else "общая статистика"
     return f"Выгрузится {what} — то же, что открыто на экране."
 
@@ -1101,13 +1099,15 @@ def stats_export_dialog(subject: str, per_party: bool, table: bool,
 
     Выбирать здесь нечего, кроме имени файла и разрешения: вид и партию
     человек уже выбрал на самом экране, и второй такой же выбор в диалоге
-    только сбивал бы с толку — что бы тогда считалось главным.
+    только сбивал бы с толку — что бы тогда считалось главным. Таблица
+    округов персональной не бывает вовсе: её рассылают всем разом, поэтому
+    `per_party` на неё не влияет.
     """
     file_field = theme.text_field(
         suggest_file_name(subject, prefix="Округа" if table else "Статистика"),
         label_text="Имя файла")
     resolution_picker = ft.RadioGroup(
-        value="0",
+        value=str(DEFAULT_RESOLUTION_INDEX),
         content=ft.Row([
             ft.Radio(value=str(index), label=label, active_color=theme.ACCENT,
                      label_style=ft.TextStyle(size=theme.fs(13), color=theme.TEXT))

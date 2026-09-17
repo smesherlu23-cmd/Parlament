@@ -1,8 +1,10 @@
-"""Экран статистики выборов: два взгляда на один и тот же разбор.
+"""Экран статистики выборов: три взгляда на один и тот же разбор.
 
-«Общая» — расклад для ведущего: кто на каком острове силён и что сдвинуло
-результат. «По партии» — тот же разбор глазами одного игрока: где за него
-голосуют и где есть за что бороться.
+«Общая» — расклад для ведущего: страна целиком, потом остров за островом, и
+что сдвинуло результат. «По партии» — тот же разбор глазами одного игрока:
+где за него голосуют и где есть за что бороться. «Округа» — таблица всех
+округов сразу, сгруппированная по победителям; личных колонок в ней нет —
+эту картинку рассылают всем разом, а не одному игроку.
 
 Считает не этот модуль, а `parlament.statistics` через сервис: здесь только
 раскладка. Поэтому одни и те же числа попадают и сюда, и в выгрузку PNG
@@ -65,13 +67,11 @@ class StatsView:
             _tab("Округа", mode == "districts",
                  lambda _e: self._choose("districts", app.stats_party)),
         ]
-        # Партию выбирают и для партийного вида, и для таблицы округов: в
-        # таблице от неё зависят колонки «наши мандаты» и «до мандата».
-        if mode in ("party", "districts"):
+        # Партию выбирают только для партийного вида: таблица округов
+        # персональной не бывает — она одна и та же для всех, кто её видит,
+        # и группируется по победителям, а не по чьей-то доле.
+        if mode == "party":
             row.append(ft.Container(width=18))
-            if mode == "districts":
-                row.append(_plain_chip("Все партии", app.stats_party is None,
-                                       lambda _e: self._choose("districts", None)))
             for party in app.parties:
                 row.append(_chip(party, party.id == app.stats_party,
                                  lambda _e, p=party: self._choose(mode, p.id)))
@@ -87,13 +87,13 @@ class StatsView:
         """Щелчок по заголовку столбца: тот же столбец — обратный порядок."""
         app = self.app
         app.stats_sort = (key, not app.stats_sort[1]) if app.stats_sort[0] == key \
-            else (key, key in ("name", "island", "to_next"))
+            else (key, key in ("name", "island"))
         app.render()
 
     def _fill(self) -> None:
         conv = self.app.selected
         if self.app.stats_mode == "districts":
-            self.body.content = self._districts(self.app.stats_party)
+            self.body.content = self._districts()
         elif self.app.stats_party is None:
             self.body.content = self._general(self.service.island_stats(conv.id))
         else:
@@ -104,30 +104,38 @@ class StatsView:
     # -- общий вид ----------------------------------------------------------
 
     def _general(self, islands: list[GroupRow]) -> ft.Control:
-        return ft.Column([
+        country = self.service.national_stats(self.app.selected.id)
+        sections: list[ft.Control] = []
+        if country is not None:
+            sections += [
+                _section("По стране", "Вся Конфедерация одним взглядом — точка "
+                         "отсчёта: на её фоне видно, где остров держит перевес, "
+                         "а где идёт вровень со средним"),
+                ft.Row(self._group_cards([country], None, hero=True), spacing=12),
+            ]
+        sections += [
             _section("По островам", "Кто где силён и сколько людей стоит за мандатом"),
             ft.Row(self._group_cards(islands, None), spacing=12,
                    vertical_alignment=ft.CrossAxisAlignment.START),
-            _section("Город и село",
-                     "Второй срез той же карты: в городах 68 мандатов из 120, "
-                     "и расклад там обычно совсем не сельский"),
-            ft.Row(self._group_cards(self.service.settlement_type_stats(
-                self.app.selected.id), None, wide=True),
-                spacing=12, vertical_alignment=ft.CrossAxisAlignment.START),
             self._attribution_block(),
-        ], spacing=14, scroll=ft.ScrollMode.AUTO, expand=True)
+        ]
+        return ft.Column(sections, spacing=14, scroll=ft.ScrollMode.AUTO, expand=True)
 
     def _group_cards(self, rows: list[GroupRow], party_id: str | None,
-                     wide: bool = False) -> list[ft.Control]:
-        """Карточка на каждый кусок карты — остров или город/село.
+                     hero: bool = False) -> list[ft.Control]:
+        """Карточка на каждый кусок карты — остров или страна целиком.
 
         Партии подписаны все, а не тройка сильнейших: за тройкой пряталась
         четверть расклада, и по карточке нельзя было понять, есть ли тут
-        вообще твоя партия.
+        вообще твоя партия. `hero` — крупнее шрифт и полоска: карточка
+        страны одна на весь ряд и должна читаться как заголовок, а не как
+        ещё один остров.
         """
         colors = {p.id: p.color for p in self.app.parties}
-        abbr = {p.id: (p.abbr or p.name[:2]) for p in self.app.parties}
+        abbr = {p.id: fmt.short_name(p.name, p.abbr) for p in self.app.parties}
         party = self.service.project.party(party_id) if party_id else None
+
+        title_size, note_size, bar_height = (17, 13, 11) if hero else (13, 11, 7)
 
         cards: list[ft.Control] = []
         for row in rows:
@@ -135,35 +143,36 @@ class StatsView:
                 bar = dialogs.seat_bar(
                     sorted(((colors.get(pid, theme.EMPTY_SEAT), seats)
                             for pid, seats in row.by_party.items() if seats),
-                           key=lambda pair: -pair[1]), height=7)
+                           key=lambda pair: -pair[1]), height=bar_height)
                 note = (f"{fmt.pluralize(row.seats, fmt.MANDATES)} · "
                         f"{fmt.people(row.population)} чел.")
                 legend = ft.Row([
-                    ft.Row([theme.swatch(colors.get(pid, theme.EMPTY_SEAT), 8),
+                    ft.Row([theme.swatch(colors.get(pid, theme.EMPTY_SEAT),
+                                         10 if hero else 8),
                             ft.Text(f"{abbr.get(pid, '?')} {share:.0f} %",
-                                    size=theme.fs(11), color=theme.TEXT)],
+                                    size=theme.fs(note_size), color=theme.TEXT)],
                            spacing=4, tight=True)
                     for pid, share in sorted(row.shares.items(), key=lambda kv: -kv[1])
                     if share > 0
-                ], spacing=10, wrap=True, run_spacing=4)
+                ], spacing=14 if hero else 10, wrap=True, run_spacing=6 if hero else 4)
             else:
                 share = row.shares.get(party_id, 0.0)
-                bar = _share_bar(share, party.color)
+                bar = _share_bar(share, party.color, height=bar_height)
                 note = (f"{row.by_party.get(party_id, 0)} из "
                         f"{fmt.pluralize(row.seats, fmt.MANDATES_OF)}")
                 legend = ft.Text(f"{fmt.share(share)} голосов", size=theme.fs(13),
                                  font_family=theme.FONT_SEMIBOLD, color=theme.TEXT)
 
             cards.append(_card([
-                _card_title(row.name),
-                _muted(note),
-                ft.Container(bar, padding=ft.Padding.symmetric(vertical=8)),
+                _card_title(row.name, size=title_size),
+                _muted(note, size=note_size),
+                ft.Container(bar, padding=ft.Padding.symmetric(
+                    vertical=10 if hero else 8)),
                 legend,
                 ft.Container(height=4),
-                _muted(f"{fmt.count(row.people_per_seat)} чел. на мандат"),
-            ], grow=not wide))
-        if wide:
-            cards.append(ft.Container(expand=True))
+                _muted(f"{fmt.count(row.people_per_seat)} чел. на мандат",
+                       size=note_size),
+            ]))
         return cards
 
     # -- вид одной партии ---------------------------------------------------
@@ -184,10 +193,6 @@ class StatsView:
             _section("По островам", "Где за партию голосуют"),
             ft.Row(self._group_cards(islands, party_id), spacing=12,
                    vertical_alignment=ft.CrossAxisAlignment.START),
-            _section("Город и село", "Тот же расклад, но по типу округа"),
-            ft.Row(self._group_cards(
-                self.service.settlement_type_stats(conv.id), party_id, wide=True),
-                spacing=12, vertical_alignment=ft.CrossAxisAlignment.START),
             _section("Где бороться",
                      "Что даст больше всего при том же усилии. Прибавка "
                      "показана в процентных пунктах (п.п.) — это доля голосов "
@@ -260,39 +265,41 @@ class StatsView:
     # -- таблица округов ----------------------------------------------------
 
     #: Столбцы таблицы: ключ, заголовок, ширина. Ширина None — столбец тянется.
+    #: Личных колонок («наши мандаты», очки) здесь нет: таблицу выгружают и
+    #: показывают всем сразу, а не одному игроку — выбирать партию для нее
+    #: было бы не про то, кто её смотрит.
     _COLUMNS = (
         ("name", "Округ", None),
-        ("island", "Остров", 150),
-        ("seats", "Мандатов", 85),
-        ("won", "Наши", 60),
-        ("share", "Наша доля", 90),
-        ("leader", "Победитель", 120),
-        ("to_next", "До мандата, п.п.", 120),
-        ("points", "Очки", 80),
+        ("island", "Остров", 170),
+        ("seats", "Мандатов", 100),
+        ("leader", "Победитель", 160),
     )
 
-    def _districts(self, party_id: str | None) -> ft.Control:
-        """Все округа одной таблицей — уровень, которого не было совсем.
+    def _districts(self) -> ft.Control:
+        """Все округа одной таблицей, сгруппированные по победителям.
 
-        Короткие списки «где бороться» отвечают, куда смотреть в первую
-        очередь; здесь — всё целиком, с сортировкой по любому столбцу.
+        Короткие списки «где бороться» на партийном виде отвечают, куда
+        смотреть в первую очередь одной партии; здесь — общий расклад
+        целиком, без привязки к чьей-то стороне.
         """
         conv = self.app.selected
-        party = self.service.project.party(party_id) if party_id else None
-        rows = self.service.battlegrounds(conv.id, party_id or self.app.parties[0].id)
+        # Победитель и его доля не зависят от того, какой партии мы
+        # попросили разбор, — первая в списке годится ровно так же, как
+        # любая другая; своих же (party-specific) полей эта таблица не
+        # показывает вовсе.
+        rows = self.service.battlegrounds(conv.id, self.app.parties[0].id)
         by_id = {p.id: p for p in self.app.parties}
         shares = {b.district_id: self.service.district_shares(conv.id, b.district_id)
                   for b in rows}
 
         key, downwards = self.app.stats_sort
-        rows = sorted(rows, key=lambda b: _sort_key(b, key, party_id),
+        rows = sorted(rows, key=lambda b: _sort_key(b, key, by_id),
                       reverse=downwards)
 
         header = ft.Row([
             _head_cell(title, width, key == column, downwards,
                        lambda _e, c=column: self._sort_by(c))
             for column, title, width in self._COLUMNS
-            if party is not None or column not in ("won", "share", "to_next")
         ], spacing=8)
 
         body = []
@@ -300,46 +307,28 @@ class StatsView:
             leader = by_id.get(b.leader)
             cells: list[ft.Control] = [
                 _cell(b.name, None, bold=True),
-                _cell(_short_island(b.island), 150),
-                _cell(str(b.seats), 85),
+                _cell(_short_island(b.island), 170),
+                _cell(str(b.seats), 100),
+                ft.Container(
+                    width=160,
+                    content=ft.Row([
+                        theme.swatch(leader.color, 8) if leader else ft.Container(width=8),
+                        ft.Text(fmt.short_name(leader.name, leader.abbr) if leader else "—",
+                                size=theme.fs(12), color=theme.TEXT, no_wrap=True),
+                        ft.Text(f"{shares[b.district_id].get(b.leader, 0):.0f} %"
+                                if leader else "",
+                                size=theme.fs(11), color=theme.NEUTRAL_600),
+                    ], spacing=4, tight=True)),
             ]
-            if party is not None:
-                cells += [
-                    _cell(str(b.won), 60,
-                          color=theme.TEXT if b.won else theme.NEUTRAL_600),
-                    _cell(fmt.share(b.share), 90),
-                ]
-            cells.append(ft.Container(
-                width=120,
-                content=ft.Row([
-                    theme.swatch(leader.color, 8) if leader else ft.Container(width=8),
-                    ft.Text(leader.abbr or leader.name if leader else "—",
-                            size=theme.fs(12), color=theme.TEXT, no_wrap=True),
-                    ft.Text(f"{shares[b.district_id].get(b.leader, 0):.0f} %"
-                            if leader else "",
-                            size=theme.fs(11), color=theme.NEUTRAL_600),
-                ], spacing=4, tight=True)))
-            if party is not None:
-                cells.append(_cell(
-                    "+" + f"{b.to_next:.1f}".replace(".", ",") if b.to_next is not None
-                    else "весь наш", 100,
-                    color=theme.ACCENT_700 if b.to_next is not None else theme.NEUTRAL_600))
-            cells.append(_cell(f"{b.points}/{b.capacity}" if party is not None
-                               else f"{b.capacity - b.free}/{b.capacity}", 80,
-                               color=theme.NEUTRAL_600 if not b.free else theme.TEXT))
-
             body.append(ft.Container(
                 bgcolor=theme.SURFACE if index % 2 else ft.Colors.TRANSPARENT,
                 padding=ft.Padding.symmetric(horizontal=8, vertical=5),
                 content=ft.Row(cells, spacing=8),
             ))
 
-        note = ("Столбцы «Наши», «Наша доля» и «До мандата» появляются, когда "
-                "выбрана партия" if party is None
-                else "«До мандата» — на сколько надо подрасти, чтобы взять "
-                     "здесь ещё одно место")
         return ft.Column([
-            _section(f"Округа: {fmt.pluralize(len(rows), fmt.DISTRICTS)}", note),
+            _section(f"Округа: {fmt.pluralize(len(rows), fmt.DISTRICTS)}",
+                     "Заголовок столбца сортирует; по умолчанию — по победителю"),
             ft.Container(
                 bgcolor=theme.SURFACE,
                 padding=ft.Padding.symmetric(horizontal=8, vertical=6),
@@ -440,14 +429,14 @@ def _card(body: list[ft.Control], grow: bool = True) -> ft.Control:
     )
 
 
-def _card_title(text: str) -> ft.Control:
-    return ft.Text(text, size=theme.fs(13), font_family=theme.FONT_SEMIBOLD,
+def _card_title(text: str, size: int = 13) -> ft.Control:
+    return ft.Text(text, size=theme.fs(size), font_family=theme.FONT_SEMIBOLD,
                    color=theme.TEXT, no_wrap=True, overflow=ft.TextOverflow.ELLIPSIS,
                    tooltip=text)
 
 
-def _muted(text: str) -> ft.Control:
-    return ft.Text(text, size=theme.fs(11), color=theme.NEUTRAL_700)
+def _muted(text: str, size: int = 11) -> ft.Control:
+    return ft.Text(text, size=theme.fs(size), color=theme.NEUTRAL_700)
 
 
 def _figure(value: str, note: str, tooltip: str | None = None) -> ft.Control:
@@ -516,17 +505,19 @@ def _short_island(name: str) -> str:
     return text.split(" (")[0]
 
 
-def _sort_key(row, key: str, party_id: str | None):
-    """Ключ сортировки таблицы. Пустое «до мандата» всегда в конце."""
-    if key == "to_next":
-        return (row.to_next is None, row.to_next or 0.0)
+def _sort_key(row, key: str, by_id: dict):
+    """Ключ сортировки таблицы. Округ без победителя — всегда в конце.
+
+    «По победителям» значит по имени партии, а не по её id: id — случайный
+    хеш и группировал бы округа в произвольном, не читаемом порядке.
+    """
     if key == "leader":
-        return (row.leader or "",)
-    if key == "points":
-        return (row.points if party_id else row.capacity - row.free,)
+        leader = by_id.get(row.leader)
+        name = fmt.short_name(leader.name, leader.abbr) if leader else ""
+        return (leader is None, name, row.name)
     if key == "island":
         return (row.island, row.name)
-    return (getattr(row, key, 0),)
+    return (getattr(row, key, 0), row.name)
 
 
 def _head_cell(title: str, width: int | None, active: bool, downwards: bool,
@@ -550,20 +541,6 @@ def _cell(text: str, width: int | None, bold: bool = False,
                         font_family=theme.FONT_SEMIBOLD if bold else theme.FONT_FAMILY,
                         no_wrap=True, overflow=ft.TextOverflow.ELLIPSIS, tooltip=text),
     )
-
-
-def _plain_chip(text: str, active: bool, on_click) -> ft.Control:
-    """Кнопка выбора без цвета партии — «Все партии» в таблице округов."""
-    return ft.Container(
-        on_click=on_click, ink=True,
-        padding=ft.Padding.symmetric(horizontal=9, vertical=5),
-        bgcolor=theme.SURFACE if active else ft.Colors.TRANSPARENT,
-        border=ft.Border.all(1, theme.ACCENT if active else theme.DIVIDER),
-        border_radius=theme.RADIUS,
-        content=ft.Text(text, size=theme.fs(12),
-                        color=theme.TEXT if active else theme.NEUTRAL_700),
-    )
-
 
 def _tab(text: str, active: bool, on_click) -> ft.Control:
     """Вкладка переключателя вида — подчёркнутая, когда выбрана."""

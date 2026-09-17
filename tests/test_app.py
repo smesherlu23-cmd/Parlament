@@ -24,7 +24,8 @@ from parlament.ui import format as fmt, theme  # noqa: E402
 from parlament.ui.app import ParlamentApp  # noqa: E402
 from parlament.ui.stats_view import StatsView  # noqa: E402
 from parlament.ui.dialogs import normalize_hex  # noqa: E402
-from parlament.ui.export import LegendEntry, render_png, suggest_file_name  # noqa: E402
+from parlament.ui.export import (  # noqa: E402
+    DEFAULT_RESOLUTION_INDEX, LegendEntry, render_png, suggest_file_name)
 from parlament.district_seed import (  # noqa: E402
     SEED_TOTAL_SEATS,
     is_city,
@@ -594,6 +595,10 @@ class TestExport(AppTestCase):
         radios = find_all(self.page.dialog, lambda c: isinstance(c, ft.Radio))
         self.assertEqual([r.label for r in radios],
                          ["1920 × 1080", "2560 × 1440", "3840 × 2160"])
+        # Выгружают обычно один раз — по умолчанию сразу выбрано 4К.
+        picker = find(self.page.dialog, lambda c: isinstance(c, ft.RadioGroup))
+        self.assertEqual(picker.value, str(DEFAULT_RESOLUTION_INDEX))
+        self.assertEqual(radios[DEFAULT_RESOLUTION_INDEX].label, "3840 × 2160")
 
     def test_the_coalition_film_reaches_the_picture(self):
         # Плёнка рисуется отдельным полупрозрачным слоем, и легко было бы
@@ -670,7 +675,8 @@ class TestExport(AppTestCase):
         self.assertEqual(call["file_name"], "Парламент_Первый_состав.png")
         self.assertEqual(call["allowed_extensions"], ["png"])
         self.assertTrue(call["src_bytes"].startswith(b"\x89PNG"))
-        self.assertEqual(int.from_bytes(call["src_bytes"][16:20], "big"), 1920)
+        # По умолчанию выбрано 4К — сохранять пришлось бы не отменяя диалог.
+        self.assertEqual(int.from_bytes(call["src_bytes"][16:20], "big"), 3840)
         self.assertEqual(self.page.last_toast, "Картинка сохранена.")
 
     def test_save_flow_adds_missing_extension(self):
@@ -1065,6 +1071,8 @@ class TestMapAndElections(AppTestCase):
         radios = find_all(self.page.dialog, lambda c: isinstance(c, ft.Radio))
         self.assertEqual([r.label for r in radios],
                          ["1920 × 1080", "2560 × 1440", "3840 × 2160"])
+        picker = find(self.page.dialog, lambda c: isinstance(c, ft.RadioGroup))
+        self.assertEqual(picker.value, str(DEFAULT_RESOLUTION_INDEX))
         checks = find_all(self.page.dialog, lambda c: isinstance(c, ft.Checkbox))
         self.assertEqual([c.label for c in checks],
                          ["Легенда на картинке", "Название созыва"])
@@ -1091,7 +1099,7 @@ class TestMapAndElections(AppTestCase):
         call = calls[0]
         self.assertEqual(call["file_name"], "Карта_Первый_состав.png")
         self.assertTrue(call["src_bytes"].startswith(b"\x89PNG"))
-        self.assertEqual(int.from_bytes(call["src_bytes"][16:20], "big"), 1920)
+        self.assertEqual(int.from_bytes(call["src_bytes"][16:20], "big"), 3840)
         self.assertEqual(self.page.last_toast, "Карта сохранена.")
 
 
@@ -1959,6 +1967,13 @@ class TestSupportExport(AppTestCase):
         self.assertTrue(call["file_name"].endswith(".png"))
         self.assertEqual(self.page.last_toast, "Поддержка сохранена.")
 
+    def test_the_resolution_defaults_to_4k(self):
+        self.give("Трэлавик", self.a, 4)
+        self.open_dialog()
+        picker = find(self.page.dialog, lambda c: isinstance(c, ft.RadioGroup)
+                      and c.value == str(DEFAULT_RESOLUTION_INDEX))
+        self.assertIsNotNone(picker)
+
     def test_the_file_name_follows_the_chosen_party(self):
         self.give("Трэлавик", self.a, 4)
         self.give("Хердалур", self.b, 2)
@@ -2143,15 +2158,13 @@ class TestStatsScreen(AppTestCase):
         self.assertIn("Не хватило до барьера", shown)
         self.assertIn("Свободные очки", shown)
 
-    def test_city_and_village_stand_next_to_the_islands(self):
-        # Срез, которого по островам не видно: в городах больше половины
-        # мандатов, и расклад там обычно совсем не сельский.
+    def test_the_national_summary_stands_above_the_islands(self):
+        # Точка отсчёта над островами: вся Конфедерация одной карточкой.
         self.elect()
         self.app.show_stats()
         shown = texts(self.app.body)
-        self.assertIn("ГОРОД И СЕЛО", shown)
-        self.assertIn("Города", shown)
-        self.assertIn("Сёла", shown)
+        self.assertIn("ПО СТРАНЕ", shown)
+        self.assertIn("Конфедерация", shown)
 
     def test_the_island_card_names_every_party_not_just_three(self):
         # За тройкой сильнейших пряталась четверть расклада, и по карточке
@@ -2170,21 +2183,33 @@ class TestStatsScreen(AppTestCase):
         for district in self.service.project.districts:
             self.assertIn(district.name, shown)
 
-    def test_the_table_gains_party_columns_once_a_party_is_chosen(self):
-        # Без выбранной партии столбцов «наши мандаты» и «до мандата» нет —
-        # их нечем заполнить; таблица прямо об этом и говорит.
+    def test_the_district_table_has_no_party_selector(self):
+        # Таблицу рассылают всем разом — выбор партии тут ни на что не
+        # влияет, и раньше это была всего лишь пустая надпись; теперь чипов
+        # партий в этой вкладке нет вовсе, ни выбранных, ни свободных.
         self.elect()
         self.app.stats_mode = "districts"
         self.app.show_stats()
         shown = " ".join(texts(self.app.body))
-        self.assertIn("появляются, когда выбрана партия", shown)
-        self.assertNotIn(" п.п.", shown)
+        for party in self.app.parties:
+            self.assertNotIn(party.name, shown)
+        self.assertNotIn("Все партии", shown)
 
         self.app.stats_party = self.a.id
         self.app.render()
         shown = " ".join(texts(self.app.body))
-        self.assertIn("на сколько надо подрасти", shown)
-        self.assertTrue("+" in shown or "весь наш" in shown)
+        self.assertNotIn(self.a.name, shown)
+
+    def test_the_district_table_has_no_points_column(self):
+        self.elect()
+        self.app.stats_mode = "districts"
+        self.app.show_stats()
+        self.assertNotIn("Очки", texts(self.app.body))
+
+    def test_the_table_defaults_to_sorting_by_winner(self):
+        # Рассылают всем разом — группировка по победителю читается сразу
+        # всеми, независимо от того, за кого болеет ведущий.
+        self.assertEqual(self.app.stats_sort, ("leader", False))
 
     def test_sorting_the_table_flips_on_a_second_click(self):
         self.elect()
@@ -2216,6 +2241,19 @@ class TestStatsScreen(AppTestCase):
         self.assertTrue(table["src_bytes"].startswith(b"\x89PNG"))
         self.assertNotEqual(overview["src_bytes"], table["src_bytes"])
 
+    def test_the_table_export_ignores_the_chosen_party(self):
+        # Таблица никогда не бывает личной: даже если в партийном виде уже
+        # выбрана партия, диалог экспорта таблицы говорит про общую
+        # выгрузку, группированную по победителям, а не про чью-то долю.
+        self.elect()
+        self.app.stats_party = self.a.id
+        self.app.stats_mode = "districts"
+        self.app.show_stats()
+        self.app.export_stats_png()
+        shown = " ".join(texts(self.page.dialog))
+        self.assertIn("сгруппированная по победителям", shown)
+        self.assertNotIn(self.a.name, shown)
+
     def test_the_chosen_party_survives_a_redraw(self):
         # Выбор живёт в приложении, а не в экране: экран пересобирается на
         # каждое переключение, и иначе выбор слетал бы.
@@ -2229,6 +2267,8 @@ class TestStatsScreen(AppTestCase):
         self.elect()
         self.app.show_stats()
         self.app.export_stats_png()
+        picker = find(self.page.dialog, lambda c: isinstance(c, ft.RadioGroup))
+        self.assertEqual(picker.value, str(DEFAULT_RESOLUTION_INDEX))
         find(self.page.dialog, lambda c: isinstance(c, ft.Button)
              and c.content == "Сохранить как…").on_click(None)
 
