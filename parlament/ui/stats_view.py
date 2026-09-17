@@ -108,13 +108,11 @@ class StatsView:
         sections: list[ft.Control] = []
         if country is not None:
             sections += [
-                _section("По стране", "Вся Конфедерация одним взглядом — точка "
-                         "отсчёта: на её фоне видно, где остров держит перевес, "
-                         "а где идёт вровень со средним"),
+                _section("По стране"),
                 ft.Row(self._group_cards([country], None, hero=True), spacing=12),
             ]
         sections += [
-            _section("По островам", "Кто где силён и сколько людей стоит за мандатом"),
+            _section("По островам"),
             ft.Row(self._group_cards(islands, None), spacing=12,
                    vertical_alignment=ft.CrossAxisAlignment.START),
             self._attribution_block(),
@@ -190,13 +188,10 @@ class StatsView:
 
         return ft.Column([
             self._party_summary(party, seats, total, votes),
-            _section("По островам", "Где за партию голосуют"),
+            _section("По островам"),
             ft.Row(self._group_cards(islands, party_id), spacing=12,
                    vertical_alignment=ft.CrossAxisAlignment.START),
-            _section("Где бороться",
-                     "Что даст больше всего при том же усилии. Прибавка "
-                     "показана в процентных пунктах (п.п.) — это доля голосов "
-                     "округа, а не проценты от неё"),
+            _section("Где бороться"),
             self._battle_block(ground),
             self._attribution_block(party_id),
         ], spacing=14, scroll=ft.ScrollMode.AUTO, expand=True)
@@ -327,8 +322,7 @@ class StatsView:
             ))
 
         return ft.Column([
-            _section(f"Округа: {fmt.pluralize(len(rows), fmt.DISTRICTS)}",
-                     "Заголовок столбца сортирует; по умолчанию — по победителю"),
+            _section(f"Округа: {fmt.pluralize(len(rows), fmt.DISTRICTS)}"),
             ft.Container(
                 bgcolor=theme.SURFACE,
                 padding=ft.Padding.symmetric(horizontal=8, vertical=6),
@@ -372,10 +366,7 @@ class StatsView:
             body = rows
 
         return ft.Column([
-            _section("Что решило результат",
-                     "Плюс — сколько мандатов слагаемое принесло, минус — "
-                     "сколько отняло. Считается пересчётом того же дележа "
-                     "мест с занулённым слагаемым."),
+            _section("Что решило результат"),
             _card(body, grow=False),
         ], spacing=14, tight=True)
 
@@ -411,11 +402,8 @@ class StatsView:
 # -- мелкие кирпичики -------------------------------------------------------
 
 
-def _section(title: str, note: str) -> ft.Control:
-    return ft.Column([
-        theme.label(title),
-        ft.Text(note, size=theme.fs(12), color=theme.NEUTRAL_700),
-    ], spacing=2, tight=True)
+def _section(title: str) -> ft.Control:
+    return theme.label(title)
 
 
 def _card(body: list[ft.Control], grow: bool = True) -> ft.Control:

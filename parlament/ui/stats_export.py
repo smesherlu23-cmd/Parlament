@@ -73,28 +73,17 @@ def render_stats_png(convocation_name: str, parties, islands: list[GroupRow],
         pen.party_head(name, color, summary, emblem)
 
     if country is not None:
-        pen.section("По стране", "Вся Конфедерация одним взглядом — точка "
-                                 "отсчёта: на её фоне видно, где остров "
-                                 "держит перевес, а где идёт вровень со "
-                                 "средним")
+        pen.section("По стране")
         pen.islands([country], by_id, None, hero=True)
 
-    pen.section("По островам",
-                "Где за партию голосуют" if party_id
-                else "Кто где силён и сколько людей стоит за мандатом")
+    pen.section("По островам")
     pen.islands(islands, by_id, party_id)
 
     if ground:
-        pen.section("Где бороться",
-                    "Что даст больше всего при том же усилии. Прибавка "
-                    "показана в процентных пунктах (п.п.) — это доля голосов "
-                    "округа, а не проценты от неё")
+        pen.section("Где бороться")
         pen.battlegrounds(ground)
 
-    pen.section("Что решило результат",
-                "Плюс — сколько мандатов слагаемое принесло, минус — сколько "
-                "отняло. Считается пересчётом того же дележа мест с "
-                "занулённым слагаемым.")
+    pen.section("Что решило результат")
     pen.attribution(attribution, parties, party_id)
 
     buffer = io.BytesIO()
@@ -245,7 +234,7 @@ class _Pen:
                            fill=theme.NEUTRAL_700, anchor="la")
         self.y += max(badge, round(size * 2.4))
 
-    def section(self, title: str, note: str) -> None:
+    def section(self, title: str) -> None:
         size = round(self.width * 0.013)
         self.y += round(self.width * 0.012)
         self.draw.line([self.pad, self.y, self.width - self.pad, self.y],
@@ -253,10 +242,7 @@ class _Pen:
         self.y += round(size * 0.9)
         self.draw.text((self.pad, self.y), title.upper(),
                        font=_font(_SEMIBOLD, size), fill=theme.TEXT, anchor="la")
-        self.draw.text((self.pad, self.y + size * 1.3), note,
-                       font=_font(_REGULAR, round(size * 0.85)),
-                       fill=theme.NEUTRAL_700, anchor="la")
-        self.y += round(size * 2.7)
+        self.y += round(size * 1.6)
 
     # -- блоки --------------------------------------------------------------
 
