@@ -150,7 +150,10 @@ class StatsView:
             self._party_summary(party, seats, total, votes),
             _section("По островам", "Где за партию голосуют"),
             ft.Row(cards, spacing=12, vertical_alignment=ft.CrossAxisAlignment.START),
-            _section("Где бороться", "Что даст больше всего при том же усилии"),
+            _section("Где бороться",
+                     "Что даст больше всего при том же усилии. Отрыв показан "
+                     "в процентных пунктах (п.п.) — это разница долей, а не "
+                     "проценты"),
             self._battle_block(ground),
             self._attribution_block(party_id),
         ], spacing=14, scroll=ft.ScrollMode.AUTO, expand=True)
@@ -176,7 +179,10 @@ class StatsView:
                 _figure(str(seats), fmt.plural(seats, fmt.MANDATES)),
                 _figure(fmt.share(seat_share), "палаты"),
                 _figure(fmt.share(votes), "голосов"),
-                _figure(_signed(gap) + " п.п.", note),
+                _figure(_signed(gap) + " п.п.", note,
+                        tooltip="Процентные пункты — разница между долей "
+                                "мандатов и долей голосов. Не проценты: "
+                                "с 10 % до 11 % — это +1 п.п., но +10 % роста."),
             ], spacing=28),
         ], grow=False)
 
@@ -235,7 +241,7 @@ class StatsView:
                                      no_wrap=True, overflow=ft.TextOverflow.ELLIPSIS),
                              width=210),
                 ft.Row([_delta(value, names[key]) for key, value in moved.items()],
-                       spacing=16, wrap=True, run_spacing=4),
+                       spacing=18, wrap=True, run_spacing=4),
             ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER))
 
         if not rows:
@@ -246,7 +252,9 @@ class StatsView:
 
         return ft.Column([
             _section("Что решило результат",
-                     "Пересчёт того же дележа мест без одного слагаемого"),
+                     "Плюс — сколько мандатов слагаемое принесло, минус — "
+                     "сколько отняло. Считается пересчётом того же дележа "
+                     "мест с занулённым слагаемым."),
             _card(body, grow=False),
         ], spacing=14, tight=True)
 
@@ -310,13 +318,13 @@ def _muted(text: str) -> ft.Control:
     return ft.Text(text, size=theme.fs(11), color=theme.NEUTRAL_700)
 
 
-def _figure(value: str, note: str) -> ft.Control:
+def _figure(value: str, note: str, tooltip: str | None = None) -> ft.Control:
     """Крупное число с подписью под ним."""
     return ft.Column([
         ft.Text(value, size=theme.fs(22), font_family=theme.FONT_SEMIBOLD,
                 color=theme.TEXT),
         ft.Text(note, size=theme.fs(11), color=theme.NEUTRAL_700),
-    ], spacing=0, tight=True)
+    ], spacing=0, tight=True, tooltip=tooltip)
 
 
 def _signed(value: float) -> str:
@@ -326,13 +334,18 @@ def _signed(value: float) -> str:
 
 
 def _delta(value: int, note: str) -> ft.Control:
-    """«+7 мандатов» зелёным или «−9» красным — вклад одного слагаемого."""
+    """«+7 мандатов» зелёным или «−9 мандатов» красным — вклад слагаемого.
+
+    Единицу пишем прямо здесь: одно «−9» рядом с названием слагаемого
+    читалось ребусом — непонятно, мандаты это, проценты или очки.
+    """
     color = theme.ACCENT_700 if value > 0 else theme.ACCENT_2_700
+    sign = "+" if value > 0 else "\u2212"
     return ft.Row([
-        ft.Text(f"+{value}" if value > 0 else f"\u2212{abs(value)}", size=theme.fs(15),
-                font_family=theme.FONT_SEMIBOLD, color=color),
+        ft.Text(f"{sign}{fmt.pluralize(abs(value), fmt.MANDATES)}",
+                size=theme.fs(14), font_family=theme.FONT_SEMIBOLD, color=color),
         ft.Text(note, size=theme.fs(11), color=theme.NEUTRAL_700),
-    ], spacing=4, tight=True)
+    ], spacing=5, tight=True)
 
 
 def _share_bar(share: float, color: str, height: int = 7) -> ft.Control:

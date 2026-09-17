@@ -69,11 +69,16 @@ def render_stats_png(convocation_name: str, parties, islands: list[IslandRow],
     pen.islands(islands, by_id, party_id)
 
     if ground:
-        pen.section("Где бороться", "Что даст больше всего при том же усилии")
+        pen.section("Где бороться",
+                    "Что даст больше всего при том же усилии. Отрыв показан "
+                    "в процентных пунктах (п.п.) — это разница долей, а не "
+                    "проценты")
         pen.battlegrounds(ground)
 
     pen.section("Что решило результат",
-                "Пересчёт того же дележа мест без одного слагаемого")
+                "Плюс — сколько мандатов слагаемое принесло, минус — сколько "
+                "отняло. Считается пересчётом того же дележа мест с "
+                "занулённым слагаемым.")
     pen.attribution(attribution, parties, party_id)
 
     buffer = io.BytesIO()
@@ -255,7 +260,9 @@ class _Pen:
             self.draw.text((x, y), head, font=_font(_SEMIBOLD, title),
                            fill=theme.TEXT, anchor="la")
             y += round(title * 1.5)
-            self.draw.text((x, y), note, font=_font(_REGULAR, small),
+            self.draw.text((x, y), _clip(self.draw, note, _font(_REGULAR, small),
+                                         column * 0.95),
+                           font=_font(_REGULAR, small),
                            fill=theme.NEUTRAL_700, anchor="la")
             y += round(small * 2.1)
             if not rows:
@@ -288,7 +295,10 @@ class _Pen:
                            fill=theme.TEXT, anchor="la")
             spot = self.pad + round(self.width * 0.16)
             for key, value in moved.items():
-                shift = f"+{value}" if value > 0 else f"−{abs(value)}"
+                # Единица прямо у числа: одно «−9» рядом с названием
+                # слагаемого читалось ребусом — мандаты это или проценты.
+                sign = "+" if value > 0 else "−"
+                shift = f"{sign}{fmt.pluralize(abs(value), fmt.MANDATES)}"
                 color_ = theme.ACCENT_700 if value > 0 else theme.ACCENT_2_700
                 self.draw.text((spot, y), shift, font=_font(_SEMIBOLD, small),
                                fill=color_, anchor="la")
