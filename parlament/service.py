@@ -862,8 +862,27 @@ class ParlamentService:
         conv = self._require_convocation(convocation_id)
         if not conv.results:
             return []
-        return stats.island_rows(
+        return stats.group_rows(
             [(d.id, district_seed.island_of(d.region), d.seats)
+             for d in self.project.districts],
+            conv.results,
+            self.district_allocation(convocation_id),
+            {d.id: self.district_population(d.id) for d in self.project.districts},
+        )
+
+    def settlement_type_stats(self, convocation_id: str) -> list:
+        """То же, но нарезано на города и сёла, а не на острова.
+
+        Ось, которой не видно по островам: городских округов тринадцать и в
+        них 68 мандатов из 120, а расклад в городе и в селе бывает совсем
+        разный — город обычно поляризован вокруг двух партий, село
+        раздроблено между всеми.
+        """
+        conv = self._require_convocation(convocation_id)
+        if not conv.results:
+            return []
+        return stats.group_rows(
+            [(d.id, "Города" if district_seed.is_city(d.code) else "Сёла", d.seats)
              for d in self.project.districts],
             conv.results,
             self.district_allocation(convocation_id),

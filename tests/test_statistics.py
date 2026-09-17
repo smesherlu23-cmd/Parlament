@@ -13,16 +13,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from parlament import ParlamentService, ValidationError  # noqa: E402
 from parlament.district_seed import island_of, islands  # noqa: E402
 from parlament.elections import PartyResult, THRESHOLD_PERCENT  # noqa: E402
+from parlament.statistics import _seats_with  # noqa: E402
 from parlament.statistics import (  # noqa: E402
     Battleground,
     attribution,
     battlegrounds,
-    island_rows,
+    group_rows,
+    to_next_seat,
 )
 
 
-class TestIslandRows(unittest.TestCase):
-    """Сводка по островам из готового разбора."""
+class TestGroupRows(unittest.TestCase):
+    """Сводка по группе округов — острову, городу, чему угодно."""
 
     def rows(self, **kwargs):
         districts = [("d1", "Запад", 5), ("d2", "Запад", 3), ("d3", "Восток", 4)]
@@ -36,7 +38,7 @@ class TestIslandRows(unittest.TestCase):
         data = dict(districts=districts, results=results, allocation=allocation,
                     populations=populations)
         data.update(kwargs)
-        return island_rows(**data)
+        return group_rows(**data)
 
     def test_islands_keep_the_order_they_appear_in(self):
         self.assertEqual([r.name for r in self.rows()], ["Запад", "Восток"])
@@ -111,6 +113,54 @@ class TestBattlegrounds(unittest.TestCase):
         rows = battlegrounds("a", [("d1", "Пустой", "Запад", 3)], {}, {}, {}, {"d1": 6})
         self.assertIsNone(rows[0].leader)
         self.assertEqual(rows[0].gap, 0.0)
+
+
+def _gap(shares: dict, party_id: str) -> float:
+    """Отставание от лидера — прежняя метрика, для сравнения с новой."""
+    return max(shares.values()) - shares[party_id]
+
+
+class TestToNextSeat(unittest.TestCase):
+    """Сколько доли не хватает до следующего мандата."""
+
+    def test_a_party_just_under_the_threshold_needs_to_clear_it(self):
+        # Барьер 5 %: партии с 4 % не хватает чуть больше процентного пункта,
+        # и дальше квота уже даёт ей место.
+        shares = {"a": 4.0, "b": 48.0, "c": 48.0}
+        need = to_next_seat(shares, "a", 10)
+        self.assertIsNotNone(need)
+        self.assertGreater(need, 1.0)
+        self.assertLess(need, 3.0)
+
+    def test_owning_the_whole_district_leaves_nothing_to_win(self):
+        self.assertIsNone(to_next_seat({"a": 100.0}, "a", 4))
+
+    def test_a_hopeless_district_has_no_price(self):
+        # Один мандат на округ и подавляющий соперник: даже вся доля целиком
+        # не даст второго места, потому что второго и нет.
+        self.assertIsNone(to_next_seat({"a": 50.0, "b": 50.0}, "a", 0))
+
+    def test_an_empty_district_has_no_price(self):
+        self.assertIsNone(to_next_seat({}, "a", 4))
+
+    def test_the_answer_really_buys_a_seat(self):
+        # Проверяем не число, а его смысл: с этой прибавкой мандатов должно
+        # стать больше, а чуть меньшей — ещё нет.
+        shares = {"a": 12.0, "b": 44.0, "c": 44.0}
+        need = to_next_seat(shares, "a", 5)
+        before = _seats_with(shares, "a", need - 0.05, 5)
+        after = _seats_with(shares, "a", need + 0.05, 5)
+        self.assertEqual(after, before + 1)
+
+    def test_the_cheapest_district_is_not_the_one_with_the_smallest_gap(self):
+        # Ради этого метрику и заменили: в многомандатном округе обгонять
+        # лидера незачем, мандат даёт квота. Тесный округ на три мандата
+        # оказывается дороже безнадёжного на семь — сортировка по отрыву от
+        # победителя отправила бы партию не туда.
+        close = {"a": 22.0, "b": 39.0, "c": 39.0}   # отрыв 17 п.п., 3 мандата
+        far = {"a": 8.0, "b": 46.0, "c": 46.0}      # отрыв 38 п.п., 7 мандатов
+        self.assertLess(_gap(close, "a"), _gap(far, "a"))
+        self.assertGreater(to_next_seat(close, "a", 3), to_next_seat(far, "a", 7))
 
 
 class TestAttribution(unittest.TestCase):
@@ -199,6 +249,32 @@ class TestStatsThroughTheService(StatsServiceTestCase):
         district = next(d for d in self.service.project.districts
                         if d.name == "Судбригг")
         self.assertEqual(worked.island, island_of(district.region))
+
+    def test_city_and_village_split_the_whole_map(self):
+        self.give("Судбригг", self.a, 4)
+        self.roll()
+        rows = self.service.settlement_type_stats(self.conv.id)
+        self.assertEqual(sorted(r.name for r in rows), ["Города", "Сёла"])
+        self.assertEqual(sum(r.seats for r in rows),
+                         self.service.project.total_seats)
+        self.assertAlmostEqual(sum(r.population for r in rows), 1_000_000.0, places=0)
+
+    def test_cities_hold_more_than_half_the_house(self):
+        # Ось, которой не видно по островам: городских округов меньше, а
+        # мандатов в них больше.
+        self.give("Судбригг", self.a, 4)
+        self.roll()
+        cities = next(r for r in self.service.settlement_type_stats(self.conv.id)
+                      if r.name == "Города")
+        self.assertGreater(cities.seats, self.service.project.total_seats / 2)
+
+    def test_every_district_knows_the_price_of_its_next_seat(self):
+        self.give("Судбригг", self.a, 4)
+        self.roll()
+        ground = self.service.battlegrounds(self.conv.id, self.a.id)
+        priced = [b for b in ground if b.to_next is not None]
+        self.assertTrue(priced)
+        self.assertTrue(all(b.to_next > 0 for b in priced))
 
     def test_an_unknown_party_is_refused(self):
         self.give("Судбригг", self.a, 4)

@@ -20,23 +20,28 @@ from .elections import PartyResult
 
 
 @dataclass(frozen=True)
-class IslandRow:
-    """Остров целиком: сколько там мандатов, людей и кто их взял."""
+class GroupRow:
+    """Кусок карты целиком: сколько там мандатов, людей и кто их взял.
+
+    Чем именно нарезана карта — острова, города против сёл, что угодно ещё —
+    решает вызывающая сторона: считается всё одинаково, а метка приходит
+    снаружи вместе с округами.
+    """
 
     name: str
-    #: Сколько мандатов разыгрывается на острове.
+    #: Сколько мандатов разыгрывается в этой части карты.
     seats: int
-    #: Сколько человек на острове живёт — вес его голосов (см. `district_seed`).
+    #: Сколько человек здесь живёт — вес голосов (см. `district_seed`).
     population: float
-    #: Мандаты партий на этом острове, `{party_id: мандаты}`.
+    #: Мандаты партий в этой части карты, `{party_id: мандаты}`.
     by_party: dict[str, int]
-    #: Доли голосов партий на острове, в процентах, взвешенные по населению
+    #: Доли голосов партий здесь, в процентах, взвешенные по населению
     #: округов — тем же способом, что и доля по стране в `service.vote_shares`.
     shares: dict[str, float]
 
     @property
     def people_per_seat(self) -> float:
-        """Сколько человек стоит за одним мандатом острова.
+        """Сколько человек стоит за одним мандатом.
 
         Мандаты по островам разложены неровно, и это число показывает
         насколько: где оно меньше, там голос избирателя весит больше, а
@@ -64,6 +69,10 @@ class Battleground:
     points: int
     free: int
     capacity: int
+    #: На сколько процентных пунктов надо вырасти, чтобы взять в округе ещё
+    #: один мандат. `None` — взять больше нечего: либо округ уже весь наш,
+    #: либо не помогла бы и вся доля целиком.
+    to_next: float | None = None
 
     @property
     def gap(self) -> float:
@@ -76,15 +85,17 @@ class Battleground:
         return 0.0 < self.share < elections.THRESHOLD_PERCENT
 
 
-def island_rows(districts, results, allocation, populations) -> list[IslandRow]:
-    """Сводка по каждому острову, в порядке появления островов на карте.
+def group_rows(districts, results, allocation, populations) -> list[GroupRow]:
+    """Сводка по каждой группе округов, в порядке их появления.
 
-    :param districts: `(district_id, остров, мандатов)` по каждому округу.
+    :param districts: `(district_id, метка группы, мандатов)` по округу.
+                      Метка — остров, «города»/«сёла» или любая другая
+                      нарезка: считается всё одинаково.
     :param results: `{district_id: {party_id: PartyResult}}` — разбор выборов.
     :param allocation: `{district_id: {party_id: мандаты}}`.
     :param populations: `{district_id: человек}` — население округа.
 
-    Доли острова считаются по населению округов, а не по их числу: округ на
+    Доли считаются по населению округов, а не по их числу: округ на
     сорок тысяч человек и хутор на десять не равны, и усреднять их наравне
     значило бы приравнять хутор к столице.
     """
@@ -94,7 +105,7 @@ def island_rows(districts, results, allocation, populations) -> list[IslandRow]:
     by_party: dict[str, dict[str, int]] = {}
     weighted: dict[str, dict[str, float]] = {}
 
-    for district_id, island, count in districts:
+    for district_id, island, count in districts:  # island — просто метка
         if island not in seats:
             order.append(island)
             seats[island] = 0
@@ -116,9 +127,67 @@ def island_rows(districts, results, allocation, populations) -> list[IslandRow]:
         total = people[island]
         shares = ({party_id: value / total for party_id, value in weighted[island].items()}
                   if total > 0 else {})
-        rows.append(IslandRow(name=island, seats=seats[island], population=total,
-                              by_party=by_party[island], shares=shares))
+        rows.append(GroupRow(name=island, seats=seats[island], population=total,
+                             by_party=by_party[island], shares=shares))
     return rows
+
+
+def to_next_seat(shares: dict[str, float], party_id: str, seats: int) -> float | None:
+    """Насколько надо подрасти, чтобы взять в округе ещё один мандат.
+
+    :param shares: доли всех партий округа, в процентах.
+    :param seats: сколько мандатов разыгрывается в округе.
+    :return: прибавка в процентных пунктах, либо `None`, если взять больше
+             нечего.
+
+    Считается именно это, а не отрыв от победителя: округ многомандатный и
+    делится по наибольшим остаткам, так что обгонять лидера незачем —
+    мандат даёт квота. Отрыв от лидера отвечает на другой вопрос («чей
+    цвет будет у округа на карте») и как подсказка «куда вложиться» врёт:
+    округ с маленьким отрывом бывает дороже округа, где партия далеко
+    позади, но у самой границы следующего остатка.
+
+    Прибавка мыслится как «за нас проголосовало на столько больше, за
+    остальных соответственно меньше»: доля отнимается у прочих партий
+    пропорционально их весу, потому что взяться ей больше неоткуда.
+    """
+    if seats <= 0 or not shares:
+        return None
+    now = _seats_with(shares, party_id, 0.0, seats)
+    if now >= seats:
+        return None            # весь округ уже наш, расти некуда
+    room = 100.0 - shares.get(party_id, 0.0)
+    if room <= 0 or _seats_with(shares, party_id, room, seats) <= now:
+        return None            # не помогла бы и вся доля округа целиком
+
+    # Двоичный поиск: сорока шагов хватает, чтобы добраться до тысячных
+    # процента — точнее, чем всё равно показывается.
+    low, high = 0.0, room
+    for _ in range(40):
+        middle = (low + high) / 2
+        if _seats_with(shares, party_id, middle, seats) > now:
+            high = middle
+        else:
+            low = middle
+    return high
+
+
+def _seats_with(shares: dict[str, float], party_id: str, boost: float,
+                seats: int) -> int:
+    """Сколько мандатов взяла бы партия, будь её доля на `boost` больше."""
+    rest = sum(value for pid, value in shares.items() if pid != party_id)
+    bumped = {party_id: shares.get(party_id, 0.0) + boost}
+    for pid, value in shares.items():
+        if pid != party_id:
+            bumped[pid] = value * max(0.0, rest - boost) / rest if rest > 0 else 0.0
+
+    total = sum(bumped.values())
+    if total <= 0:
+        return 0
+    normalized = {pid: value / total * 100.0 for pid, value in bumped.items()}
+    passing = {pid: value for pid, value in normalized.items()
+               if value >= elections.THRESHOLD_PERCENT}
+    return elections.allocate_seats(passing, seats).get(party_id, 0)
 
 
 def battlegrounds(party_id: str, districts, results, allocation,
@@ -152,6 +221,7 @@ def battlegrounds(party_id: str, districts, results, allocation,
             points=(points.get(district_id) or {}).get(party_id, 0),
             free=max(0, capacity - given),
             capacity=capacity,
+            to_next=to_next_seat(shares, party_id, seats),
         ))
     return rows
 

@@ -62,6 +62,11 @@ class ParlamentApp:
         #: приложении, а не в экране: экран пересобирается на каждое
         #: переключение, и выбор бы каждый раз слетал.
         self.stats_party: str | None = None
+        #: Какой из трёх видов статистики открыт: general | party | districts.
+        self.stats_mode: str = "general"
+        #: Сортировка таблицы округов: `(столбец, по убыванию)`. По умолчанию
+        #: — самые дешёвые мандаты сверху: ради этого таблицу и открывают.
+        self.stats_sort: tuple[str, bool] = ("to_next", False)
 
         self.file_picker = ft.FilePicker()
         self.body = ft.Container(expand=True)
@@ -488,10 +493,19 @@ class ParlamentApp:
         if party_id and party is None:
             party_id = None
 
+        table_mode = self.stats_mode == "districts"
         islands = self.service.island_stats(conv.id)
+        kinds = self.service.settlement_type_stats(conv.id)
         attribution = self.service.attribution(conv.id)
         parties = [(p.id, p.name, p.abbr, p.color) for p in self.parties]
         ground = self.service.battlegrounds(conv.id, party_id) if party_id else None
+        table = None
+        if table_mode:
+            # Таблице нужны все округа независимо от того, выбрана ли партия:
+            # без выбора в ней просто меньше столбцов.
+            table = sorted(
+                self.service.battlegrounds(conv.id, party_id or self.parties[0].id),
+                key=lambda b: (b.to_next is None, b.to_next or 0.0))
         summary = None
         if party is not None:
             summary = (conv.seats.get(party.id, 0), self.total_seats,
@@ -501,13 +515,15 @@ class ParlamentApp:
             self.close_dialog()
             data = render_stats_png(
                 conv.name, parties, islands, attribution,
-                party_id=party_id, summary=summary, ground=ground,
-                width=settings["width"],
+                party_id=party_id, summary=summary,
+                ground=None if table_mode else ground,
+                kinds=None if table_mode else kinds,
+                table=table, width=settings["width"],
                 emblem=self.service.party_emblem_path(party.id) if party else None,
             )
             stem = party.name if party else conv.name
             file_name = (settings["file_name"] or "").strip() or suggest_file_name(
-                stem, prefix="Статистика")
+                stem, prefix="Округа" if table_mode else "Статистика")
             if not file_name.lower().endswith(".png"):
                 file_name += ".png"
 
@@ -522,7 +538,7 @@ class ParlamentApp:
 
         self.page.show_dialog(dialogs.stats_export_dialog(
             party.name if party else conv.name,
-            party is not None,
+            party is not None, table_mode,
             lambda settings: self.page.run_task(confirm, settings),
             lambda _e: self.close_dialog(),
         ))

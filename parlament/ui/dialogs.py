@@ -1084,7 +1084,17 @@ def support_export_dialog(parties: list[tuple[str, str, str, int, int, int]],
     )
 
 
-def stats_export_dialog(subject: str, per_party: bool,
+def _stats_export_note(subject: str, per_party: bool, table: bool) -> str:
+    """Что именно уедет в файл — вид человек выбрал на самом экране."""
+    if table:
+        return ("Выгрузится таблица всех округов"
+                + (f" глазами партии «{subject}»" if per_party else "")
+                + " — то же, что открыто на экране.")
+    what = f"расклад партии «{subject}»" if per_party else "общая статистика"
+    return f"Выгрузится {what} — то же, что открыто на экране."
+
+
+def stats_export_dialog(subject: str, per_party: bool, table: bool,
                         on_confirm: Callable[[dict], None],
                         on_cancel: Callable) -> ft.AlertDialog:
     """Экспорт статистики — выгружается то, что открыто на экране.
@@ -1093,8 +1103,9 @@ def stats_export_dialog(subject: str, per_party: bool,
     человек уже выбрал на самом экране, и второй такой же выбор в диалоге
     только сбивал бы с толку — что бы тогда считалось главным.
     """
-    file_field = theme.text_field(suggest_file_name(subject, prefix="Статистика"),
-                                  label_text="Имя файла")
+    file_field = theme.text_field(
+        suggest_file_name(subject, prefix="Округа" if table else "Статистика"),
+        label_text="Имя файла")
     resolution_picker = ft.RadioGroup(
         value="0",
         content=ft.Row([
@@ -1111,8 +1122,7 @@ def stats_export_dialog(subject: str, per_party: bool,
     return _shell(
         "Экспорт статистики в PNG",
         [
-            ft.Text(f"Выгрузится {'расклад партии «' + subject + '»' if per_party else 'общая статистика'}"
-                    " — то же, что открыто на экране.",
+            ft.Text(_stats_export_note(subject, per_party, table),
                     size=theme.fs(12), color=theme.NEUTRAL_700),
             file_field,
             ft.Column([

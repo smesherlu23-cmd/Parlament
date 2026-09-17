@@ -22,6 +22,7 @@ from fake_page import FakePage, find, find_all, texts  # noqa: E402
 from parlament.service import ParlamentService, ValidationError  # noqa: E402
 from parlament.ui import format as fmt, theme  # noqa: E402
 from parlament.ui.app import ParlamentApp  # noqa: E402
+from parlament.ui.stats_view import StatsView  # noqa: E402
 from parlament.ui.dialogs import normalize_hex  # noqa: E402
 from parlament.ui.export import LegendEntry, render_png, suggest_file_name  # noqa: E402
 from parlament.district_seed import (  # noqa: E402
@@ -2138,9 +2139,82 @@ class TestStatsScreen(AppTestCase):
         self.app.stats_party = self.a.id
         self.app.show_stats()
         shown = texts(self.app.body)
-        self.assertIn("Почти взяли", shown)
+        self.assertIn("Ближе всего к мандату", shown)
         self.assertIn("Не хватило до барьера", shown)
         self.assertIn("Свободные очки", shown)
+
+    def test_city_and_village_stand_next_to_the_islands(self):
+        # Срез, которого по островам не видно: в городах больше половины
+        # мандатов, и расклад там обычно совсем не сельский.
+        self.elect()
+        self.app.show_stats()
+        shown = texts(self.app.body)
+        self.assertIn("ГОРОД И СЕЛО", shown)
+        self.assertIn("Города", shown)
+        self.assertIn("Сёла", shown)
+
+    def test_the_island_card_names_every_party_not_just_three(self):
+        # За тройкой сильнейших пряталась четверть расклада, и по карточке
+        # нельзя было понять, есть ли там вообще твоя партия.
+        self.elect()
+        self.app.show_stats()
+        shown = " ".join(texts(self.app.body))
+        for party in self.app.parties:
+            self.assertIn(party.abbr, shown)
+
+    def test_the_district_table_lists_every_district(self):
+        self.elect()
+        self.app.stats_mode = "districts"
+        self.app.show_stats()
+        shown = texts(self.app.body)
+        for district in self.service.project.districts:
+            self.assertIn(district.name, shown)
+
+    def test_the_table_gains_party_columns_once_a_party_is_chosen(self):
+        # Без выбранной партии столбцов «наши мандаты» и «до мандата» нет —
+        # их нечем заполнить; таблица прямо об этом и говорит.
+        self.elect()
+        self.app.stats_mode = "districts"
+        self.app.show_stats()
+        shown = " ".join(texts(self.app.body))
+        self.assertIn("появляются, когда выбрана партия", shown)
+        self.assertNotIn(" п.п.", shown)
+
+        self.app.stats_party = self.a.id
+        self.app.render()
+        shown = " ".join(texts(self.app.body))
+        self.assertIn("на сколько надо подрасти", shown)
+        self.assertTrue("+" in shown or "весь наш" in shown)
+
+    def test_sorting_the_table_flips_on_a_second_click(self):
+        self.elect()
+        self.app.stats_mode = "districts"
+        self.app.show_stats()
+        view = StatsView(self.app)
+        view._sort_by("name")
+        self.assertEqual(self.app.stats_sort, ("name", True))
+        view._sort_by("name")
+        self.assertEqual(self.app.stats_sort, ("name", False))
+
+    def test_the_table_exports_as_its_own_file(self):
+        # Двадцать семь строк поверх обзора сделали бы картинку, в которой не
+        # найти ни того, ни другого, — поэтому таблица уезжает отдельно.
+        self.elect()
+        self.app.show_stats()
+        self.app.export_stats_png()
+        find(self.page.dialog, lambda c: isinstance(c, ft.Button)
+             and c.content == "Сохранить как…").on_click(None)
+
+        self.app.stats_mode = "districts"
+        self.app.render()
+        self.app.export_stats_png()
+        find(self.page.dialog, lambda c: isinstance(c, ft.Button)
+             and c.content == "Сохранить как…").on_click(None)
+
+        overview, table = self.saved[0], self.saved[1]
+        self.assertTrue(table["file_name"].startswith("Округа"))
+        self.assertTrue(table["src_bytes"].startswith(b"\x89PNG"))
+        self.assertNotEqual(overview["src_bytes"], table["src_bytes"])
 
     def test_the_chosen_party_survives_a_redraw(self):
         # Выбор живёт в приложении, а не в экране: экран пересобирается на

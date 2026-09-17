@@ -17,7 +17,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from ..statistics import Battleground, IslandRow
+from ..statistics import Battleground, GroupRow
 from . import format as fmt
 from . import theme
 from .export import _font
@@ -27,17 +27,16 @@ _SEMIBOLD = "SourceSerif4-SemiBold.ttf"
 
 #: Сколько строк в каждом списке «где бороться» — как и на экране.
 _SHORTLIST = 4
-#: Сколько партий подписывать под полоской острова в общем виде.
-_TOP_PARTIES = 3
-
 _FACTOR_NAMES = {"national": "настроение по стране", "island": "сдвиг по острову",
                  "wobble": "колебание"}
 
 
-def render_stats_png(convocation_name: str, parties, islands: list[IslandRow],
+def render_stats_png(convocation_name: str, parties, islands: list[GroupRow],
                      attribution: dict, party_id: str | None = None,
                      summary: tuple | None = None,
                      ground: list[Battleground] | None = None,
+                     kinds: list[GroupRow] | None = None,
+                     table: list[Battleground] | None = None,
                      width: int = 1920, emblem: Path | None = None) -> bytes:
     """Собирает картинку статистики.
 
@@ -47,14 +46,21 @@ def render_stats_png(convocation_name: str, parties, islands: list[IslandRow],
     :param party_id: чей это взгляд; `None` — общая статистика.
     :param summary: `(мандаты, вся палата, доля голосов)` для партийного вида.
     :param ground: округа глазами партии, для блока «где бороться».
+    :param kinds: тот же срез, но по типу округа — города против сёл.
+    :param table: если задано — рисуется только таблица округов, отдельным
+                  файлом: 27 строк поверх обзора сделали бы картинку, в
+                  которой не найти ни того, ни другого.
     :param emblem: эмблема партии — в шапку партийного вида.
     """
-    plan = _Plan(width, party_id is not None, bool(ground))
+    by_id = {pid: (name, abbr, color) for pid, name, abbr, color in parties}
+
+    if table is not None:
+        return _render_table(convocation_name, table, by_id, party_id, width, emblem)
+
+    plan = _Plan(width, party_id is not None, bool(ground), bool(kinds))
     canvas = Image.new("RGB", (width, plan.height), theme.BG)
     draw = ImageDraw.Draw(canvas)
     pen = _Pen(canvas, draw, width)
-
-    by_id = {pid: (name, abbr, color) for pid, name, abbr, color in parties}
     pen.y = plan.pad
 
     if party_id is None:
@@ -68,11 +74,17 @@ def render_stats_png(convocation_name: str, parties, islands: list[IslandRow],
                 else "Кто где силён и сколько людей стоит за мандатом")
     pen.islands(islands, by_id, party_id)
 
+    if kinds:
+        pen.section("Город и село", "Второй срез той же карты: в городах "
+                                    "больше половины мандатов, и расклад там "
+                                    "обычно совсем не сельский")
+        pen.islands(kinds, by_id, party_id)
+
     if ground:
         pen.section("Где бороться",
-                    "Что даст больше всего при том же усилии. Отрыв показан "
-                    "в процентных пунктах (п.п.) — это разница долей, а не "
-                    "проценты")
+                    "Что даст больше всего при том же усилии. Прибавка "
+                    "показана в процентных пунктах (п.п.) — это доля голосов "
+                    "округа, а не проценты от неё")
         pen.battlegrounds(ground)
 
     pen.section("Что решило результат",
@@ -86,17 +98,103 @@ def render_stats_png(convocation_name: str, parties, islands: list[IslandRow],
     return buffer.getvalue()
 
 
+def _render_table(convocation_name: str, rows: list[Battleground], by_id: dict,
+                  party_id: str | None, width: int, emblem: Path | None) -> bytes:
+    """Таблица округов целиком — отдельная картинка."""
+    pad = round(width * 0.025)
+    line = round(width * 0.021)
+    head = round(width * 0.075)
+    canvas = Image.new("RGB", (width, head + pad + line * (len(rows) + 2)), theme.BG)
+    draw = ImageDraw.Draw(canvas)
+    pen = _Pen(canvas, draw, width)
+    pen.y = pad
+
+    party = by_id.get(party_id) if party_id else None
+    pen.title("Округа" if party is None else f"Округа · {party[0]}",
+              f"{convocation_name} · {fmt.pluralize(len(rows), fmt.DISTRICTS)}")
+
+    small = round(width * 0.0098)
+    columns = [("Округ", 0.0, "l"), ("Остров", 0.26, "l"), ("Мандатов", 0.40, "r")]
+    if party is not None:
+        columns += [("Наши", 0.46, "r"), ("Наша доля", 0.55, "r")]
+    columns.append(("Победитель", 0.68, "l"))
+    if party is not None:
+        columns += [("До мандата, п.п.", 0.84, "r")]
+    columns.append(("Очки", 0.93, "r"))
+
+    y = pen.y + round(small * 0.6)
+    for title, spot, align in columns:
+        draw.text((pad + (width - pad * 2) * spot, y), title,
+                  font=_font(_SEMIBOLD, small), fill=theme.NEUTRAL_700,
+                  anchor="la" if align == "l" else "ra")
+    y += round(small * 1.9)
+    draw.line([pad, y - small * 0.5, width - pad, y - small * 0.5],
+              fill=theme.DIVIDER, width=1)
+
+    for index, row in enumerate(rows):
+        if index % 2:
+            draw.rectangle([pad // 2, y - small * 0.35, width - pad // 2,
+                            y + small * 1.45], fill=theme.SURFACE)
+        leader = by_id.get(row.leader) if row.leader else None
+        values = [
+            (_clip(draw, row.name, _font(_SEMIBOLD, small), (width - pad * 2) * 0.24),
+             0.0, "l", theme.TEXT, _SEMIBOLD),
+            (_short_island(row.island), 0.26, "l", theme.NEUTRAL_700, _REGULAR),
+            (str(row.seats), 0.40, "r", theme.TEXT, _REGULAR),
+        ]
+        if party is not None:
+            values += [
+                (str(row.won), 0.46, "r",
+                 theme.TEXT if row.won else theme.NEUTRAL_600, _REGULAR),
+                (fmt.share(row.share), 0.55, "r", theme.TEXT, _REGULAR),
+            ]
+        values.append((f"{leader[1] or leader[0]} {row.leader_share:.0f} %"
+                       if leader else "—", 0.68, "l", theme.TEXT, _REGULAR))
+        if party is not None:
+            values.append(("+" + f"{row.to_next:.1f}".replace(".", ",")
+                           if row.to_next is not None else "весь наш",
+                           0.84, "r",
+                           theme.ACCENT_700 if row.to_next is not None
+                           else theme.NEUTRAL_600, _REGULAR))
+        values.append((f"{row.points}/{row.capacity}" if party is not None
+                       else f"{row.capacity - row.free}/{row.capacity}",
+                       0.93, "r", theme.NEUTRAL_700, _REGULAR))
+
+        for text, spot, align, color, font_name in values:
+            draw.text((pad + (width - pad * 2) * spot, y), text,
+                      font=_font(font_name, small), fill=color,
+                      anchor="la" if align == "l" else "ra")
+        if leader is not None:
+            box = round(small * 0.7)
+            draw.rectangle([pad + (width - pad * 2) * 0.665 - box * 1.6,
+                            y + box * 0.2,
+                            pad + (width - pad * 2) * 0.665 - box * 0.6,
+                            y + box * 1.2], fill=leader[2])
+        y += line
+
+    buffer = io.BytesIO()
+    canvas.crop((0, 0, width, min(canvas.height, y + pad))).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def _short_island(name: str) -> str:
+    """«Остров Вакула (запад)» -> «Вакула»: в таблице важен столбец, не титул."""
+    return name.replace("Остров ", "").split(" (")[0]
+
+
 class _Plan:
     """Сколько места занимает картинка — считается до отрисовки."""
 
-    def __init__(self, width: int, per_party: bool, with_ground: bool):
+    def __init__(self, width: int, per_party: bool, with_ground: bool,
+                 with_kinds: bool = False):
         self.pad = round(width * 0.025)
         head = round(width * 0.075) if per_party else round(width * 0.055)
-        islands = round(width * 0.135)
+        islands = round(width * 0.155) * (2 if with_kinds else 1)
         battles = round(width * 0.155) if with_ground else 0
         attribution = round(width * 0.09)
         section = round(width * 0.05)
-        self.height = (self.pad * 2 + head + section * (2 + int(with_ground))
+        blocks = 2 + int(with_ground) + int(with_kinds)
+        self.height = (self.pad * 2 + head + section * blocks
                        + islands + battles + attribution)
 
 
@@ -166,7 +264,7 @@ class _Pen:
 
     # -- блоки --------------------------------------------------------------
 
-    def islands(self, rows: list[IslandRow], by_id: dict, party_id: str | None) -> None:
+    def islands(self, rows: list[GroupRow], by_id: dict, party_id: str | None) -> None:
         if not rows:
             return
         gap = round(self.width * 0.014)
@@ -206,41 +304,83 @@ class _Pen:
             y += bar + round(small * 1.1)
 
             if party_id is None:
-                top = sorted(row.shares.items(), key=lambda kv: -kv[1])[:_TOP_PARTIES]
-                spot = x
-                for pid, share in top:
-                    color = by_id.get(pid, ("", "?", theme.EMPTY_SEAT))[2]
-                    abbr = by_id.get(pid, ("", "?", ""))[1] or "?"
-                    box = round(small * 0.75)
-                    self.draw.rectangle([spot, y + box * 0.2, spot + box, y + box * 1.2],
-                                        fill=color)
-                    text = f"{abbr} {share:.0f} %"
-                    self.draw.text((spot + box * 1.5, y), text,
-                                   font=_font(_REGULAR, small), fill=theme.TEXT, anchor="la")
-                    spot += box * 1.5 + self.draw.textlength(
-                        text, font=_font(_REGULAR, small)) + round(self.width * 0.008)
+                lines = self._legend(x, y, column, small, row.shares, by_id)
+                y += round(small * 1.9) * lines
             else:
                 share = row.shares.get(party_id, 0.0)
                 self.draw.text((x, y), f"{fmt.share(share)} голосов",
                                font=_font(_SEMIBOLD, small), fill=theme.TEXT, anchor="la")
-            y += round(small * 1.9)
+                y += round(small * 1.9)
             self.draw.text((x, y), f"{fmt.count(row.people_per_seat)} чел. на мандат",
                            font=_font(_REGULAR, small), fill=theme.NEUTRAL_700, anchor="la")
 
-        self.y += round(self.width * 0.085)
+        self.y += self._islands_height(rows, party_id)
+
+    def _legend(self, x: int, y: int, column: int, small: int,
+                shares: dict, by_id: dict) -> int:
+        """Подписи всех партий под полоской; переносит на новую строку.
+
+        Возвращает, сколько строк заняло: в узкой колонке острова шесть
+        партий в одну строку не влезают, а раскладка ниже должна знать, на
+        сколько её сдвинуть.
+        """
+        font = _font(_REGULAR, small)
+        box = round(small * 0.75)
+        gap = round(self.width * 0.006)
+        spot, lines = x, 1
+        for pid, share in sorted(shares.items(), key=lambda kv: -kv[1]):
+            if share <= 0:
+                continue
+            text = f"{by_id.get(pid, ('', '?', ''))[1] or '?'} {share:.0f} %"
+            need = box * 1.5 + self.draw.textlength(text, font=font)
+            if spot > x and spot + need > x + column:
+                spot, lines = x, lines + 1
+                y += round(small * 1.9)
+            self.draw.rectangle([spot, y + box * 0.2, spot + box, y + box * 1.2],
+                                fill=by_id.get(pid, ("", "?", theme.EMPTY_SEAT))[2])
+            self.draw.text((spot + box * 1.5, y), text, font=font,
+                           fill=theme.TEXT, anchor="la")
+            spot += need + gap
+        return lines
+
+    def _islands_height(self, rows: list[GroupRow], party_id: str | None) -> int:
+        """Сколько заняла полоса карточек — с учётом перенесённых подписей."""
+        small = round(self.width * 0.0095)
+        base = round(self.width * 0.105)
+        if party_id is not None or not rows:
+            return base
+        column = ((self.width - self.pad * 2
+                   - round(self.width * 0.014) * (len(rows) - 1)) // len(rows))
+        font = _font(_REGULAR, small)
+        box = round(small * 0.75)
+        gap = round(self.width * 0.006)
+        most = 1
+        for row in rows:
+            spot, lines = 0, 1
+            for pid, share in sorted(row.shares.items(), key=lambda kv: -kv[1]):
+                if share <= 0:
+                    continue
+                need = box * 1.5 + self.draw.textlength(f"?? {share:.0f} %", font=font)
+                if spot > 0 and spot + need > column:
+                    spot, lines = 0, lines + 1
+                spot += need + gap
+            most = max(most, lines)
+        return base + round(small * 1.9) * (most - 1)
 
     def battlegrounds(self, ground: list[Battleground]) -> None:
-        near = sorted((b for b in ground if b.won == 0 and b.share > 0),
-                      key=lambda b: b.gap)[:_SHORTLIST]
+        near = sorted((b for b in ground if b.to_next is not None),
+                      key=lambda b: b.to_next)[:_SHORTLIST]
         missed = sorted((b for b in ground if b.missed_threshold),
                         key=lambda b: -b.share)[:_SHORTLIST]
         free = sorted((b for b in ground if b.free > 0),
                       key=lambda b: (-b.free, -b.seats))[:_SHORTLIST]
 
         columns = [
-            ("Почти взяли", "Округ достался другим, но отрыв небольшой",
-             [(b.name, "−" + f"{b.gap:.1f}".replace(".", ",") + " п.п.") for b in near],
-             "Все округа с долей уже взяты"),
+            ("Ближе всего к мандату",
+             "Насколько надо подрасти, чтобы взять здесь ещё одно место",
+             [(b.name, "+" + f"{b.to_next:.1f}".replace(".", ",") + " п.п.")
+              for b in near],
+             "Брать больше нечего: все мандаты уже наши"),
             ("Не хватило до барьера", "Доля есть, но меньше 5 % — мандатов не дают",
              [(b.name, fmt.share(b.share)) for b in missed],
              "Барьер пройден везде, где есть доля"),
